@@ -1,35 +1,22 @@
-# packages for training
-torch
-hydra-core
-omegaconf
-wandb
-tensorboard
+# Core training
+torch==2.3.1
 transformers==4.52.4
+tokenizers
 datasets
 accelerate
 deepspeed
 peft
-zstandard
-boto3
-smart_open
 bitsandbytes
-flash-attn
+hydra-core
+omegaconf
 
-# FlashAttention
-# pip install flash-attn --no-build-isolation
+# Data / numerics
+numpy
+pillow
 
+# Logging
+wandb
+tensorboard
 
-# packages for evaluation
-sacrebleu
-evaluate
-sqlitedict
-nltk
-pytablewriter
-rouge_score
+# Vision-side utilities (only if you keep the PoC analysis script that uses them)
 matplotlib
-more_itertools
-
-# LM-evaluation-harness
-# git clone --depth 1 https://github.com/EleutherAI/lm-evaluation-harness
-# cd lm-evaluation-harness
-# pip install -e .

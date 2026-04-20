@@ -16,7 +16,7 @@ from copy import deepcopy
 from transformers import TrainingArguments, Trainer
 from accelerate import Accelerator
 
-from lm_dataset.load_dataset import LM_DATASETS, load_dataset_from_config 
+from lm_dataset.load_dataset import LM_DATASETS, load_dataset_from_config ,MULTIMODAL_DATASETS
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
 from model.relaxation.util import relax_weight_sharing
@@ -27,7 +27,7 @@ from util.callback import FixedStoppingCallback, EvalCallback, PeftSaveCallback,
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
 
 
-@hydra.main(config_path="conf/pretrain", config_name="yymmdd_pretrain")
+@hydra.main(config_path="conf/pretrain_vision", config_name="yymmdd_pretrain")
 def main(cfg: DictConfig):
     cfg = preprocess_config(cfg)
     
@@ -57,13 +57,18 @@ def main(cfg: DictConfig):
     print ("Loading tokenizers...")
     tokenizer = load_tokenizer_from_config(cfg)
 
-    print ("Loading dataset...")
+    print("Loading dataset...")
     train_dataset = load_dataset_from_config(cfg, tokenizer)
     if cfg.resume_from_checkpoint:
-        latest_checkpoint = get_latest_checkpoint_path(cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None)
-        train_dataset.load_state_dict(
-            torch.load(os.path.join(str(latest_checkpoint), "dataset.pt"))
+        latest_checkpoint = get_latest_checkpoint_path(
+            cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None,
         )
+        dataset_state_path = os.path.join(str(latest_checkpoint), "dataset.pt")
+        if hasattr(train_dataset, "load_state_dict") and os.path.isfile(dataset_state_path):
+            train_dataset.load_state_dict(torch.load(dataset_state_path))
+        else:
+            print("Skipping dataset state restore (map-style dataset or missing dataset.pt).")
+
 
     print ("Loading models...")
     model = load_model_from_config(cfg)
@@ -80,10 +85,12 @@ def main(cfg: DictConfig):
         
         if cfg.resume_from_checkpoint:
             if cfg.relaxation.get("enable"):
-                latest_checkpoint = get_latest_checkpoint_path(cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None)                
+                latest_checkpoint = get_latest_checkpoint_path(
+                    cfg,
+                    resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None,
+                )
                 state_dict = torch.load(os.path.join(str(latest_checkpoint), "pytorch_model.bin"))
                 model.get_base_model().load_state_dict(state_dict)
-                
     if "mor" in cfg and cfg.mor.get("enable"):            
         if cfg.mor.type == "expert":
             model.transform_layer_to_mor_expert(cfg)
@@ -137,8 +144,14 @@ def main(cfg: DictConfig):
         callbacks.append(EvalCallback(cfg, tokenizer))
     if cfg.relaxation.get("enable") and cfg.relaxation.method in ["lora", "dora", "adaption_prompt"]:
         callbacks.append(PeftSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
-    if all(ds in LM_DATASETS for ds in cfg.dataset.split(',')):
+    ds_names = [ds.strip() for ds in cfg.dataset.split(',')]
+    if all(ds in LM_DATASETS for ds in ds_names):
         callbacks.append(DatasetSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
+    elif all(ds in MULTIMODAL_DATASETS for ds in ds_names):
+        # Map-style dataset; no per-iteration state to save. Resume restarts at epoch boundary.
+        pass
+
+
     if fixed_save_steps is not None:
         callbacks.append(ScalingLawsSaveCallback(fixed_save_steps,))
         
