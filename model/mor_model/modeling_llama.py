@@ -325,6 +325,28 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
         self.post_init()
     
     def transform_layer_to_mor_expert(self, cfg):
+        """
+        transform the original layers into MoR layers
+        
+        model.model.layers = ModuleList([
+            layer_0,                    # original first layer, unchanged
+            MoRLlamaDecoderLayer(       # recursion 1 wrapper
+                block=[layers[1], layers[2], ..., layers[9]],
+                capacity=1.0
+            ),
+            MoRLlamaDecoderLayer(       # recursion 2 wrapper
+                block=[layers[10], layers[11], ..., layers[18]],
+                capacity=0.67
+            ),
+            MoRLlamaDecoderLayer(       # recursion 3 wrapper
+                block=[layers[19], layers[20], ..., layers[27]],
+                capacity=0.33
+            ),
+            layer_28                    # original last layer, unchanged
+        ])
+        
+        """
+        
         from model.mor_model.expert_choice_router import MoRLlamaDecoderLayer
         
         capacity = [float(cap) for cap in cfg.mor.capacity.split(',')]

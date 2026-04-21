@@ -5,7 +5,7 @@ wandb_mode: online
 wandb_entity: eplf-sion
 wandb_project: mixture-of-recursions-vision
 wandb_run_name: smoke_50steps
-wandb_run_id: 58iJtvM7   # Generate a fresh one with: python util/generate_wandb_run_id.py
+wandb_run_id: PJ0HLNrH   # Generate a fresh one with: python util/generate_wandb_run_id.py
 output_dir: null
 tensorboard: false
 tensorboard_dir: null
@@ -42,10 +42,8 @@ add_bos_token: false
 global_shuffling: false
 local_shuffling: false
 
-# === Tokenizer (unused by multimodal branch but still loaded) ===
 tokenizer: smollm
 
-# === Model ===
 model: smollm
 model_name_or_path: HuggingFaceTB/SmolLM-135M
 model_config:
@@ -58,7 +56,6 @@ model_config:
 attn_implementation: sdpa
 use_pretrained_weights: false
 
-# === MoR recursion config (unchanged) ===
 recursive:
   enable: true
   base_depth: null
@@ -115,10 +112,9 @@ mor:
     u: 0.001
     gating: weighted
 
-# === Training schedule (PoC) ===
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
-  num_decay_steps: 10   # 20% of training
+  num_decay_steps: 3900   # 20% of training
   decay_type: linear
 learning_rate: 0.003
 adam_beta1: 0.9
@@ -127,12 +123,12 @@ weight_decay: 0.1
 precision: bf16
 max_grad_norm: 1.0
 # steps_per_epoch = Dataset_size (our case 50k) / 256 = 195.3 → round to 195
-# Number of training steps = steps_per_epoch x num_epochs = 195 x 20 = 3900
-num_train_steps: 50
-stop_steps: 50
-# 5% of 3900 = 195 steps -> warmup to 0.003 in first epoch, then decay for remaining 19 epochs.
-num_warmup_steps: 5    # 5% of training
-save_interval: 1       # Save every 548 steps (10 times total)
+# Number of training steps = steps_per_epoch x num_epochs = 195 x 100 = 19500
+num_train_steps: 19500
+stop_steps: 19500
+# 5% of 19500 = 975 steps -> warmup to 0.003 in first epoch, then decay for remaining 19 epochs.
+num_warmup_steps: 975   # 5% of training
+save_interval: 10000     # Save every 10k steps → 2 checkpoints total (at step 10000 and final step 19500)
 save_steps: null
 fixed_save_steps: null
 save_total_limit: null
