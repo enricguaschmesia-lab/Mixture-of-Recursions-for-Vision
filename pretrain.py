@@ -9,7 +9,7 @@ import string
 import random
 import hydra
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from transformers import TrainingArguments, Trainer
 
 
@@ -28,7 +28,7 @@ from model.sharing_strategy import SHARING_STRATEGY
 from util.config import preprocess_config
 from util.tokenizer import load_tokenizer_from_config 
 from util.trainer_pt import MoRTrainer
-from util.callback import FixedStoppingCallback, EvalCallback, PeftSaveCallback, DatasetSaveCallback, ScalingLawsSaveCallback
+from util.callback import FixedStoppingCallback, PeftSaveCallback, ScalingLawsSaveCallback
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
 
 @hydra.main(config_path="conf/pretrain_vision", config_name="yymmdd_pretrain")
@@ -37,8 +37,9 @@ def main(cfg: DictConfig):
     
     if cfg.wandb and cfg.get("wandb_run_id") is None:
         characters = string.ascii_letters + string.digits
-        wandb_run_id = "".join(random.choices(characters, k=8))
-        raise KeyError(f"wandb_run_id is not set. Please set wandb_run_id as {wandb_run_id} in the config file and run again.")
+        with open_dict(cfg):
+            cfg.wandb_run_id = "".join(random.choices(characters, k=8))
+        print(f"Auto-generated wandb_run_id: {cfg.wandb_run_id}")
                 
     # wandb settings
     if cfg.get("wandb"):
@@ -62,7 +63,7 @@ def main(cfg: DictConfig):
     tokenizer = load_tokenizer_from_config(cfg)
 
     print("Loading dataset...")
-    train_dataset = load_dataset_from_config(cfg, tokenizer)
+    train_dataset = load_dataset_from_config(cfg)
     if cfg.resume_from_checkpoint:
         latest_checkpoint = get_latest_checkpoint_path(
             cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None,
@@ -132,10 +133,6 @@ def main(cfg: DictConfig):
     fixed_save_steps = cfg.fixed_save_steps if ("fixed_save_steps" in cfg and cfg.fixed_save_steps) else None
     if cfg.stop_steps is not None:
         callbacks.append(FixedStoppingCallback(cfg.stop_steps))
-    if "evaluation" in cfg and cfg.evaluation.enable:
-        callbacks.append(EvalCallback(cfg, tokenizer))
-    if cfg.relaxation.get("enable") and cfg.relaxation.method in ["lora", "dora", "adaption_prompt"]:
-        callbacks.append(PeftSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
     ds_names = [ds.strip() for ds in cfg.dataset.split(',')]
     if all(ds in MULTIMODAL_DATASETS for ds in ds_names):
         # Map-style dataset; no per-iteration state to save. Resume restarts at epoch boundary.

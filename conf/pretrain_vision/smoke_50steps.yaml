@@ -2,10 +2,10 @@
 name: 251020_pretrain_smollm-135m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001_clevr_rgb
 wandb: true
 wandb_mode: online
-wandb_entity: eplf-sion
+wandb_entity: <your-entity>   # override with: wandb_entity=<your-entity>
 wandb_project: mixture-of-recursions-vision
 wandb_run_name: smoke_50steps
-wandb_run_id: PJ0HLNrH   # Generate a fresh one with: python util/generate_wandb_run_id.py
+wandb_run_id: null      # auto-generated at runtime if null
 output_dir: null
 tensorboard: false
 tensorboard_dir: null

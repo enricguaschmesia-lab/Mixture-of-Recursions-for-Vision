@@ -204,3 +204,5 @@ hf_models/
 *.csv
 smollm-135m-config/
 outputs
+
+data/

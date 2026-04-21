@@ -1,12 +1,18 @@
+import os
+
 from lm_dataset.multimodal_tokenized_dataset import MultimodalTokenizedDataset
+from paths import PROJECT_ROOT
 
 num_proc = 24
 
 
-# Multimodal datasets (CLEVR: per-modality tokenized .npy / .json files)
+# Root of the pre-tokenized CLEVR dataset (expects <root>/<split>/<modality>/<stem>.{npy,json}).
+# Override per-machine via: export CLEVR_ROOT=/path/to/clevr_dataset
+CLEVR_ROOT = os.environ.get("CLEVR_ROOT", os.path.join(PROJECT_ROOT, "clevr_dataset"))
+
 MULTIMODAL_DATASETS = {
     "clevr_multimodal": {
-        "root_dir": "/home/gianfranco/projects/2025/Visual_Intelligence_Project/Dataset/clevr_com_304",
+        "root_dir": CLEVR_ROOT,
     },
 }
 
