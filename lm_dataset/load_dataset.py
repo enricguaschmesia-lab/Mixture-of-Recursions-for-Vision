@@ -8,7 +8,7 @@ num_proc = 24
 
 # Root of the pre-tokenized CLEVR dataset (expects <root>/<split>/<modality>/<stem>.{npy,json}).
 # Override per-machine via: export CLEVR_ROOT=/path/to/clevr_dataset
-CLEVR_ROOT = os.environ.get("CLEVR_ROOT", os.path.join(PROJECT_ROOT, "clevr_dataset"))
+CLEVR_ROOT = os.environ.get("CLEVR_ROOT", os.path.join(PROJECT_ROOT, "data", "clevr_dataset"))
 
 MULTIMODAL_DATASETS = {
     "clevr_multimodal": {

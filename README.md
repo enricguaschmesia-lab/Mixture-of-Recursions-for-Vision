@@ -36,9 +36,30 @@ snapshot_download('HuggingFaceTB/SmolLM-135M',
 
 ## Data
 
-Pre-tokenized CLEVR (RGB / depth / normals via Cosmos DI-16×16, text via GPT-2) laid out as `<root>/<split>/<modality>/<stem>.{npy,json}`. Point `lm_dataset/load_dataset.py::MULTIMODAL_DATASETS['clevr_multimodal']['root_dir']` at your copy (this will move to an env var in the next cleanup pass).
+Pre-tokenized CLEVR (RGB / depth / normals via Cosmos DI-16×16, text via GPT-2) laid out as `<root>/<split>/<modality>/<stem>.{npy,json}`.
+
+Download from: https://drive.google.com/file/d/1QRFqoGKMFYlgxYfPr9O7PeOadzXAbJI8/view
+
+```bash
+tar -xzvf clevr_cs503.tar.gz
+mv clevr_cs503 clevr_dataset   # rename if the archive extracts as clevr_cs503
+mv clevr_dataset data/
+```
+
+The default path is `<repo>/data/clevr_dataset`. Override with:
+
+```bash
+export CLEVR_ROOT=/path/to/clevr_dataset
+```
 
 ## Run
+
+Wandb settings are in the config file. To run with wandb, you need to set the wandb_entity and wandb_project in the config file.
+
+```bash
+wandb_entity: <your-entity>
+wandb_project: <your-project>
+```
 
 Smoke test (1 GPU, 50 steps, RGB only):
 
