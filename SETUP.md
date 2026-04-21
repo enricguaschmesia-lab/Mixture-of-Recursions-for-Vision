@@ -61,3 +61,6 @@ transformers imports, so the library looks there for models.
 ## Dataset
 
 Expected layout under `<root_dir>/{split}/{modality}/{stem}.{ext}`:
+
+## Run the code 
+bash scripts/pretrain.sh accelerate online 0 smoke_50steps
