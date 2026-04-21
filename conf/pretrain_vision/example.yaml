@@ -2,8 +2,8 @@ name: example
 
 wandb: true
 wandb_mode: offline
-wandb_entity: efficient-ai-projects
-wandb_project: mixture-of-recursions
+wandb_entity: ${oc.env:WANDB_ENTITY}
+wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
 wandb_run_name: null
 output_dir: null
 wandb_run_id: null  # run `python util/generate_wandb_run_id.py` to generate a new id

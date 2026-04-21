@@ -54,11 +54,17 @@ export CLEVR_ROOT=/path/to/clevr_dataset
 
 ## Run
 
-Wandb settings are in the config file. To run with wandb, you need to set the wandb_entity and wandb_project in the config file.
+Copy `.env.example` to `.env` and set `WANDB_ENTITY` (and optionally `WANDB_PROJECT`, `CLEVR_ROOT`). `pretrain.py` auto-loads `.env` at startup, and the configs read W&B settings via `${oc.env:...}` — no need to edit YAML per machine.
 
 ```bash
-wandb_entity: <your-entity>
-wandb_project: <your-project>
+cp .env.example .env
+$EDITOR .env   # set WANDB_ENTITY
+```
+
+One-off overrides still work the ordinary way:
+
+```bash
+WANDB_MODE=offline uv run bash scripts/pretrain.sh accelerate offline 0 smoke_50steps
 ```
 
 Smoke test (1 GPU, 50 steps, RGB only):

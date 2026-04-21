@@ -1,6 +1,13 @@
-import os 
+import os
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+# Auto-load <repo>/.env into os.environ so Hydra's ${oc.env:...} interpolation
+# and paths.py can see it. Must run before the paths import below.
+from util.env import load_dotenv
+
+load_dotenv()
+
 from paths import SAVE_DIR, PROJECT_ROOT, HF_CACHE_DIR; os.environ["HF_HOME"] = HF_CACHE_DIR
 
 
@@ -31,7 +38,7 @@ from util.trainer_pt import MoRTrainer
 from util.callback import FixedStoppingCallback, PeftSaveCallback, ScalingLawsSaveCallback
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
 
-@hydra.main(config_path="conf/pretrain_vision", config_name="yymmdd_pretrain")
+@hydra.main(config_path="conf/pretrain_vision", config_name="smoke_50steps", version_base=None)
 def main(cfg: DictConfig):
     cfg = preprocess_config(cfg)
     
@@ -55,7 +62,7 @@ def main(cfg: DictConfig):
         if os.environ["WANDB_MODE"] == "offline":
             os.environ["WANDB_DIR"] = PROJECT_ROOT
         os.environ["WANDB_SAVE_CODE"] = "false"
-        os.environ["WANDB LOG MODEL"] = "false"
+        os.environ["WANDB_LOG_MODEL"] = "false"
     
     launcher_type = get_launcher_type()
     
@@ -156,7 +163,7 @@ def main(cfg: DictConfig):
     trainer.save_state()
     trainer.save_model()
     
-    if cfg.relaxation.get("enable"):
+    if cfg.get("relaxation") and cfg.relaxation.get("enable"):
         trainer.model.base_model.model.save_pretrained(train_args.output_dir, safe_serialization=False)
     
     

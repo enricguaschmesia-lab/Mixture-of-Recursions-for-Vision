@@ -1,9 +1,9 @@
 # === Run identity ===
-name: 251020_pretrain_smollm-135m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001_clevr_rgb
+name: smoke_50steps
 wandb: true
 wandb_mode: online
-wandb_entity: <your-entity>   # override with: wandb_entity=<your-entity>
-wandb_project: mixture-of-recursions-vision
+wandb_entity: ${oc.env:WANDB_ENTITY}
+wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
 wandb_run_name: smoke_50steps
 wandb_run_id: null      # auto-generated at runtime if null
 output_dir: null
@@ -70,23 +70,6 @@ kv_sharing:
   num_recursion: null
   sharing: null
 
-relaxation:
-  enable: false
-  skip_first_loop: false
-  method: lora
-  lora:
-    r: 16
-    alpha: 32
-    dropout: 0.1
-    target_modules:
-    - q_proj
-    - v_proj
-    rank_pattern: null
-    alpha_pattern: 2.0
-    svd_init: false
-  prompt:
-    len: 16
-
 mor:
   enable: true
   type: expert
@@ -136,12 +119,3 @@ logging_steps: 10
 dataloader_num_workers: 4
 gradient_checkpointing: false
 deepspeed: ds_configs/stage2.config
-
-# === Eval (disabled; lm_eval harness doesn't apply to vision) ===
-evaluation:
-  enable: false
-  eval_steps: 5
-  batch_size: 16
-  tasks: lambada_openai,hellaswag,piqa,winogrande,arc_easy,arc_challenge,openbookqa,mmlu,mmlu_continuation,truthfulqa
-  device: null
-  num_fewshot: null

@@ -2,15 +2,18 @@ import os
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 
-# save directory for checkpoints, logs, and other results
-# make sure you set symbolic link: ln -s {disk_path}/{fpath} ./{fpath}
-SAVE_DIR = os.path.join(PROJECT_ROOT, "results")
+SAVE_DIR = os.environ.get(
+    "MOR_SAVE_DIR", os.path.join(PROJECT_ROOT, "results")
+)
 
-# cache directory for huggingface datasets, models, tokenizers
-HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "hf_cache")
+HF_CACHE_DIR = os.environ.get(
+    "HF_HOME", os.path.join(PROJECT_ROOT, "hf_cache")
+)
 
-# directory for source data
-DATA_DIR = os.path.join(PROJECT_ROOT, "hf_datasets")
+DATA_DIR = os.environ.get(
+    "MOR_DATA_DIR", os.path.join(PROJECT_ROOT, "hf_datasets")
+)
 
-# directory for model checkpoints from huggingface (for distillation and other purposes)
-MODEL_DIR = os.path.join(PROJECT_ROOT, "hf_models")
+MODEL_DIR = os.environ.get(
+    "MOR_MODEL_DIR", os.path.join(PROJECT_ROOT, "hf_models")
+)

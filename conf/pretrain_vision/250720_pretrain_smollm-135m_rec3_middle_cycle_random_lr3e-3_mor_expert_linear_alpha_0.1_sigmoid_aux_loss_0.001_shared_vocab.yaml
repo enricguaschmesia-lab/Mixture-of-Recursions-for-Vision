@@ -2,8 +2,8 @@
 name: 251020_pretrain_smollm-135m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001_clevr_rgb
 wandb: true
 wandb_mode: online
-wandb_entity: eplf-sion
-wandb_project: mixture-of-recursions-vision
+wandb_entity: ${oc.env:WANDB_ENTITY}
+wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
 wandb_run_name: null
 wandb_run_id: null   # Generate a fresh one with: python util/generate_wandb_run_id.py
 output_dir: null

@@ -1,8 +1,8 @@
 name: 250720_pretrain_smollm-360m_vanilla_lr3e-3
 wandb: true
 wandb_mode: online
-wandb_entity: efficient-ai-projects
-wandb_project: mixture-of-recursions
+wandb_entity: ${oc.env:WANDB_ENTITY}
+wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
 wandb_run_name: null
 output_dir: null
 wandb_run_id: aDnFdKnu
