@@ -4,8 +4,8 @@ wandb: true
 wandb_mode: online
 wandb_entity: eplf-sion
 wandb_project: mixture-of-recursions-vision
-wandb_run_name: null
-wandb_run_id: null   # Generate a fresh one with: python util/generate_wandb_run_id.py
+wandb_run_name: smoke_50steps
+wandb_run_id: 58iJtvM7   # Generate a fresh one with: python util/generate_wandb_run_id.py
 output_dir: null
 tensorboard: false
 tensorboard_dir: null
@@ -118,7 +118,7 @@ mor:
 # === Training schedule (PoC) ===
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
-  num_decay_steps: 780   # 20% of training
+  num_decay_steps: 10   # 20% of training
   decay_type: linear
 learning_rate: 0.003
 adam_beta1: 0.9
@@ -128,15 +128,15 @@ precision: bf16
 max_grad_norm: 1.0
 # steps_per_epoch = Dataset_size (our case 50k) / 256 = 195.3 → round to 195
 # Number of training steps = steps_per_epoch x num_epochs = 195 x 20 = 3900
-num_train_steps: 3900
-stop_steps: 3900
+num_train_steps: 50
+stop_steps: 50
 # 5% of 3900 = 195 steps -> warmup to 0.003 in first epoch, then decay for remaining 19 epochs.
-num_warmup_steps: 195    # 5% of training
-save_interval: 0.1       # Save every 548 steps (10 times total)
+num_warmup_steps: 5    # 5% of training
+save_interval: 1       # Save every 548 steps (10 times total)
 save_steps: null
 fixed_save_steps: null
 save_total_limit: null
-logging_steps: 50
+logging_steps: 10
 dataloader_num_workers: 4
 gradient_checkpointing: false
 deepspeed: ds_configs/stage2.config

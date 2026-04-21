@@ -1,8 +1,9 @@
 import os 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["HF_HOME"] = HF_CACHE_DIR  # ← sets HF_HOME here
 from paths import SAVE_DIR, PROJECT_ROOT, HF_CACHE_DIR; os.environ["HF_HOME"] = HF_CACHE_DIR
+
+
 import string
 import warnings
 from pathlib import Path
@@ -17,6 +18,15 @@ from copy import deepcopy
 from transformers import TrainingArguments, Trainer
 from accelerate import Accelerator
 
+
+# Workaround for transformers 4.52.4: save_pretrained references DTensor
+# without importing it in single-GPU contexts. Patch it in.
+try:
+    from torch.distributed.tensor import DTensor
+except ImportError:
+    class DTensor: pass
+import transformers.modeling_utils
+transformers.modeling_utils.DTensor = DTensor
 from lm_dataset.load_dataset import LM_DATASETS, load_dataset_from_config ,MULTIMODAL_DATASETS
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
@@ -26,7 +36,6 @@ from util.tokenizer import load_tokenizer_from_config
 from util.trainer_pt import MoRTrainer
 from util.callback import FixedStoppingCallback, EvalCallback, PeftSaveCallback, DatasetSaveCallback, ScalingLawsSaveCallback
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
-
 
 @hydra.main(config_path="conf/pretrain_vision", config_name="yymmdd_pretrain")
 def main(cfg: DictConfig):

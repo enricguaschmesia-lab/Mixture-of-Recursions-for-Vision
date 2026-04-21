@@ -1,22 +1,48 @@
-# Core training
-torch==2.3.1
+# ========================================
+# Mixture-of-Recursions for Vision — PoC
+# Validated on: NVIDIA RTX 5000 Ada (CC 8.9), CUDA 12.1 build on CUDA 13.0 driver
+# Python: 3.10
+# ========================================
+
+# --- Core PyTorch stack (install first, see SETUP.md) ---
+# torch==2.3.1+cu121 is NOT listed here. It must be installed separately
+# with the correct CUDA index URL. See SETUP.md for instructions.
+
+# --- HuggingFace ecosystem ---
+# Pin strictly — MoR relies on transformers 4.52.4 private APIs
+# (e.g., _static_cache_update, _get_fsdp_ckpt_kwargs).
 transformers==4.52.4
-tokenizers
-datasets
-accelerate
-deepspeed
-peft
-bitsandbytes
-hydra-core
-omegaconf
+tokenizers>=0.19,<0.22
+datasets>=2.14,<3.0
+accelerate>=1.3,<2.0
+peft>=0.10,<0.13
+huggingface_hub>=0.20,<1.0
 
-# Data / numerics
-numpy
-pillow
+# --- Training utilities ---
+bitsandbytes>=0.43,<0.46
 
-# Logging
-wandb
-tensorboard
+# --- Config management ---
+hydra-core>=1.3,<1.4
+omegaconf>=2.3,<2.4
 
-# Vision-side utilities (only if you keep the PoC analysis script that uses them)
-matplotlib
+# --- Logging ---
+wandb>=0.16,<0.19
+tensorboard>=2.14
+
+# --- Data / numerics ---
+numpy>=1.24,<2.0
+pillow>=10.0
+matplotlib>=3.7
+
+# --- Required by existing MoR code paths we didn't strip ---
+# These are imported at module load time by lm_dataset/util.py
+boto3>=1.28
+smart_open>=6.0
+
+# --- Intentionally NOT included ---
+# flash-attn:    requires Ampere+ GPU with build tools; PoC uses SDPA instead.
+# deepspeed:     unconditionally imports nvcc at module load; PoC is single-GPU.
+# lm-evaluation-harness + sacrebleu/nltk/rouge_score/sqlitedict/pytablewriter/
+#                more_itertools/evaluate:
+#                text eval dependencies, not needed for vision.
+# einops:        installed transitively by some packages; not required directly.
