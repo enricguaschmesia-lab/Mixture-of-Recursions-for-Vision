@@ -5,18 +5,12 @@ from paths import SAVE_DIR, PROJECT_ROOT, HF_CACHE_DIR; os.environ["HF_HOME"] = 
 
 
 import string
-import warnings
-from pathlib import Path
 
 import random
 import hydra
 import torch
-import torch.nn as nn 
-import torch.distributed as dist
-from omegaconf import DictConfig, OmegaConf 
-from copy import deepcopy
+from omegaconf import DictConfig
 from transformers import TrainingArguments, Trainer
-from accelerate import Accelerator
 
 
 # Workaround for transformers 4.52.4: save_pretrained references DTensor
@@ -28,10 +22,9 @@ except ImportError:
 import transformers.modeling_utils
 transformers.modeling_utils.DTensor = DTensor
 
-from lm_dataset.load_dataset import LM_DATASETS, load_dataset_from_config ,MULTIMODAL_DATASETS
+from lm_dataset.load_dataset import load_dataset_from_config ,MULTIMODAL_DATASETS
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
-from model.relaxation.util import relax_weight_sharing
 from util.config import preprocess_config
 from util.tokenizer import load_tokenizer_from_config 
 from util.trainer_pt import MoRTrainer
@@ -90,18 +83,6 @@ def main(cfg: DictConfig):
     
     if "kv_sharing" in cfg and cfg.kv_sharing.get("enable"):
         model.set_kv_sharing_config(cfg)
-        
-    if cfg.get("relaxation") and cfg.relaxation.get("enable"):
-        model = relax_weight_sharing(cfg, model, lora_init_dict=lora_init_dict)
-        
-        if cfg.resume_from_checkpoint:
-            if cfg.relaxation.get("enable"):
-                latest_checkpoint = get_latest_checkpoint_path(
-                    cfg,
-                    resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None,
-                )
-                state_dict = torch.load(os.path.join(str(latest_checkpoint), "pytorch_model.bin"))
-                model.get_base_model().load_state_dict(state_dict)
     if "mor" in cfg and cfg.mor.get("enable"):            
         if cfg.mor.type == "expert":
             model.transform_layer_to_mor_expert(cfg)
@@ -156,9 +137,7 @@ def main(cfg: DictConfig):
     if cfg.relaxation.get("enable") and cfg.relaxation.method in ["lora", "dora", "adaption_prompt"]:
         callbacks.append(PeftSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
     ds_names = [ds.strip() for ds in cfg.dataset.split(',')]
-    if all(ds in LM_DATASETS for ds in ds_names):
-        callbacks.append(DatasetSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
-    elif all(ds in MULTIMODAL_DATASETS for ds in ds_names):
+    if all(ds in MULTIMODAL_DATASETS for ds in ds_names):
         # Map-style dataset; no per-iteration state to save. Resume restarts at epoch boundary.
         pass
 
