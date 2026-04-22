@@ -1,9 +1,10 @@
+import json
 import os
 import warnings
 
 from omegaconf import DictConfig
 import torch
-from transformers import AutoConfig 
+from transformers import AutoConfig
 
 from model.base_model.modeling_llama import LlamaForCausalLM
 from model.recursive_model.modeling_llama import LlamaForCausalLM as RecursiveLlamaForCausalLM
@@ -90,3 +91,48 @@ def load_model_from_config(cfg: DictConfig):
             setattr(config, "max_position_embeddings", cfg.max_length)
         return model_cls._from_config(
             config, attn_implementation=attn_implementation, torch_dtype=torch_dtype,)
+
+
+def load_checkpoint(model, checkpoint_path):
+    """
+    Load weights into model from a HuggingFace Trainer checkpoint directory.
+    Accepts a local path or a HuggingFace model ID (owner/repo).
+    Handles single safetensors, sharded safetensors, and pytorch_model.bin.
+    """
+    if not os.path.exists(checkpoint_path) and "/" in checkpoint_path and not checkpoint_path.startswith("/"):
+        from huggingface_hub import snapshot_download
+        print(f"  Downloading from HuggingFace Hub: {checkpoint_path}")
+        checkpoint_path = snapshot_download(
+            checkpoint_path,
+            ignore_patterns=["optimizer.pt", "rng_state.pth", "training_args.bin", "scheduler.pt"],
+        )
+        print(f"  Cached at: {checkpoint_path}")
+
+    index_path = os.path.join(checkpoint_path, "model.safetensors.index.json")
+    safetensors_path = os.path.join(checkpoint_path, "model.safetensors")
+    bin_path = os.path.join(checkpoint_path, "pytorch_model.bin")
+
+    if os.path.exists(index_path):
+        from safetensors.torch import load_file
+        with open(index_path) as f:
+            index = json.load(f)
+        state_dict = {}
+        for shard in sorted(set(index["weight_map"].values())):
+            state_dict.update(load_file(os.path.join(checkpoint_path, shard), device="cpu"))
+    elif os.path.exists(safetensors_path):
+        from safetensors.torch import load_file
+        state_dict = load_file(safetensors_path, device="cpu")
+    elif os.path.exists(bin_path):
+        state_dict = torch.load(bin_path, map_location="cpu", weights_only=True)
+    else:
+        raise FileNotFoundError(
+            f"No checkpoint found in '{checkpoint_path}'. "
+            "Expected model.safetensors, model.safetensors.index.json, or pytorch_model.bin."
+        )
+
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        print(f"  [warn] {len(unexpected)} unexpected key(s): {unexpected[:3]}{'...' if len(unexpected) > 3 else ''}")
+    if missing:
+        print(f"  [warn] {len(missing)} missing key(s): {missing[:3]}{'...' if len(missing) > 3 else ''}")
+    return model
