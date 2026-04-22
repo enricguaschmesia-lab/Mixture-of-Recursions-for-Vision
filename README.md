@@ -73,6 +73,12 @@ Smoke test (1 GPU, 50 steps, RGB only):
 uv run bash scripts/pretrain.sh accelerate online 0 smoke_50steps
 ```
 
+If you want to plot during training intermediate plotting download the tokenizer. 
+
+```bash
+huggingface-cli download nvidia/Cosmos-0.1-Tokenizer-DI16x16 \
+  --local-dir pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16
+```
 Full Milestone I unimodal RGB run (135M, R=3, middle_cycle, expert-choice router):
 
 ```bash

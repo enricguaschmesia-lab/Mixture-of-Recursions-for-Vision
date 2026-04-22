@@ -65,6 +65,7 @@ class MoRLayerOutputWithPast(ModelOutput):
     hidden_state: Optional[torch.FloatTensor] = None
     attention_weights: Optional[torch.FloatTensor] = None
     selected_tokens: Optional[torch.FloatTensor] = None
+    token_expert_indices: Optional[torch.LongTensor] = None   
     sampling_loss: Optional[torch.FloatTensor] = None
     sampling_acc: Optional[torch.FloatTensor] = None
     sampling_topk_acc: Optional[torch.FloatTensor] = None
