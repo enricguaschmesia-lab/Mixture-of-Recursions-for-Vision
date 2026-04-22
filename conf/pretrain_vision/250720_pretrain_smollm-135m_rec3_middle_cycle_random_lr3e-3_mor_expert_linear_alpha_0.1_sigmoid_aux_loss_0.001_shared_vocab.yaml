@@ -1,0 +1,151 @@
+# === Run identity ===
+name: 251020_pretrain_smollm-135m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001_clevr_rgb
+wandb: true
+wandb_mode: online
+wandb_entity: ${oc.env:WANDB_ENTITY}
+wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
+wandb_run_name: null
+wandb_run_id: null   # Generate a fresh one with: python util/generate_wandb_run_id.py
+output_dir: null
+tensorboard: false
+tensorboard_dir: null
+
+# === Resume ===
+resume_from_checkpoint: false
+resume_step: null
+
+# === Dataset (vision PoC) ===
+dataset: clevr_multimodal
+multimodal:
+  split: train
+  active_modalities: ['tok_rgb@256']
+  modality_order: fixed
+  sample_from_k_augmentations: 10
+
+weights: null
+
+# === Batching ===
+# Each sample is 258 tokens (BO + 256 + EO). 
+# total_batch_size=256 → ~66K tokens/step, conservative for a PoC.
+# For debug on 1 GPU: per_device_train_batch_size=32, grad_accum=8 → 256 effective batch.
+# For multi-node (2 nodes × 2 GPUs = 4 GPUs): per_device=32, grad_accum=2 → 256 effective.
+total_batch_size: 256
+per_device_train_batch_size: 32
+gradient_accumulation_steps: null   # Auto-computed by preprocess_config
+batch_size_rampup_steps: null
+
+# === Sequence length ===
+# <BO_rgb> + 256 Cosmos tokens + <EO_rgb> = 258. No text modality → no padding.
+max_length: 258
+
+add_bos_token: false
+global_shuffling: false
+local_shuffling: false
+
+# === Tokenizer (unused by multimodal branch but still loaded) ===
+tokenizer: smollm
+
+# === Model ===
+model: smollm
+model_name_or_path: HuggingFaceTB/SmolLM-135M
+model_config:
+  # Override from 30 → 29 so (num_hidden_layers - 2) is divisible by num_recursion=3.
+  num_hidden_layers: 29
+  # Override vocab to match our unified multimodal vocab.
+  # From multimodal_vocab.TOTAL_VOCAB_SIZE with full reserved layout and shared text codebook:
+  # 3 × 64000 (image) + 50260 (text) + 10 (BO/EO) + 1 (PAD) = 242271
+  vocab_size: 242271
+attn_implementation: sdpa
+use_pretrained_weights: false
+
+# === MoR recursion config (unchanged) ===
+recursive:
+  enable: true
+  base_depth: null
+  num_recursion: 3
+  sharing: middle_cycle
+  ln_share: true
+  initialization: random
+
+kv_sharing:
+  enable: false
+  base_depth: null
+  num_recursion: null
+  sharing: null
+
+relaxation:
+  enable: false
+  skip_first_loop: false
+  method: lora
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.1
+    target_modules:
+    - q_proj
+    - v_proj
+    rank_pattern: null
+    alpha_pattern: 2.0
+    svd_init: false
+  prompt:
+    len: 16
+
+mor:
+  enable: true
+  type: expert
+  capacity: null   # Auto-generated as "1.0,0.6667,0.3333" for num_recursion=3
+  rand_router: false
+  router_type: linear
+  z_loss: false
+  z_coeff: 0.001
+  temp: 1.0
+  expert:
+    cap_warmup_step: 0
+    router_func: sigmoid
+    alpha: 0.1
+    sampling: aux_loss
+    include_first: true
+    coeff: 0.001
+    gating: weighted
+  token:
+    router_func: sigmoid
+    alpha: 0.1
+    balancing: loss
+    coeff: 0.001
+    u: 0.001
+    gating: weighted
+
+# === Training schedule (PoC) ===
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 780   # 20% of training
+  decay_type: linear
+learning_rate: 0.003
+adam_beta1: 0.9
+adam_beta2: 0.95
+weight_decay: 0.1
+precision: bf16
+max_grad_norm: 1.0
+# steps_per_epoch = Dataset_size (our case 50k) / 256 = 195.3 → round to 195
+# Number of training steps = steps_per_epoch x num_epochs = 195 x 20 = 3900
+num_train_steps: 3900
+stop_steps: 3900
+# 5% of 3900 = 195 steps -> warmup to 0.003 in first epoch, then decay for remaining 19 epochs.
+num_warmup_steps: 195    # 5% of training
+save_interval: 0.1       # Save every 548 steps (10 times total)
+save_steps: null
+fixed_save_steps: null
+save_total_limit: null
+logging_steps: 50
+dataloader_num_workers: 4
+gradient_checkpointing: false
+deepspeed: ds_configs/stage2.config
+
+# === Eval (disabled; lm_eval harness doesn't apply to vision) ===
+evaluation:
+  enable: false
+  eval_steps: 5
+  batch_size: 16
+  tasks: lambada_openai,hellaswag,piqa,winogrande,arc_easy,arc_challenge,openbookqa,mmlu,mmlu_continuation,truthfulqa
+  device: null
+  num_fewshot: null

@@ -1,105 +1,52 @@
 import os
-import json
-import warnings
 
-import torch
-from datasets import load_dataset, interleave_datasets
-
-from lm_dataset.language_modeling_dataset import LanguageModelingDataset
-from lm_dataset.tokenized_dataset import TokenizedCorpusDataset
-from lm_dataset.data_preprocessing import AddLabels, RemoveIndex
-from paths import DATA_DIR
+from lm_dataset.multimodal_tokenized_dataset import MultimodalTokenizedDataset
+from paths import PROJECT_ROOT
 
 num_proc = 24
 
-# arguments for the load_dataset function
-LM_DATASETS = {
-    "slimpajama": {"path": f"{DATA_DIR}/slimpajama", "split": "train"},
-    "slimpajama_chunk1": {"path": "json", "data_files": f"{DATA_DIR}/slimpajama_chunk1/*.jsonl", "split": "train"},
-    "cosmopedia": {"path": f"{DATA_DIR}/cosmopedia-v2", "split": "train"},
-    "fineweb_edu": {"path": f"{DATA_DIR}/fineweb-edu-dedup", "split": "train"},
-    "fineweb_test": {"path": f"{DATA_DIR}/fineweb-test", "split": "train"},
-    "python_edu": {"path": f"{DATA_DIR}/python-edu", "split": "train"},
-    "open_web_math": {"path": f"{DATA_DIR}/open-web-math", "split": "train"}, 
-    "math_code_pile": {"path": f"{DATA_DIR}/math-code-pile", "split": "train"}, 
-    "starcoderdata": {"path": f"{DATA_DIR}/starcoderdata", "split": "train"},  # "data_dir": "python", 
-    "finemath": {"path": f"{DATA_DIR}/finemath", "split": "train"},  # "name": "finemath-4plus", 
-}
 
-# tokenizer used for pre-tokenization
-TOKENIZED_DATASETS = {
-    "pythia_pile": "pythia",  
+# Root of the pre-tokenized CLEVR dataset (expects <root>/<split>/<modality>/<stem>.{npy,json}).
+# Override per-machine via: export CLEVR_ROOT=/path/to/clevr_dataset
+CLEVR_ROOT = os.environ.get("CLEVR_ROOT", os.path.join(PROJECT_ROOT, "data", "clevr_dataset"))
+
+MULTIMODAL_DATASETS = {
+    "clevr_multimodal": {
+        "root_dir": CLEVR_ROOT,
+    },
 }
 
 
-def load_dataset_from_config(cfg, tokenizer):
-    dataset_name = cfg.dataset.split(',')
-    dataset_name = [ds.strip() for ds in dataset_name]
-    if len(dataset_name) > 1:
-        assert all(ds in LM_DATASETS for ds in dataset_name), "Only LM datasets can be combined"
-        assert "weights" in cfg, "When combining datasets, weights must be provided"
-        assert len(dataset_name) == len(cfg.weights.split(',')), "Number of weights must match number of datasets"
-    
-    if all(ds in LM_DATASETS for ds in dataset_name):
-        dataset_type = "lm"
-        # if "redpajama" in cfg.dataset and cfg.get("redpajama_path"):
-        #     os.environ["RED_PAJAMA_DATA_DIR"] = cfg.redpajama_path
-        # if "dolma" in cfg.dataset and cfg.get("dolma_path"):
-        #     os.environ["DATA_DIR"] = cfg.dolma_path
-        
-        train_dataset = []
-        for ds in dataset_name:
-            _dataset = load_dataset(**LM_DATASETS[ds], streaming=True)
-            if ds == "starcoderdata":
-                # train_dataset.append(load_dataset(**LM_DATASETS[ds], num_proc=num_proc))
-                # train_dataset[-1] = train_dataset[-1].map(download_contents, input_columns="blob_id", num_proc=num_proc)
-                # train_dataset[-1] = train_dataset[-1].filter(lambda x: x["download_success"], num_proc=num_proc)
-                _dataset.rename_column("content", "text")
-            # if ds == "python_edu":
-            #     dataset_text_field.append("blob_id")
-            train_dataset.append(_dataset)
-        
-        if len(train_dataset) == 1:
-            train_dataset = train_dataset[0]
-        else:
-            train_dataset = interleave_datasets(train_dataset, probabilities=cfg.weights.split(','), seed=42)
-        
-    elif all(ds in TOKENIZED_DATASETS for ds in dataset_name):
-        dataset_type = "token"
-        # check if tokenizer used by dataset is compatible with the one specified in config
-        if "tokenizer" in cfg:
-            tokenizer_used = TOKENIZED_DATASETS[cfg.dataset]
-            if cfg.tokenizer != tokenizer_used:
-                raise ValueError(f"Tokenizer {cfg.tokenizer} is not compatible with dataset {cfg.dataset}")
+def load_dataset_from_config(cfg):
+    dataset_name = [ds.strip() for ds in cfg.dataset.split(',')]
 
-        # load corpus
-        if cfg.dataset == "pythia_pile":
-            from lm_dataset.tokenized_dataset import PythiaPileTokenizedCorpus
-            corpus = PythiaPileTokenizedCorpus(os.path.join(DATA_DIR, "pythia_pile_idxmaps"))
+    # Multimodal branch is ours
+    if all(ds in MULTIMODAL_DATASETS for ds in dataset_name):
+        if len(dataset_name) > 1:
+            raise ValueError("Multimodal datasets cannot be combined via comma-separated list.")
+        ds_name = dataset_name[0]
+        ds_cfg = MULTIMODAL_DATASETS[ds_name]
 
-    else:
-        raise ValueError(f"Unknown dataset: {cfg.dataset}")
-    
-    transforms = [
-        AddLabels(),
-        RemoveIndex(),
-    ]
-    
-    if dataset_type == "lm":
-        return LanguageModelingDataset(train_dataset, tokenizer, 
-                                       max_length=cfg.max_length,
-                                       transforms=transforms, 
-                                       global_shuffling=cfg.get("global_shuffling", False),
-                                       local_shuffling=cfg.get("local_shuffling", False),
-                                       add_bos_token=cfg.get("add_bos_token", False),)
-    
-    elif dataset_type == "token":
-        if cfg.dataloader_num_workers <= 1:
-            warnings.warn(f"Using cfg.dataloader_num_workers={cfg.dataloader_num_workers} with TokenizedCorpusDataset."
-                          f"You may want to increase this number to speed up data loading.")
-        return TokenizedCorpusDataset(corpus, length=cfg.max_length, eos_token=tokenizer.eos_token_id,
-                                      add_bos_token=cfg.get("add_bos_token", False),
-                                      bos_token=tokenizer.bos_token_id, transforms=transforms,)    
-      
-    else:
-        raise ValueError(f"Unknown dataset type: {dataset_type}")
+        mm_cfg = cfg.get("multimodal", {})
+        active_modalities = list(mm_cfg.get("active_modalities", ["tok_rgb@256"]))
+        modality_order = mm_cfg.get("modality_order", "fixed")
+        sample_from_k = mm_cfg.get("sample_from_k_augmentations", 10)
+        text_tokenizer_path = mm_cfg.get("text_tokenizer_path", "gpt2")
+        text_max_length = mm_cfg.get("text_max_length", 64)
+
+        return MultimodalTokenizedDataset(
+            root_dir=ds_cfg["root_dir"],
+            split=mm_cfg.get("split", "train"),
+            active_modalities=active_modalities,
+            max_length=cfg.max_length,
+            modality_order=modality_order,
+            sample_from_k_augmentations=sample_from_k,
+            text_tokenizer_path=text_tokenizer_path,
+            text_max_length=text_max_length,
+        )
+
+
+    raise ValueError(
+        f"Unknown dataset(s): {dataset_name}. "
+        f"Known: {list(MULTIMODAL_DATASETS.keys())}"
+    )

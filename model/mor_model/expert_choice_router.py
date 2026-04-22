@@ -252,8 +252,11 @@ class MoRLlamaDecoderLayer(nn.Module):
                     mask_rows_selected = torch.gather(attention_mask, 2, row_indices)
                     col_indices = selected_tokens.unsqueeze(1).transpose(2, 3).expand(bs, 1, top_k, top_k)
                     attention_mask = torch.gather(mask_rows_selected, 3, col_indices)
-                elif attention_mask.dim() == 2: # TODO
-                    raise NotImplementedError("Attention mask is not implemented for inference phase of MoR")
+                elif attention_mask.dim() == 2:
+                    # Padding-mask (B, N) -> gather columns for the selected token positions -> (B, top_k).
+                    # This branch fires during generation/inference with padding-aware attention;
+                    # training with SDPA always produces a 4D causal mask above.
+                    attention_mask = torch.gather(attention_mask, 1, selected_tokens.squeeze(-1))
                 else: 
                     raise NotImplementedError("Attention mask has unexpected dimensions")
             

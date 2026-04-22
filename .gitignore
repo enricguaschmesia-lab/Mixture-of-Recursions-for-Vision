@@ -204,3 +204,7 @@ hf_models/
 *.csv
 outputs
 smollm-135m-config
+smollm-135m-config/
+outputs
+data/
+wandb/

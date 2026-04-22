@@ -164,6 +164,9 @@ def selection_initialize(cfg, model):
             src_idxs = range(model.config.num_hidden_layers - base_depth - 1, model.config.num_hidden_layers - 1)
                     
     elif init_strategy == "random":
+        #! Here we select randomly the layers that will be used as source for the initialization, so we can have a random sharing strategy.
+        #! The only constraint is that the number of layers selected should be equal to the base depth, so that we can apply the sharing strategy correctly. 
+        #! We also need to make sure that the selected layers are distinct, so we don't initialize multiple layers with the same source layer. For middle_cycle and middle_sequence we need to make sure that we don't select the first and last layer, since they are not shared.
         if sharing_strategy in ["cycle", "sequence"]:
             src_idxs = sorted(np.random.choice(model.config.num_hidden_layers, base_depth, replace=False))
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
@@ -252,8 +255,10 @@ def sharing_strategy(cfg, model):
                 model.config.num_hidden_layers = base_depth * num_recursion
                 
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
-            base_depth = int((model.config.num_hidden_layers - 2) // num_recursion)
+            base_depth = int((model.config.num_hidden_layers - 2) // num_recursion) #! here we calculate the number of block that each recursion will have.
+            #! We have minus 2 since we have the first and last layer that are not shared.
             if base_depth * num_recursion != model.config.num_hidden_layers - 2:
+                #! I handled in the confi, in fact compared to the smollm I define hidden layers to be 29 instead of 30.
                 warnings.warn("Total number of layers should be divisible by num_recursion. Adjusting the number of layers.")
                 indices = [round(i) for i in np.linspace(1, model.config.num_hidden_layers - 2, base_depth * num_recursion)]
                 model.model.layers = nn.ModuleList([model.model.layers[0]] + [model.model.layers[idx] for idx in indices] + [model.model.layers[-1]])
@@ -272,7 +277,7 @@ def sharing_strategy(cfg, model):
             model.model.layers = model.model.layers[::step]
         model.config.num_hidden_layers = base_depth
     else:    
-        for layer_idx in range(base_depth):
+        for layer_idx in range(base_depth): #! Here the sharing strategy is applied
 
             if sharing_strategy == "cycle":
                 idxs = [layer_idx + rec * base_depth for rec in range(num_recursion)]
@@ -286,6 +291,8 @@ def sharing_strategy(cfg, model):
                 raise ValueError(f"Invalid sharing strategy: {sharing_strategy}")
 
             # Self Attention
+            #! Here we share the weigths of the self attention layers, so we set the weights of the target layers to be the same as the sourse layers. 
+            #! We also store the difference between the original weights and the new weights in the lora_init_dict, so we can use it to initialize the LoRA layers later.
             keys = ["q_proj", "k_proj", "v_proj", "o_proj"]
             for key in keys:
                 ref_weights = getattr(model.model.layers[idxs[0]].self_attn, key).weight
@@ -310,4 +317,11 @@ def sharing_strategy(cfg, model):
                     for idx in idxs[1:]:
                         getattr(model.model.layers[idx], key).weight = ref_weights #[key]
     
+            """After this stage we have:
+            1 unique first layer (not shared)
+            9 unique middle layers
+            1 unique last layer (not shared)
+            Each of the 9 unique middle layers is shared across the recursions according to the sharing strategy, so if we have 3 recursions we will have 3 layers with the same weights for each of the 9 unique middle layers. 
+            The total number of unique layers is 11. The total number of layers is 29, so we have a downscaling factor of 29/11 = 2.63x."""
+            
     return model, lora_init_dict
