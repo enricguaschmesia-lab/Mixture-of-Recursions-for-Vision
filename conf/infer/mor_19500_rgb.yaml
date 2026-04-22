@@ -24,6 +24,10 @@ infer:
   cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16      # e.g. "nvidia/Cosmos-0.1-Tokenizer-DI16x16" to decode PNG
   patch_grid_size: 16          # sqrt(num_image_tokens); 16 for tok_rgb@256 (16×16=256)
 
+  # Depth overlay (MoR expert-choice only): save a heatmap of per-token exit depth
+  save_depth_overlay: true     # false to skip the extra forward pass and PNG writes
+  depth_overlay_alpha: 0.45    # blend strength between decoded image and depth heatmap
+
   # Sampling — default is greedy (do_sample=false, temperature=1.0)
   # Set temperature != 1.0 or top_k/top_p != defaults to enable sampling automatically.
   temperature: 1.0

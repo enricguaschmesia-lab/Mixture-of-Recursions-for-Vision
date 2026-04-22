@@ -51,7 +51,7 @@ from model.util import load_model_from_config, load_checkpoint
 from model.sharing_strategy import SHARING_STRATEGY
 from util.config import preprocess_config
 from lm_dataset.multimodal_vocab_shared_caption_scene_desc import MODALITIES, PAD_ID
-from visualization.decode import decode_output
+from visualization.decode import decode_output, save_depth_overlay, OUTPUT_DIR
 
 
 class EoModStopping(StoppingCriteria):
@@ -174,13 +174,55 @@ def main(cfg: DictConfig):
 
     new_tokens = out[0, prompt_len:].cpu()
     print(f"Generated {len(new_tokens)} token(s).")
-    decode_output(
+    image, timestamp = decode_output(
         new_tokens,
         icfg.generate_modality,
         cosmos_model_path=icfg.cosmos_model_path,
         patch_grid_size=icfg.patch_grid_size,
         device=icfg.device,
     )
+
+    # Depth overlay: collect each MoR expert-choice layer's selected_tokens via
+    # forward hooks, then run one no-cache pass over the full generated sequence.
+    want_overlay = (
+        icfg.get("save_depth_overlay", False)
+        and "mor" in cfg and cfg.mor.get("enable")
+        and cfg.mor.get("type") == "expert"
+        and target_info.data_type == "tokens"
+    )
+    if want_overlay:
+        mor_selected: list = []
+
+        def _hook(_module, _inputs, output):
+            sel = getattr(output, "selected_tokens", None)
+            if sel is not None:
+                mor_selected.append(sel.detach().cpu())
+
+        handles = [m.register_forward_hook(_hook)
+                   for m in model.modules() if getattr(m, "mor", False)]
+        try:
+            with torch.no_grad():
+                model(input_ids=out, use_cache=False)
+        finally:
+            for h in handles:
+                h.remove()
+
+        bo_positions = (out[0] == target_info.bo_id).nonzero(as_tuple=False)
+        if len(bo_positions) == 0:
+            print("  [warn] depth overlay skipped: no BO token found in output.")
+        else:
+            bo_idx = int(bo_positions[0].item())
+            start = bo_idx + 1
+            end = start + icfg.patch_grid_size * icfg.patch_grid_size
+            save_depth_overlay(
+                image=image,
+                selected_tokens_per_layer=mor_selected,
+                image_token_slice=(start, end),
+                patch_grid_size=icfg.patch_grid_size,
+                out_dir=OUTPUT_DIR,
+                timestamp=timestamp,
+                alpha=icfg.get("depth_overlay_alpha", 0.45),
+            )
 
 
 if __name__ == "__main__":
