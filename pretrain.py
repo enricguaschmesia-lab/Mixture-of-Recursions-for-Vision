@@ -35,7 +35,7 @@ from model.sharing_strategy import SHARING_STRATEGY
 from util.config import preprocess_config
 from util.tokenizer import load_tokenizer_from_config 
 from util.trainer_pt import MoRTrainer
-from util.callback import FixedStoppingCallback, PeftSaveCallback, ScalingLawsSaveCallback
+from util.callback import FixedStoppingCallback, ScalingLawsSaveCallback, MultimodalVisionEvalCallback
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
 
 @hydra.main(config_path="conf/pretrain_vision", config_name="smoke_50steps", version_base=None)
@@ -143,7 +143,8 @@ def main(cfg: DictConfig):
     ds_names = [ds.strip() for ds in cfg.dataset.split(',')]
     if all(ds in MULTIMODAL_DATASETS for ds in ds_names):
         # Map-style dataset; no per-iteration state to save. Resume restarts at epoch boundary.
-        pass
+        if cfg.get("vision_eval") and cfg.vision_eval.get("enable"):
+            callbacks.append(MultimodalVisionEvalCallback(cfg))
 
 
     if fixed_save_steps is not None:

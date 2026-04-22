@@ -253,15 +253,10 @@ class MoRLlamaDecoderLayer(nn.Module):
                     col_indices = selected_tokens.unsqueeze(1).transpose(2, 3).expand(bs, 1, top_k, top_k)
                     attention_mask = torch.gather(mask_rows_selected, 3, col_indices)
                 elif attention_mask.dim() == 2:
-                    # Padding-mask (B, N) reindexing for MoR subselection is not yet implemented.
-                    # This branch fires only during generation/inference with padding-aware attention
-                    # implementations. Training with FlashAttention/SDPA uses the 4D branch above.
-                    # When implementing: gather along the sequence dim using selected_tokens.squeeze(-1)
-                    # to produce a (B, top_k) mask consistent with the subselected token set.
-                    raise NotImplementedError(
-                        "2D attention mask + MoR subselection not implemented. "
-                        "See comment above for implementation sketch."
-                    )
+                    # Padding-mask (B, N) -> gather columns for the selected token positions -> (B, top_k).
+                    # This branch fires during generation/inference with padding-aware attention;
+                    # training with SDPA always produces a 4D causal mask above.
+                    attention_mask = torch.gather(attention_mask, 1, selected_tokens.squeeze(-1))
                 else: 
                     raise NotImplementedError("Attention mask has unexpected dimensions")
             

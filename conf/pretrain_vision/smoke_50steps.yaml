@@ -30,7 +30,7 @@ weights: null
 # For debug on 1 GPU: per_device_train_batch_size=32, grad_accum=8 → 256 effective batch.
 # For multi-node (2 nodes × 2 GPUs = 4 GPUs): per_device=32, grad_accum=2 → 256 effective.
 total_batch_size: 256
-per_device_train_batch_size: 32
+per_device_train_batch_size: 16
 gradient_accumulation_steps: null   # Auto-computed by preprocess_config
 batch_size_rampup_steps: null
 
@@ -119,3 +119,15 @@ logging_steps: 10
 dataloader_num_workers: 4
 gradient_checkpointing: false
 deepspeed: ds_configs/stage2.config
+
+# === Vision eval: per-patch recursion heatmap ===
+# Runs every eval_epoch_interval epochs. Decodes 2 val images with Cosmos if
+# cosmos_model_path is set, otherwise shows a normalised token-ID grid.
+# To enable Cosmos: pip install cosmos-tokenizer and point cosmos_model_path to
+# a CausalVideoTokenizer checkpoint (e.g. "nvidia/Cosmos-Tokenizer-DI8x8").
+vision_eval:
+  enable: true
+  eval_epoch_interval: 10      # visualise every 10 epochs (~1950 steps)
+  num_val_samples: 2
+  patch_grid_size: 16          # 16×16 = 256 tokens for tok_rgb@256
+  cosmos_model_path: null      # set to enable Cosmos RGB decode
