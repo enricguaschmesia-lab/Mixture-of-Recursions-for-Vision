@@ -34,7 +34,7 @@ TOKENIZED_DATASETS = {
 # Multimodal datasets (CLEVR: per-modality tokenized .npy / .json files)
 MULTIMODAL_DATASETS = {
     "clevr_multimodal": {
-        "root_dir": f"{MULTIMODAL_DATA_DIR}/clevr_com_304",
+        "root_dir": "/home/gianfranco/projects/2025/Visual_Intelligence_Project/Dataset/clevr_com_304",
     },
 }
 
