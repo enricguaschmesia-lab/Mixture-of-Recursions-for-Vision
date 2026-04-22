@@ -9,7 +9,7 @@ from lm_dataset.language_modeling_dataset import LanguageModelingDataset
 from lm_dataset.tokenized_dataset import TokenizedCorpusDataset
 from lm_dataset.data_preprocessing import AddLabels, RemoveIndex
 from lm_dataset.multimodal_tokenized_dataset import MultimodalTokenizedDataset
-from paths import DATA_DIR
+from paths import DATA_DIR,MULTIMODAL_DATA_DIR
 
 num_proc = 24
 
@@ -34,7 +34,7 @@ TOKENIZED_DATASETS = {
 # Multimodal datasets (CLEVR: per-modality tokenized .npy / .json files)
 MULTIMODAL_DATASETS = {
     "clevr_multimodal": {
-        "root_dir": "/home/gianfranco/projects/2025/Visual_Intelligence_Project/Dataset/clevr_com_304",
+        "root_dir": f"{MULTIMODAL_DATA_DIR}/clevr_com_304",
     },
 }
 

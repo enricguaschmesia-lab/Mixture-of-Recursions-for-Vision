@@ -14,3 +14,6 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "hf_datasets")
 
 # directory for model checkpoints from huggingface (for distillation and other purposes)
 MODEL_DIR = os.path.join(PROJECT_ROOT, "hf_models")
+
+# directory for multimodal datasets (symlink: ln -s /actual/data/path multimodal_datasets)
+MULTIMODAL_DATA_DIR = os.path.join(PROJECT_ROOT, "multimodal_datasets")
