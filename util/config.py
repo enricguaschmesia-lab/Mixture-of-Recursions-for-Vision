@@ -71,9 +71,9 @@ def preprocess_config(cfg: DictConfig):
         print(f"Setting output_dir  : {cfg.name}")
         cfg.output_dir = cfg.name
     
-    if check_saved_checkpoint(cfg, SAVE_DIR):
+    if cfg.get("resume_from_checkpoint") and check_saved_checkpoint(cfg, SAVE_DIR):
         cfg.resume_from_checkpoint = True
-        warnings.warn("Resume from latest checkpoint. If you want to train from scratch, please delete the checkpoint directory.")
+        warnings.warn("Resume from latest checkpoint. Set resume_from_checkpoint: false to train from scratch.")
         
     if cfg.get("num_warmup_steps") is None:
         warning = "num_warmup_steps not found in config, setting to 5% of num_train_steps"

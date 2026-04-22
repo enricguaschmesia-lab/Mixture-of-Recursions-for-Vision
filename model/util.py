@@ -70,6 +70,13 @@ def load_model_from_config(cfg: DictConfig):
             torch_dtype=torch_dtype,
             local_files_only=local_files_only,
         )
+        # Workaround for transformers 4.52.4 + newer SmolLM configs:
+    # the tp_plan validation path iterates over ALL_PARALLEL_STYLES which
+    # can be None in some torch/accelerate combinations. We don't use
+    # tensor parallelism, so drop the field.
+        if hasattr(config, 'base_model_tp_plan'):
+            config.base_model_tp_plan = None
+
         
         if cfg.get("model_config") is not None:
             print("Using custom config for vanilla model...")
