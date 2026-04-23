@@ -95,37 +95,54 @@ class MoRLlamaDecoderLayer(nn.Module):
         new_bs, new_seq_len, _ = batched_x.shape
         bs, seq_len, _ = x.shape
                 
-        new_attention_mask = torch.zeros(
-            (new_bs, new_seq_len),
-            dtype=x.dtype,
-            device=x.device,
-        )
-        for b in range(new_bs):
-            indices = selected_seq_indices[b]
-            s = indices.numel()
-            
-            new_attention_mask[b, :s] = 1
-            
-        if attention_mask is not None: 
-            if attention_mask.dim() == 4:
-                new_attention_mask = torch.ones(
-                    (new_bs, 1, new_seq_len, new_seq_len),
-                    dtype=attention_mask.dtype,
-                    device=attention_mask.device,
-                ) * torch.finfo(attention_mask.dtype).min
-                
-                for b in range(new_bs):
-                    indices = selected_seq_indices[b]
-                    s = indices.numel()
-                    
-                    _mask = torch.gather(attention_mask, 2, indices.view(1, 1, s, 1).expand(bs, 1, s, seq_len))
-                    _mask = torch.gather(_mask, 3, indices.view(1, 1, 1, s).expand(bs, 1, s, s))
-                    new_attention_mask[b, :, :s, :s] = _mask                
-            elif attention_mask.dim() == 2:
-                pass
-            else: 
-                raise NotImplementedError("Attention mask has unexpected dimensions")
-        
+        dtype = x.dtype
+        min_val = torch.finfo(dtype).min
+
+        def _build_causal_padding_mask():
+            """4D causal mask that also zeroes out padded positions per sample."""
+            mask = torch.full(
+                (new_bs, 1, new_seq_len, new_seq_len),
+                min_val, dtype=dtype, device=x.device,
+            )
+            for b in range(new_bs):
+                s = selected_seq_indices[b].numel()
+                tri = torch.triu(
+                    torch.ones((s, s), dtype=torch.bool, device=x.device), diagonal=1,
+                )
+                block = torch.zeros((s, s), dtype=dtype, device=x.device).masked_fill(tri, min_val)
+                mask[b, 0, :s, :s] = block
+            return mask
+        if attention_mask is None:
+            # SDPA's "ignore causal mask" optimization returned None for no-padding training.
+            # Token-choice produces ragged batches, so we must build a 4D causal+padding mask.
+            new_attention_mask = _build_causal_padding_mask()
+        elif attention_mask.dim() == 4:
+            new_attention_mask = torch.full(
+                (new_bs, 1, new_seq_len, new_seq_len),
+                torch.finfo(attention_mask.dtype).min,
+                dtype=attention_mask.dtype, device=attention_mask.device,
+            )
+            for b in range(new_bs):
+                indices = selected_seq_indices[b]
+                s = indices.numel()
+                _mask = torch.gather(
+                    attention_mask, 2,
+                    indices.view(1, 1, s, 1).expand(bs, 1, s, seq_len),
+                )
+                _mask = torch.gather(
+                    _mask, 3,
+                    indices.view(1, 1, 1, s).expand(bs, 1, s, s),
+                )
+                new_attention_mask[b, :, :s, :s] = _mask
+
+        elif attention_mask.dim() == 2:
+            # Proper handling for 2D padding masks (was previously `pass`).
+            new_attention_mask = _build_causal_padding_mask()
+
+        else:
+            raise NotImplementedError("Attention mask has unexpected dimensions")
+
+
         new_position_ids = None
         if position_ids is not None:
             new_position_ids = torch.arange(new_seq_len, dtype=torch.long, device=x.device).unsqueeze(0).to(position_ids.device)
@@ -318,6 +335,7 @@ class MoRLlamaDecoderLayer(nn.Module):
             hidden_state=final_x,
             attention_weights=outputs[1:],
             selected_tokens=None,
+            token_expert_indices=top_expert_indices.detach(),
             sampling_loss=None,
             sampling_acc=None,
             sampling_topk_acc=None,

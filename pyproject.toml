@@ -20,11 +20,13 @@ dependencies = [
     "numpy>=1.24,<2.0",
     "pillow>=10.0",
     "huggingface_hub>=0.20,<1.0",
+    "cosmos-tokenizer",
 ]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }
 torchvision = { index = "pytorch-cu124" }
+cosmos-tokenizer = { git = "https://github.com/NVIDIA/Cosmos-Tokenizer" }
 
 [[tool.uv.index]]
 name = "pytorch-cu124"

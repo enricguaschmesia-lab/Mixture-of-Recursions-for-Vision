@@ -2,10 +2,15 @@ import os
 
 import pickle
 
+import warnings
+import wandb
+
 import torch
+import numpy as np
 from transformers import TrainerCallback, TrainingArguments, TrainerState, TrainerControl
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from transformers.trainer_callback import CallbackHandler
+from paths import PROJECT_ROOT
 
 
 class FixedStoppingCallback(TrainerCallback):
@@ -138,7 +143,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
         self._last_eval_epoch = -1
         self._val_dataset = None
         self._text_tok = None
-
+        self._cosmos_decoder = None
     def _get_val_dataset(self):
         if self._val_dataset is not None:
             return self._val_dataset
@@ -180,9 +185,12 @@ class MultimodalVisionEvalCallback(TrainerCallback):
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
             import numpy as np
-        except ImportError:
-            warnings.warn("[MultimodalVisionEvalCallback] matplotlib not installed; skipping.")
-            return
+        except Exception as exc:
+            import traceback, sys
+            print(f"[MultimodalVisionEvalCallback] Cosmos decode failed: {exc}", file=sys.stderr, flush=True)
+            traceback.print_exc()
+            return None
+
 
         from lm_dataset.multimodal_vocab_shared_caption_scene_desc import get_modality
         mm_cfg = self.cfg.get("multimodal", {})
@@ -198,16 +206,20 @@ class MultimodalVisionEvalCallback(TrainerCallback):
         input_ids = torch.stack([s["input_ids"] for s in samples]).to(device)
         attention_mask = torch.stack([s["attention_mask"] for s in samples]).to(device)
 
-        # Hook every expert-MoR layer to capture selected_tokens per recursion.
-        # Token-choice MoR uses a different selection mechanism; we record it via the
-        # same hook since MoRLayerOutputWithPast always carries selected_tokens.
+        # Capture routing decisions from each MoR layer.
+        # Expert-choice populates `selected_tokens` ([bs, top_k, 1]) once per recursion wrapper.
+        # Token-choice populates `token_expert_indices` ([bs, seq_len]) once per forward.
         selected_tokens_list = []
+        token_expert_indices_list = []
+
         hooks = []
         for layer in m.model.layers:
             if getattr(layer, "mor", False):
-                def _hook(module, inp, out, _lst=selected_tokens_list):
+                def _hook(module, inp, out, _sel=selected_tokens_list, _tei=token_expert_indices_list):
                     if getattr(out, "selected_tokens", None) is not None:
-                        _lst.append(out.selected_tokens.detach().cpu())
+                        _sel.append(out.selected_tokens.detach().cpu())
+                    if getattr(out, "token_expert_indices", None) is not None:
+                        _tei.append(out.token_expert_indices.detach().cpu())
                 hooks.append(layer.register_forward_hook(_hook))
 
         model.eval()
@@ -217,14 +229,34 @@ class MultimodalVisionEvalCallback(TrainerCallback):
             h.remove()
         model.train()
 
-        # Build per-position recursion-count map  [n, seq_len]
+
+        # Build per-position recursion-count map  [n, seq_len].
+        # Semantics: count_map[b, t] = number of recursion passes token t underwent in sample b.
+        # Both branches produce values in {1, ..., Nr} for active tokens (and 0 if never selected,
+        # which can happen under expert-choice but not under token-choice).
         seq_len = input_ids.shape[1]
         count_map = torch.zeros(n, seq_len)
-        for st in selected_tokens_list:          # st: [n, top_k, 1]
-            st_flat = st.squeeze(-1)             # [n, top_k]
-            for b in range(n):
-                count_map[b].scatter_add_(0, st_flat[b], torch.ones(st_flat.shape[1]))
 
+        if len(token_expert_indices_list) > 0:
+            # ---- Token-choice branch ----
+            # Each token commits to one depth index i in {0, ..., Nr-1}, meaning i+1 recursions.
+            # If multiple token-choice wrappers exist (e.g. per-modality routers in Milestone II),
+            # we take the last non-zero assignment per position; adapt here if you split by modality.
+            tei = token_expert_indices_list[-1]   # [n, seq_len], long tensor
+            count_map = (tei + 1).float()
+        elif len(selected_tokens_list) > 0:
+            # ---- Expert-choice branch (original logic) ----
+            for st in selected_tokens_list:           # st: [n, top_k, 1]
+                st_flat = st.squeeze(-1)              # [n, top_k]
+                for b in range(n):
+                    count_map[b].scatter_add_(0, st_flat[b], torch.ones(st_flat.shape[1]))
+        else:
+            warnings.warn(
+                "[MultimodalVisionEvalCallback] No routing info captured from MoR layers; "
+                "count_map will be all zeros. Check that the model actually has MoR layers "
+                "and that the router populates `selected_tokens` or `token_expert_indices`."
+            )
+            
         ids_cpu = input_ids.cpu()
 
         n_rows = n * n_mods
@@ -293,26 +325,53 @@ class MultimodalVisionEvalCallback(TrainerCallback):
             )
 
     def _plot_image_modality(self, ax_row, mod_name, sample_idx, raw_tokens, body_counts, plt):
-        """Two panels for an image modality: token-ID grid (or Cosmos decode) + 2D heatmap."""
+        """Two panels: (left) clean Cosmos reconstruction, (right) reconstruction + recursion overlay."""
         import numpy as np
+        from matplotlib.colors import BoundaryNorm, ListedColormap
+        
+        # ---- Base image: Cosmos decode, or normalised token-ID grid as fallback ----
         decoded = self._try_decode_cosmos(
             torch.from_numpy(raw_tokens).long().unsqueeze(0)
         )
         if decoded is not None:
-            ax_row[0].imshow(np.clip(decoded[0], 0.0, 1.0))
-            ax_row[0].set_title(f"[{mod_name}] Cosmos decoded (sample {sample_idx})")
+            base_img = np.clip(decoded[0], 0.0, 1.0)        # [H, W, 3]
+            base_label = f"[{mod_name}] Cosmos reconstruction (sample {sample_idx})"
         else:
-            tg = raw_tokens.astype(float).reshape(self.patch_grid_size, self.patch_grid_size)
-            tg = (tg - tg.min()) / (tg.max() - tg.min() + 1e-8)
-            ax_row[0].imshow(tg, cmap="viridis")
-            ax_row[0].set_title(f"[{mod_name}] Token-ID grid (sample {sample_idx})")
+            g = raw_tokens.astype(float).reshape(self.patch_grid_size, self.patch_grid_size)
+            g = (g - g.min()) / (g.max() - g.min() + 1e-8)
+            base_img = np.stack([g, g, g], axis=-1)          # grayscale -> RGB for consistency
+            base_label = f"[{mod_name}] Token-ID grid (sample {sample_idx})"
+
+        H_img, W_img = base_img.shape[:2]
+        extent = [0, W_img, H_img, 0]                        # align (0,0) at top-left
+
+        # ---- Discrete colormap for recursion counts {0, 1, ..., num_recursions} ----
+        n_levels = self.num_recursions + 1                   # e.g. 4 levels for num_recursion=3
+        palette = plt.cm.viridis(np.linspace(0.15, 0.95, n_levels))
+        cmap = ListedColormap(palette)
+        bounds = np.arange(n_levels + 1) - 0.5               # [-0.5, 0.5, 1.5, 2.5, 3.5]
+        norm = BoundaryNorm(bounds, cmap.N)
+
+        heatmap = body_counts.reshape(self.patch_grid_size, self.patch_grid_size)
+
+        # ---- Left: clean reconstruction ----
+        ax_row[0].imshow(base_img, extent=extent)
+        ax_row[0].set_title(base_label, fontsize=9)
         ax_row[0].axis("off")
 
-        # Right: 2D spatial recursion heatmap
-        heatmap = body_counts.reshape(self.patch_grid_size, self.patch_grid_size)
-        im = ax_row[1].imshow(heatmap, cmap="hot", vmin=0, vmax=self.num_recursions)
-        plt.colorbar(im, ax=ax_row[1], label="# recursions")
-        ax_row[1].set_title(f"[{mod_name}] Recursion map (sample {sample_idx})")
+        # ---- Right: reconstruction + semi-transparent recursion overlay ----
+        ax_row[1].imshow(base_img, extent=extent)
+        im = ax_row[1].imshow(
+            heatmap, cmap=cmap, norm=norm,
+            alpha=0.55, interpolation="nearest",
+            extent=extent,
+        )
+        cbar = plt.colorbar(im, ax=ax_row[1], ticks=np.arange(n_levels))
+        cbar.set_label("# recursions")
+        ax_row[1].set_title(
+            f"[{mod_name}] Reconstruction + recursion map (sample {sample_idx})",
+            fontsize=9,
+        )
         ax_row[1].axis("off")
 
     def _plot_text_modality(self, ax_row, mod_name, sample_idx, raw_tokens, body_counts, plt, np):
@@ -393,23 +452,31 @@ class MultimodalVisionEvalCallback(TrainerCallback):
 
     def _try_decode_cosmos(self, tokens):
         """
-        Decode raw VQ token indices (not offset-shifted) → RGB float arrays [H, W, 3] in [0, 1].
-        Requires: pip install cosmos-tokenizer  (NVIDIA Cosmos weights needed).
-        Enable by setting vision_eval.cosmos_model_path in the config.
+        Decode raw VQ token indices → RGB arrays [H, W, 3] in [0, 1].
+        Expects self._cosmos_model_path to be a *directory* containing decoder.jit.
         tokens: LongTensor of shape [B, n_patches] with raw codebook indices.
         """
         if self._cosmos_model_path is None:
             return None
         try:
-            from cosmos_tokenizer.video_lib import CausalVideoTokenizer
-            tokenizer = CausalVideoTokenizer.from_pretrained(self._cosmos_model_path)
+            if self._cosmos_decoder is None:
+                from cosmos_tokenizer.image_lib import ImageTokenizer
+                decoder_jit = os.path.join(PROJECT_ROOT, self._cosmos_model_path, "decoder.jit")
+                self._cosmos_decoder = ImageTokenizer(checkpoint_dec=decoder_jit)
+            decoder = self._cosmos_decoder
+
+
             B = tokens.shape[0]
-            # Reshape to spatial grid: [B, 1, H, W] (1 frame for image)
-            indices = tokens.reshape(B, 1, self.patch_grid_size, self.patch_grid_size)
+            # DI tokenizers expect [B, H_tok, W_tok]. cosmos decoder wants uint16 indices.
+            indices = tokens.reshape(B, self.patch_grid_size, self.patch_grid_size).to(torch.int32).cuda()
+
+            #indices = indices.to(torch.uint16).cuda()
+
             with torch.no_grad():
-                decoded = tokenizer.decode(indices).float().cpu().numpy()  # [B, C, H, W]
-            decoded = (decoded - decoded.min()) / (decoded.max() - decoded.min() + 1e-8)
-            return [decoded[i].transpose(1, 2, 0) for i in range(B)]   # list of HWC
+                # Decoder returns [B, C, H, W] in roughly [-1, 1].
+                decoded = decoder.decode(indices).float().cpu().numpy()
+            decoded = np.clip((decoded + 1.0) / 2.0, 0.0, 1.0)  # -> [0, 1]
+            return [decoded[i].transpose(1, 2, 0) for i in range(B)]  # list of HWC
         except Exception as exc:
             warnings.warn(f"[MultimodalVisionEvalCallback] Cosmos decode failed: {exc}")
             return None
