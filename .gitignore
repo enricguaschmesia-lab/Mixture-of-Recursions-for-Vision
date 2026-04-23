@@ -208,4 +208,5 @@ smollm-135m-config/
 outputs
 data/
 wandb/
+.hydra/
 pretrained_ckpts
