@@ -10,7 +10,7 @@ from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.utils import logging
 
-from model.kv_caches.cache_utils import Cache, StaticCache, DynamicCache
+from model.kv_caches.cache_utils import Cache, StaticCache, DynamicCache, RecursiveDynamicCache
 from model.mor_model.util import ROUTER_TYPES, MoRLayerOutputWithPast
 from model.base_model.modeling_llama import apply_rotary_pos_emb, eager_attention_forward, LlamaAttention
 from util.misc import get_torch_dtype
@@ -250,8 +250,12 @@ class MoRLlamaDecoderLayer(nn.Module):
                 if attention_mask.dim() == 4: 
                     row_indices = selected_tokens.unsqueeze(1).expand(bs, 1, top_k, attention_mask.shape[-1])  
                     mask_rows_selected = torch.gather(attention_mask, 2, row_indices)
-                    col_indices = selected_tokens.unsqueeze(1).transpose(2, 3).expand(bs, 1, top_k, top_k)
-                    attention_mask = torch.gather(mask_rows_selected, 3, col_indices)
+                    if isinstance(past_key_value, RecursiveDynamicCache):
+                        # K,V come from the full-sequence recursion-1 cache → keep all columns.
+                        attention_mask = mask_rows_selected          # (bs, 1, top_k, full_seq)
+                    else:
+                        col_indices = selected_tokens.unsqueeze(1).transpose(2, 3).expand(bs, 1, top_k, top_k)
+                        attention_mask = torch.gather(mask_rows_selected, 3, col_indices)  # (bs, 1, top_k, top_k)
                 elif attention_mask.dim() == 2:
                     # Padding-mask (B, N) -> gather columns for the selected token positions -> (B, top_k).
                     # This branch fires during generation/inference with padding-aware attention;

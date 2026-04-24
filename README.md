@@ -93,6 +93,39 @@ uv run bash scripts/pretrain.sh accelerate online 0 \
   250720_pretrain_smollm-135m_vanilla_lr3e-3
 ```
 
+## Inference
+
+`infer.py` is the single entry point for sampling from a trained MoR checkpoint. It builds a prompt in the unified multimodal vocab, runs `model.generate`, decodes tokens back to an image via the Cosmos tokenizer, and (for expert-choice MoR) saves a per-token recursion-depth overlay.
+
+The default config `conf/infer/mor_19500_rgb.yaml` points at our pretrained RGB checkpoint on the Hub (`gbasi18/MoR-Vision-19500-RGB`), so you can run it with no local training:
+
+```bash
+uv run python infer.py
+```
+
+Common overrides (Hydra CLI):
+
+```bash
+# Use a local checkpoint instead of the Hub one
+uv run python infer.py infer.checkpoint=results/pretrain/<run_name>
+
+# Image prefix completion — feed the first 128 tokens of a test image and let the model finish it
+uv run python infer.py \
+  infer.prompt_npy=data/clevr_dataset/test/tok_rgb@256/02645.npy \
+  infer.prefix_len=128
+
+# Text-conditional generation (caption -> RGB)
+uv run python infer.py infer.prompt_text="a red metal cube next to a blue rubber sphere"
+
+# Diverse sampling instead of greedy
+uv run python infer.py infer.temperature=0.9 infer.top_p=0.95 infer.seed=42
+
+# Swap the config file entirely
+uv run python infer.py --config-name=infer/my_run
+```
+
+Outputs (decoded PNG and, for expert-choice MoR, the `*_depth_overlay.png` heatmap) are written to `results/infer/`. To skip the extra forward pass used for the overlay, set `infer.save_depth_overlay=false`.
+
 ## Citation
 
 ```
