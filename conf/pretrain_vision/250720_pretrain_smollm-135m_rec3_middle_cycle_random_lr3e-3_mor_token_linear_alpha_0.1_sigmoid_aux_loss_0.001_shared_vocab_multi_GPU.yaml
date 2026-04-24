@@ -1,10 +1,10 @@
 # === Run identity ===
-name: smoke_50steps_token
+name: smoke_19500steps_token
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
 wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
-wandb_run_name: smoke_50steps_token
+wandb_run_name: smoke_19500steps_token
 wandb_run_id: null      # auto-generated at runtime if null
 output_dir: null
 tensorboard: false
@@ -25,9 +25,9 @@ multimodal:
 weights: null
 
 # === Batching ===
-total_batch_size: null
-per_device_train_batch_size: 32
-gradient_accumulation_steps: 4   # Auto-computed by preprocess_config
+total_batch_size: 256
+per_device_train_batch_size: 8
+gradient_accumulation_steps: null   # Auto-computed by preprocess_config
 batch_size_rampup_steps: null
 
 # === Sequence length ===
@@ -120,7 +120,7 @@ save_steps: 5000  # Save every 5000 steps (≈ every 25 epochs) for this short s
 fixed_save_steps: null
 save_total_limit: null
 logging_steps: 10
-dataloader_num_workers: 16
+dataloader_num_workers: 8
 gradient_checkpointing: false
 deepspeed: ds_configs/stage2.config
 
@@ -134,4 +134,4 @@ vision_eval:
   eval_epoch_interval: 5   
   num_val_samples: 2
   patch_grid_size: 16          # 16×16 = 256 tokens for tok_rgb@256
-  cosmos_model_path: /home/gianfranco/projects/2025/Visual_Intelligence_Project/Mixture-of-Recursions-for-Vision/pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16      # set to enable Cosmos RGB decode
+  cosmos_model_path: /home/gbasile/Mixture-of-Recursions-for-Vision/pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16

@@ -209,3 +209,5 @@ outputs
 data/
 wandb/
 pretrained_ckpts
+logs
+clevr_com_304
