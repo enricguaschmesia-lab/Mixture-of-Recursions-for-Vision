@@ -1,10 +1,10 @@
 # === Run identity ===
-name: smoke_50steps_token
+name: smoke_19500steps_token
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
 wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
-wandb_run_name: smoke_50steps_token
+wandb_run_name: smoke_19500steps_token
 wandb_run_id: null      # auto-generated at runtime if null
 output_dir: null
 tensorboard: false
