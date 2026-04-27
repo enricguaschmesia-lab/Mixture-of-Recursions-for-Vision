@@ -58,7 +58,7 @@ def main(cfg: DictConfig):
         os.environ["WANDB_RUN_ID"] = cfg.wandb_run_id
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         if "WANDB_MODE" not in os.environ:
-            os.environ["WANDB_MODE"] = cfg.get("WANDB_MODE", "online")
+            os.environ["WANDB_MODE"] = cfg.get("wandb_mode", "online")
         if os.environ["WANDB_MODE"] == "offline":
             os.environ["WANDB_DIR"] = PROJECT_ROOT
         os.environ["WANDB_SAVE_CODE"] = "false"

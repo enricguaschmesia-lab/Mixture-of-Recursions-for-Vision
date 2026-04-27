@@ -25,7 +25,7 @@ MOR_MODEL_CLS = {
     "smollm2": MoRLlamaForCausalLM,
 }
 
-if "wandb_mode" not in os.environ:
+if "WANDB_MODE" not in os.environ:
     local_files_only = True
 else:
     local_files_only = os.environ["WANDB_MODE"] == "offline"
