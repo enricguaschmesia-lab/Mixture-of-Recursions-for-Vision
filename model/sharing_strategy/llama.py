@@ -167,11 +167,14 @@ def selection_initialize(cfg, model):
         #! Here we select randomly the layers that will be used as source for the initialization, so we can have a random sharing strategy.
         #! The only constraint is that the number of layers selected should be equal to the base depth, so that we can apply the sharing strategy correctly. 
         #! We also need to make sure that the selected layers are distinct, so we don't initialize multiple layers with the same source layer. For middle_cycle and middle_sequence we need to make sure that we don't select the first and last layer, since they are not shared.
+        seed = getattr(cfg, "seed", None)
+        rng = np.random.default_rng(seed) if seed is not None else np.random
+
         if sharing_strategy in ["cycle", "sequence"]:
-            src_idxs = sorted(np.random.choice(model.config.num_hidden_layers, base_depth, replace=False))
+            src_idxs = sorted(rng.choice(model.config.num_hidden_layers, base_depth, replace=False))
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
-            src_idxs = sorted(np.random.choice(range(1, model.config.num_hidden_layers - 1), base_depth, replace=False))   
-                 
+            src_idxs = sorted(rng.choice(range(1, model.config.num_hidden_layers - 1), base_depth, replace=False))
+            
     else:
         raise ValueError(f"Invalid initialization strategy: {init_strategy}")
     

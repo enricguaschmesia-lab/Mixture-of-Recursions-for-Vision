@@ -26,7 +26,7 @@ weights: null
 
 # === Batching ===
 total_batch_size: 256
-per_device_train_batch_size: 16
+per_device_train_batch_size: 32
 gradient_accumulation_steps: null   # Auto-computed by preprocess_config
 batch_size_rampup_steps: null
 
