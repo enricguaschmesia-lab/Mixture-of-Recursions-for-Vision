@@ -23,12 +23,21 @@ uv sync
 
 That installs torch with CUDA 12.1 wheels, transformers 4.52.4 (pinned — MoR uses private APIs), and everything else. No conda, no manual torch step.
 
-Pre-fetch the SmolLM tokenizer into the local HF cache the trainer expects (`./hf_cache`):
+Pre-fetch the SmolLM and SmolLM2 tokenizers into the local HF cache the trainer expects (`./hf_cache`):
 
 ```bash
 uv run python -c "
 from huggingface_hub import snapshot_download
 snapshot_download('HuggingFaceTB/SmolLM-135M',
+                  allow_patterns=['*.json', 'tokenizer*', '*.txt'],
+                  cache_dir='./hf_cache')
+"
+```
+
+```bash
+uv run python -c "
+from huggingface_hub import snapshot_download
+snapshot_download('HuggingFaceTB/SmolLM2-135M',
                   allow_patterns=['*.json', 'tokenizer*', '*.txt'],
                   cache_dir='./hf_cache')
 "
@@ -41,8 +50,8 @@ Pre-tokenized CLEVR (RGB / depth / normals via Cosmos DI-16×16, text via GPT-2)
 Download from: https://drive.google.com/file/d/1QRFqoGKMFYlgxYfPr9O7PeOadzXAbJI8/view
 
 ```bash
-tar -xzvf clevr_cs503.tar.gz
-mv clevr_cs503 clevr_dataset   # rename if the archive extracts as clevr_cs503
+tar -xzvf clevr_cs503.tar.gz # rename if the archive extracts to a name other than clevr_cs503
+mv clevr_cs503 clevr_dataset   # rename if the archive extracts to a name other than clevr_cs503
 mv clevr_dataset data/
 ```
 
@@ -94,7 +103,7 @@ Copy `.env.example` to `.env` and set `WANDB_ENTITY` (and optionally `WANDB_PROJ
 
 ```bash
 cp .env.example .env
-$EDITOR .env   # set WANDB_ENTITY
+nano .env   # set WANDB_ENTITY
 ```
 
 One-off overrides still work the ordinary way:
