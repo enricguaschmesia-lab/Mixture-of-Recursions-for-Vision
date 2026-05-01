@@ -127,4 +127,4 @@ vision_eval:
   eval_epoch_interval: 1
   num_val_samples: 2
   patch_grid_size: 16           # 16×16 = 256 tokens for tok_rgb@256
-  cosmos_model_path: /home/gianfranco/projects/2025/Visual_Intelligence_Project/Mixture-of-Recursions-for-Vision/pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16
+  cosmos_model_path: ${oc.env:COSMOS_TOKENIZER_PATH,pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16}

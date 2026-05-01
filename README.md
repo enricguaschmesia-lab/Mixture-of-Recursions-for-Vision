@@ -99,7 +99,13 @@ uv run python prepare_coco.py
 
 ## Run
 
-Copy `.env.example` to `.env` and set `WANDB_ENTITY` (and optionally `WANDB_PROJECT`, `CLEVR_ROOT`). `pretrain.py` auto-loads `.env` at startup, and the configs read W&B settings via `${oc.env:...}` — no need to edit YAML per machine.
+Copy `.env.example` to `.env` and fill in your values. `pretrain.py` auto-loads `.env` at startup — no need to edit YAML per machine.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `WANDB_ENTITY` | yes (if `wandb: true`) | — | W&B team/user name |
+| `COSMOS_TOKENIZER_PATH` | no | `pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16` | Path to the Cosmos DI-16×16 checkpoint dir, used for vision eval overlays |
+| `CLEVR_ROOT` | no | `data/clevr_dataset` | Root of the extracted CLEVR archive |
 
 ```bash
 cp .env.example .env
