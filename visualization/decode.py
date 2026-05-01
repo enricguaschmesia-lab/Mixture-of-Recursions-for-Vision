@@ -12,6 +12,61 @@ OUTPUT_DIR = os.path.join(SAVE_DIR, "infer/")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
+def _save_depth_grid_overlay(image, grid, max_depth, patch_grid_size, out_dir,
+                             timestamp, alpha=0.45, title="Exit depth",
+                             colorbar_label="# MoR layers"):
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib import cm
+        from PIL import Image
+    except ImportError:
+        print("  [warn] matplotlib/PIL not available; skipping depth overlay.")
+        return
+
+    cmap = cm.get_cmap("viridis", max_depth + 1)
+    norm_grid = grid.astype(np.float32) / max(max_depth, 1)
+    heat_rgba = (cmap(norm_grid) * 255.0).astype(np.uint8)
+
+    heatmap_path = os.path.join(out_dir, f"generated_depth_{timestamp}.png")
+    fig, ax = plt.subplots(figsize=(5, 5))
+    im = ax.imshow(grid, cmap=cmap, vmin=-0.5, vmax=max_depth + 0.5,
+                   interpolation="nearest")
+    ax.set_title(title)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    cbar = fig.colorbar(im, ax=ax, ticks=list(range(max_depth + 1)))
+    cbar.set_label(colorbar_label)
+    fig.tight_layout()
+    fig.savefig(heatmap_path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved depth heatmap to {heatmap_path}")
+
+    if image is None:
+        return
+
+    H, W = image.shape[:2]
+    heat_img = Image.fromarray(heat_rgba, mode="RGBA").resize((W, H), Image.NEAREST)
+    heat_arr = np.asarray(heat_img).astype(np.float32) / 255.0
+    base = image.astype(np.float32) / 255.0
+    blended = (1.0 - alpha) * base + alpha * heat_arr[..., :3]
+    blended = np.clip(blended * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+    overlay_path = os.path.join(out_dir, f"generated_depth_overlay_{timestamp}.png")
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.imshow(blended)
+    ax.set_title(f"Depth overlay (alpha={alpha:.2f})")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    sm = cm.ScalarMappable(cmap=cmap,
+                           norm=plt.Normalize(vmin=-0.5, vmax=max_depth + 0.5))
+    cbar = fig.colorbar(sm, ax=ax, ticks=list(range(max_depth + 1)))
+    cbar.set_label(colorbar_label)
+    fig.tight_layout()
+    fig.savefig(overlay_path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved depth overlay to {overlay_path}")
+
+
 def save_depth_overlay(image, selected_tokens_per_layer, image_token_slice,
                        patch_grid_size, out_dir, timestamp, alpha=0.45):
     """
@@ -25,14 +80,6 @@ def save_depth_overlay(image, selected_tokens_per_layer, image_token_slice,
         in the sequence these selected_tokens index into.
     image : HxWx3 uint8 decoded image (or None to skip the overlay file).
     """
-    try:
-        import matplotlib.pyplot as plt
-        from matplotlib import cm
-        from PIL import Image
-    except ImportError:
-        print("  [warn] matplotlib/PIL not available; skipping depth overlay.")
-        return
-
     if not selected_tokens_per_layer:
         print("  [warn] no MoR layers captured; skipping depth overlay.")
         return
@@ -53,49 +100,59 @@ def save_depth_overlay(image, selected_tokens_per_layer, image_token_slice,
         return
 
     grid = depths[start:end].view(patch_grid_size, patch_grid_size).numpy()
+    _save_depth_grid_overlay(
+        image=image,
+        grid=grid,
+        max_depth=num_layers,
+        patch_grid_size=patch_grid_size,
+        out_dir=out_dir,
+        timestamp=timestamp,
+        alpha=alpha,
+        title=f"Exit depth (0..{num_layers}) - higher = more recursion",
+        colorbar_label="# MoR layers the token passed through",
+    )
 
-    cmap = cm.get_cmap("viridis", num_layers + 1)
-    norm_grid = grid.astype(np.float32) / max(num_layers, 1)
-    heat_rgba = (cmap(norm_grid) * 255.0).astype(np.uint8)
 
-    heatmap_path = os.path.join(out_dir, f"generated_depth_{timestamp}.png")
-    fig, ax = plt.subplots(figsize=(5, 5))
-    im = ax.imshow(grid, cmap=cmap, vmin=-0.5, vmax=num_layers + 0.5,
-                   interpolation="nearest")
-    ax.set_title(f"Exit depth (0..{num_layers}) — higher = more recursion")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    cbar = fig.colorbar(im, ax=ax, ticks=list(range(num_layers + 1)))
-    cbar.set_label("# MoR layers the token passed through")
-    fig.tight_layout()
-    fig.savefig(heatmap_path, dpi=150)
-    plt.close(fig)
-    print(f"  Saved depth heatmap to {heatmap_path}")
+def save_token_choice_depth_overlay(image, token_expert_indices_per_layer,
+                                    image_token_slice, patch_grid_size, out_dir,
+                                    timestamp, num_recursions, alpha=0.45):
+    """
+    Save token-choice MoR recursion depths.
 
-    if image is None:
+    token_expert_indices_per_layer : list of LongTensors (bs, seq_len)
+        Token-choice router assignments. An expert index i means the token
+        was processed for i + 1 recursion passes.
+    """
+    if not token_expert_indices_per_layer:
+        print("  [warn] no token-choice MoR layers captured; skipping depth overlay.")
         return
 
-    H, W = image.shape[:2]
-    heat_img = Image.fromarray(heat_rgba, mode="RGBA").resize((W, H), Image.NEAREST)
-    heat_arr = np.asarray(heat_img).astype(np.float32) / 255.0
-    base = image.astype(np.float32) / 255.0
-    blended = (1.0 - alpha) * base + alpha * heat_arr[..., :3]
-    blended = np.clip(blended * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    token_expert_indices = token_expert_indices_per_layer[-1]
+    if token_expert_indices.dim() == 2:
+        token_expert_indices = token_expert_indices[0]
+    depths = token_expert_indices.to(torch.long).cpu() + 1
 
-    overlay_path = os.path.join(out_dir, f"generated_depth_overlay_{timestamp}.png")
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.imshow(blended)
-    ax.set_title(f"Depth overlay (α={alpha:.2f})")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    sm = cm.ScalarMappable(cmap=cmap,
-                           norm=plt.Normalize(vmin=-0.5, vmax=num_layers + 0.5))
-    cbar = fig.colorbar(sm, ax=ax, ticks=list(range(num_layers + 1)))
-    cbar.set_label("# MoR layers")
-    fig.tight_layout()
-    fig.savefig(overlay_path, dpi=150)
-    plt.close(fig)
-    print(f"  Saved depth overlay to {overlay_path}")
+    start, end = image_token_slice
+    expected = patch_grid_size * patch_grid_size
+    if end - start != expected or end > depths.numel():
+        print(f"  [warn] depth overlay skipped: image slice [{start}:{end}] "
+              f"doesn't match {patch_grid_size}x{patch_grid_size}={expected} "
+              f"or exceeds seq_len={depths.numel()}.")
+        return
+
+    grid = depths[start:end].view(patch_grid_size, patch_grid_size).numpy()
+    max_depth = int(num_recursions)
+    _save_depth_grid_overlay(
+        image=image,
+        grid=grid,
+        max_depth=max_depth,
+        patch_grid_size=patch_grid_size,
+        out_dir=out_dir,
+        timestamp=timestamp,
+        alpha=alpha,
+        title=f"Token-choice recursion depth (1..{max_depth})",
+        colorbar_label="# recursion passes",
+    )
 
 def _resolve_cosmos_decoder_jit(cosmos_model_path):
     """Return a local path to a Cosmos decoder.jit, downloading from HF if needed."""

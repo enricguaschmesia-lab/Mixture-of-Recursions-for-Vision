@@ -1,0 +1,44 @@
+# @package _global_
+defaults:
+  - /pretrain_vision/260429_pretrain_smollm-135m_token_alpha_1@_global_   # inherits full model architecture at global root
+  - _self_                                    # values below override the defaults
+
+# Disable wandb/logging for inference
+wandb: false
+
+# === Inference parameters ===
+infer:
+  checkpoint: /home/hugues/Documents/Visual_Intelligence/Mixture-of-Recursions-for-Vision/results/pretrain/clevr_token_alpha_1/checkpoint-19500
+  generate_modality: tok_rgb@256
+  max_new_tokens: 257          # 256 body tokens + 1 EO
+  use_cache: false            # token-choice MoR needs full-sequence recompute for correct masks/overlays
+  device: cuda
+
+  # Prompt sources — all optional, leave null for unconditional generation
+  prompt_npy: null             # .npy file of pre-tokenized image tokens, shape (K,N) or (N,)
+  prompt_text: null            # text string to condition on (caption→rgb completion)
+  aug_idx: 0                   # augmentation row index when prompt_npy has shape (K, N)
+  prefix_len: null             # use only first N tokens from prompt_npy (image completion mode)
+
+  # Output
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16      # e.g. "nvidia/Cosmos-0.1-Tokenizer-DI16x16" to decode PNG
+  patch_grid_size: 16          # sqrt(num_image_tokens); 16 for tok_rgb@256 (16×16=256)
+
+  # Depth overlay (MoR expert-choice only): save a heatmap of per-token exit depth
+  save_depth_overlay: true     # false to skip the extra forward pass and PNG writes
+  depth_overlay_alpha: 0.45    # blend strength between decoded image and depth heatmap
+
+  # Sampling — default is greedy (do_sample=false, temperature=1.0)
+  # Set temperature != 1.0 or top_k/top_p != defaults to enable sampling automatically.
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null                   # integer seed for reproducible sampling
+
+# Keep Hydra from changing the working directory (outputs would go to ./outputs/ otherwise)
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false
