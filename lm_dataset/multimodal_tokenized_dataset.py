@@ -10,6 +10,7 @@ K = number of augmentations.
 
 For 'text' modalities: file contains a JSON list of K strings.
 """
+from importlib.resources import path
 import json
 import os
 from pathlib import Path
@@ -130,7 +131,7 @@ class MultimodalTokenizedDataset(Dataset):
     def _load_text_modality(self, modality: str, stem: str, aug_idx: int) -> torch.Tensor:
         info = get_modality(modality)
         path = Path(self.root_dir) / self.split / modality / f"{stem}{info.file_ext}"
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             captions = json.load(f)
         caption = captions[aug_idx]
         tok = self._get_text_tokenizer()

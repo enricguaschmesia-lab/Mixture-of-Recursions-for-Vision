@@ -42,10 +42,10 @@ from util.misc import print_trainable_parameters, get_latest_checkpoint_path, pr
 @hydra.main(config_path="conf/pretrain_vision", config_name="smoke_50steps", version_base=None)
 def main(cfg: DictConfig):
     cfg = preprocess_config(cfg)
-    set_global_seed(
-        cfg.get("seed"),
-        deterministic_cuda=cfg.get("deterministic_cuda", False),
-    )
+    # set_global_seed(
+    #     cfg.get("seed"),
+    #     deterministic_cuda=cfg.get("deterministic_cuda", False),
+    # )
 
     if cfg.wandb and cfg.get("wandb_run_id") is None:
         characters = string.ascii_letters + string.digits
@@ -68,7 +68,12 @@ def main(cfg: DictConfig):
             os.environ["WANDB_DIR"] = PROJECT_ROOT
         os.environ["WANDB_SAVE_CODE"] = "false"
         os.environ["WANDB_LOG_MODEL"] = "false"
-    
+        
+    set_global_seed(
+        cfg.get("seed"),
+        deterministic_cuda=cfg.get("deterministic_cuda", False),
+    )
+
     launcher_type = get_launcher_type()
     
     print ("Loading tokenizers...")
@@ -141,7 +146,6 @@ def main(cfg: DictConfig):
         log_on_each_node=False,
         seed=cfg.get("seed", 42),
         data_seed=cfg.get("seed", 42),
-        dataloader_worker_init_fn=seed_worker,
     )
     
     callbacks = []

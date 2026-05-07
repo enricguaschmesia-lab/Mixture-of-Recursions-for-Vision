@@ -1,11 +1,11 @@
 # === Run identity ===
-name: pretrain_smollm-135m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001_coco_rgb
+name: smoke_19500_coco_rgb
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
 wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
-wandb_run_name: null
-wandb_run_id: null   # Generate a fresh one with: python util/generate_wandb_run_id.py
+wandb_run_name: smoke_19500_coco_rgb
+wandb_run_id: null  
 output_dir: null
 tensorboard: false
 tensorboard_dir: null
@@ -101,11 +101,11 @@ relaxation:
 
 mor:
   enable: true
-  type: expert
+  type: token
   capacity: null   # Auto-generated as "1.0,0.6667,0.3333" for num_recursion=3
   rand_router: false
-  router_type: linear
-  z_loss: false
+  router_type: mlp
+  z_loss: true
   z_coeff: 0.001
   temp: 1.0
   expert:
@@ -117,18 +117,19 @@ mor:
     coeff: 0.001
     gating: weighted
   token:
-    router_func: sigmoid
-    alpha: 0.1
+    router_func: softmax
+    alpha: 1.0
     balancing: loss
-    coeff: 0.001
+    coeff: 0.1
     u: 0.001
     gating: weighted
+    bal_warmup_step: 0
 
 # === Training schedule ===
 # Mirror the 19500-step CLEVR run: 100 epochs × ~195 steps/epoch.
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
-  num_decay_steps: 3900   # 20% of training
+  num_decay_steps: 4000   # 20% of training
   decay_type: linear
 learning_rate: 0.003
 adam_beta1: 0.9
@@ -139,12 +140,12 @@ max_grad_norm: 1.0
 num_train_steps: 19500
 stop_steps: 19500
 num_warmup_steps: 975    # 5% of training
-save_interval: 0.1       # Save 10× over the run
-save_steps: null
+save_interval: null       # Save 10× over the run
+save_steps: 5000
 fixed_save_steps: null
 save_total_limit: null
-logging_steps: 50
-dataloader_num_workers: 4
+logging_steps: 10
+dataloader_num_workers: 16
 gradient_checkpointing: false
 deepspeed: ds_configs/stage2.config
 
