@@ -1,17 +1,19 @@
+# @package _global_
+
 # === Run identity ===
-name: smoke_19500steps_token
+name: MoR-SmolLM-135M-Random
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
 wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
-wandb_run_name: smoke_19500steps_token
+wandb_run_name: MoR-SmolLM-135M-Random
 wandb_run_id: null      # auto-generated at runtime if null
 output_dir: null
 tensorboard: false
 tensorboard_dir: null
 
 # === Resume ===
-resume_from_checkpoint: false
+resume_from_checkpoint: null
 resume_step: null
 
 # === Dataset (vision PoC) ===
@@ -26,7 +28,7 @@ weights: null
 
 # === Batching ===
 total_batch_size: 256
-per_device_train_batch_size: 8
+per_device_train_batch_size: 16
 gradient_accumulation_steps: null   # Auto-computed by preprocess_config
 batch_size_rampup_steps: null
 
@@ -68,7 +70,7 @@ mor:
   enable: true
   type: token
   capacity: null        # unused under token-choice
-  rand_router: false
+  rand_router: true
   # Paper's Table 4 (right): MLP router is best for token-choice.
   router_type: mlp
   # Paper enables z-loss by default for token-choice; penalizes large router
@@ -85,7 +87,7 @@ mor:
     sampling: aux_loss
     include_first: true
     coeff: 0.001
-    gating: weighted
+    gating: unweighted
 
   token:
     # Paper's selected config: softmax + MLP + balancing-loss (coeff 0.1) + z-loss.
@@ -94,7 +96,7 @@ mor:
     balancing: loss               # 'loss' = explicit balancing-loss; 'loss_free' = router-bias trick
     coeff: 0.1                    # was: 0.001 — main anti-collapse lever (paper uses 0.1)
     u: 0.001                      # router-bias update rate; only used when balancing=='loss_free'
-    gating: weighted
+    gating: unweighted
     # First N steps force every token to max depth (Nr-1). For short smoke runs,
     # this hides the router entirely, so keep it at 0.
     bal_warmup_step: 0
@@ -120,7 +122,7 @@ save_steps: 5000  # Save every 5000 steps (≈ every 25 epochs) for this short s
 fixed_save_steps: null
 save_total_limit: null
 logging_steps: 10
-dataloader_num_workers: 8
+dataloader_num_workers: 16
 gradient_checkpointing: false
 deepspeed: ds_configs/stage2.config
 
@@ -135,3 +137,9 @@ vision_eval:
   num_val_samples: 2
   patch_grid_size: 16          # 16×16 = 256 tokens for tok_rgb@256
   cosmos_model_path: ${oc.env:COSMOS_TOKENIZER_PATH,pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16}
+
+
+hf_upload:
+  enable: true
+  repo_id: "HugSib/MoR-SmolLM-135M-Random"
+  private: true   # optional, defaults to true

@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - /pretrain_vision/smoke_50steps@_global_   # inherits full model architecture at global root
+  - /pretrain_vision/260503_pretrain_baseline_smollm-135m_random@_global_   # inherits full model architecture at global root
   - _self_                                    # values below override the defaults
 
 # Disable wandb/logging for inference
@@ -8,11 +8,11 @@ wandb: false
 
 # === Inference parameters ===
 infer:
-  checkpoint: gbasi18/MoR-Vision-19500-RGB
+  checkpoint: /home/hugues/Documents/Visual_Intelligence/Mixture-of-Recursions-for-Vision/results/pretrain/MoR-SmolLM-135M-Random/checkpoint-19500
   generate_modality: tok_rgb@256
   max_new_tokens: 257          # 256 body tokens + 1 EO
   num_generations: 2           # number of samples to generate and show in the output grid
-  use_cache: false             # true → RecursiveDynamicCache (if kv_sharing.enable=true)
+  use_cache: false            # token-choice MoR needs full-sequence recompute for correct masks/overlays
   device: cuda
 
   # Prompt sources — all optional, leave null for unconditional generation

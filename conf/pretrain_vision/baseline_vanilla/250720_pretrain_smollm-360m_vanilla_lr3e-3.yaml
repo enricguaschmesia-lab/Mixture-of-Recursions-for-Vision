@@ -1,4 +1,6 @@
-name: 250720_pretrain_smollm-360m_vanilla_lr3e-3
+# @package _global_
+
+name:  baseline_smollm-360m_vanilla_lr3e-3
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
@@ -10,13 +12,7 @@ tensorboard: false
 tensorboard_dir: null
 resume_from_checkpoint: false
 resume_step: null
-dataset: clevr_multimodal
-multimodal:
-  split: train
-  active_modalities: ['tok_rgb@256']
-  modality_order: fixed
-  sample_from_k_augmentations: 10
-
+dataset: fineweb_edu
 weights: null
 total_batch_size: 1024
 per_device_train_batch_size: 16
@@ -28,7 +24,7 @@ global_shuffling: false
 local_shuffling: false
 tokenizer: smollm
 model: smollm
-model_name_or_path: HuggingFaceTB/SmolLM-135M
+model_name_or_path: HuggingFaceTB/SmolLM-360M
 model_config: null
 attn_implementation: flash_attention_2
 use_pretrained_weights: false

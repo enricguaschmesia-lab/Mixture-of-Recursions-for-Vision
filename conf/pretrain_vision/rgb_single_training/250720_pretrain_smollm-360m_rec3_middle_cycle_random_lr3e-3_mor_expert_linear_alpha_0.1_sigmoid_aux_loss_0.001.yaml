@@ -1,4 +1,6 @@
-name: 250720_pretrain_smollm-360m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001
+# @package _global_
+
+name:  baseline_smollm-360m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}

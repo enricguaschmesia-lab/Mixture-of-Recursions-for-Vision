@@ -1,38 +1,41 @@
+# @package _global_
+
 # === Run identity ===
-name: clevr_token_alpha_1
+name: baseline_multimodal_random
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
 wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
-wandb_run_name: clevr_token_alpha_1
+wandb_run_name: baseline_multimodal_random
 wandb_run_id: null      # auto-generated at runtime if null
 output_dir: null
 tensorboard: false
 tensorboard_dir: null
 
 # === Resume ===
-resume_from_checkpoint: null
+resume_from_checkpoint: false
 resume_step: null
 
 # === Dataset (vision PoC) ===
 dataset: clevr_multimodal
 multimodal:
   split: train
-  active_modalities: ['tok_rgb@256']
-  modality_order: fixed
+  active_modalities: ['tok_rgb@256', 'tok_depth@256', 'tok_normal@256', 'caption', 'scene_desc']
+  modality_order: random
   sample_from_k_augmentations: 10
-
+  text_tokenizer_path: gpt2
+  text_max_length: 128
 weights: null
 
 # === Batching ===
 total_batch_size: 256
-per_device_train_batch_size: 16
+per_device_train_batch_size: 8
 gradient_accumulation_steps: null   # Auto-computed by preprocess_config
 batch_size_rampup_steps: null
 
 # === Sequence length ===
 # <BO_rgb> + 256 Cosmos tokens + <EO_rgb> = 258. No text modality → no padding.
-max_length: 258
+max_length: 1024
 
 add_bos_token: false
 global_shuffling: false
@@ -68,7 +71,7 @@ mor:
   enable: true
   type: token
   capacity: null        # unused under token-choice
-  rand_router: false
+  rand_router: true
   # Paper's Table 4 (right): MLP router is best for token-choice.
   router_type: mlp
   # Paper enables z-loss by default for token-choice; penalizes large router
@@ -94,14 +97,14 @@ mor:
     balancing: loss               # 'loss' = explicit balancing-loss; 'loss_free' = router-bias trick
     coeff: 0.1                    # was: 0.001 — main anti-collapse lever (paper uses 0.1)
     u: 0.001                      # router-bias update rate; only used when balancing=='loss_free'
-    gating: weighted
+    gating: unweighted
     # First N steps force every token to max depth (Nr-1). For short smoke runs,
     # this hides the router entirely, so keep it at 0.
     bal_warmup_step: 0
 
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
-  num_decay_steps: 4000   # 20% of training
+  num_decay_steps: 2000   # 20% of training
   decay_type: linear
 learning_rate: 0.003
 adam_beta1: 0.9
@@ -131,7 +134,7 @@ deepspeed: ds_configs/stage2.config
 # a CausalVideoTokenizer checkpoint (e.g. "nvidia/Cosmos-Tokenizer-DI8x8").
 vision_eval:
   enable: true
-  eval_epoch_interval: 5   
+  eval_epoch_interval: 2   
   num_val_samples: 2
   patch_grid_size: 16          # 16×16 = 256 tokens for tok_rgb@256
-  cosmos_model_path: ${oc.env:COSMOS_TOKENIZER_PATH,pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16}
+  cosmos_model_path: ${oc.env:COSMOS_TOKENIZER_PATH,pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16}      # set to enable Cosmos RGB decode

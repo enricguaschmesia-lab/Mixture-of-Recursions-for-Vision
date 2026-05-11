@@ -1,11 +1,14 @@
-name: 250720_pretrain_smollm-360m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001
+# @package _global_
+
+
+name:  baseline_smollm-135m_vanilla_lr3e-3
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
 wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
 wandb_run_name: null
 output_dir: null
-wandb_run_id: aO41BT1c
+wandb_run_id: aDnFdKnu
 tensorboard: false
 tensorboard_dir: null
 resume_from_checkpoint: false
@@ -18,28 +21,27 @@ multimodal:
   sample_from_k_augmentations: 10
 
 weights: null
-total_batch_size: 1024 # We may need a smaller batch size for vision tasks due to memory constraints, adjust as needed
+total_batch_size: 1024
 per_device_train_batch_size: 16
 gradient_accumulation_steps: null
 batch_size_rampup_steps: null
-max_length: 2048 # Maybe we need a smaller max_length for vision tasks, adjust as needed
+max_length: 2048
 add_bos_token: false
 global_shuffling: false
 local_shuffling: false
 tokenizer: smollm
 model: smollm
-model_name_or_path: HuggingFaceTB/SmolLM-360M
-model_config: 
-  num_hidden_layers: 29
-attn_implementation: sdpa # We will not be use flash attention.
+model_name_or_path: HuggingFaceTB/SmolLM-135M
+model_config: null
+attn_implementation: flash_attention_2
 use_pretrained_weights: false
 recursive:
-  enable: true
+  enable: false
   base_depth: null
-  num_recursion: 3
-  sharing: middle_cycle
+  num_recursion: 2
+  sharing: cycle
   ln_share: true
-  initialization: random
+  initialization: stepwise
 kv_sharing:
   enable: false
   base_depth: null
@@ -62,11 +64,11 @@ relaxation:
   prompt:
     len: 16
 mor:
-  enable: true
+  enable: false
   type: expert
   capacity: null
   rand_router: false
-  router_type: linear
+  router_type: mlp
   z_loss: false
   z_coeff: 0.001
   temp: 1.0
@@ -87,7 +89,7 @@ mor:
     gating: weighted
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
-  num_decay_steps: 2832
+  num_decay_steps: 1888
   decay_type: linear
 learning_rate: 0.003
 adam_beta1: 0.9
@@ -95,9 +97,9 @@ adam_beta2: 0.95
 weight_decay: 0.1
 precision: bf16
 max_grad_norm: 1.0
-num_train_steps: 14161
-stop_steps: 14161
-num_warmup_steps: 86
+num_train_steps: 9438
+stop_steps: 9438
+num_warmup_steps: 57
 save_interval: 0.1
 save_steps: null
 fixed_save_steps: null

@@ -1,0 +1,58 @@
+# @package _global_
+defaults:
+  # Inherit the actual training config used to produce
+  # gbasi18/Vanilla-10000-Multimodality (29 layers, num_recursion=3,
+  # middle_cycle sharing, vocab=242271, max_length=1024,
+  # active_modalities=[tok_rgb, tok_depth, tok_normal, caption], random order).
+  # That file is the source of truth for the checkpoint architecture; this
+  # infer config only overrides runtime knobs.
+  - /pretrain_vision/pretrain_smollm_135m_token_alpha_1_shared_vocab_multimodality@_global_
+  - _self_
+
+# Disable wandb/logging for inference
+wandb: false
+
+name: vanilla_10000_multimodality_infer
+wandb_run_name: vanilla_10000_multimodality_infer
+
+# === Inference parameters ===
+infer:
+  checkpoint: gbasi18/Vanilla-10000-Multimodality
+  generate_modality: tok_normal@256
+  max_new_tokens: 257          # 256 body tokens + 1 EO
+  num_generations: 1
+  use_cache: false             # token-choice MoR needs full-sequence recompute for correct routing
+  device: cuda
+
+  # Prompt sources — all optional, leave null for unconditional generation.
+  # Examples (override at the CLI):
+  #   infer.prompt_text='a red metal sphere on the left of a cyan rubber cube'
+  #   infer.prompt_npy=data/clevr_dataset/test/tok_rgb@256/02645.npy infer.prefix_len=128
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  # Output
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: true
+
+  # Token-choice MoR routing heatmap.
+  save_depth_overlay: true
+  depth_overlay_alpha: 0.45
+
+  # Greedy decoding by default — flip do_sample / temperature / top_k / top_p for diversity.
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+# Keep Hydra from changing the working directory.
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

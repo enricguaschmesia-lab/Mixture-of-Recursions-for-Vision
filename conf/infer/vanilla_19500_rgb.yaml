@@ -1,0 +1,67 @@
+# @package _global_
+defaults:
+  - /pretrain_vision/250720_pretrain_smollm-135m_vanilla_lr3e-3@_global_
+  - _self_
+
+# Disable wandb/logging for inference
+wandb: false
+
+name: vanilla_19500_rgb_infer
+wandb_run_name: vanilla_19500_rgb_infer
+
+# Match gbasi18/Vanilla-19500-RGB config.json:
+# 29 layers, 258 positions, 242271 unified multimodal vocab.
+max_length: 258
+attn_implementation: sdpa
+model_config:
+  num_hidden_layers: 29
+  vocab_size: 242271
+
+recursive:
+  enable: false
+
+kv_sharing:
+  enable: false
+
+mor:
+  enable: false
+
+# === Inference parameters ===
+infer:
+  checkpoint: gbasi18/Vanilla-19500-RGB
+  checkpoint_revision: bc9886bf12c673b9beb7eae77e5a16c7ac5c6faa
+  generate_modality: tok_rgb@256
+  max_new_tokens: 257          # 256 body tokens + 1 EO
+  num_generations: 2           # number of samples to generate and show in the output grid
+  use_cache: true
+  device: cuda
+
+  # Prompt sources — all optional, leave null for unconditional generation
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  # Output
+  output_dir: null             # null -> results/infer/<config-name>; relative paths live under results/infer/
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: true  # requires prompt_npy reference + Cosmos decode
+
+  # Vanilla models have no MoR routing map.
+  save_depth_overlay: false
+  depth_overlay_alpha: 0.45
+
+  # Enable sampling by default when requesting multiple generations.
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: true
+  seed: null
+
+# Keep Hydra from changing the working directory (outputs would go to ./outputs/ otherwise)
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

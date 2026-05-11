@@ -11,6 +11,7 @@ infer:
   checkpoint: /home/hugues/Documents/Visual_Intelligence/Mixture-of-Recursions-for-Vision/results/pretrain/clevr_token_alpha_1/checkpoint-19500
   generate_modality: tok_rgb@256
   max_new_tokens: 257          # 256 body tokens + 1 EO
+  num_generations: 2           # number of samples to generate and show in the output grid
   use_cache: false            # token-choice MoR needs full-sequence recompute for correct masks/overlays
   device: cuda
 
@@ -21,8 +22,10 @@ infer:
   prefix_len: null             # use only first N tokens from prompt_npy (image completion mode)
 
   # Output
+  output_dir: null             # null -> results/infer/<config-name>; relative paths live under results/infer/
   cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16      # e.g. "nvidia/Cosmos-0.1-Tokenizer-DI16x16" to decode PNG
   patch_grid_size: 16          # sqrt(num_image_tokens); 16 for tok_rgb@256 (16×16=256)
+  compute_reconstruction_metrics: true  # requires prompt_npy reference + Cosmos decode
 
   # Depth overlay (MoR expert-choice only): save a heatmap of per-token exit depth
   save_depth_overlay: true     # false to skip the extra forward pass and PNG writes

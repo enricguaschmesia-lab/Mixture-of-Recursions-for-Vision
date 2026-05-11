@@ -1,3 +1,5 @@
+# @package _global_
+
 # === Run identity ===
 name: 251020_pretrain_smollm-135m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001_clevr_rgb
 wandb: true

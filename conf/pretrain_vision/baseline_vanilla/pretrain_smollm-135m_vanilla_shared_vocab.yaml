@@ -1,18 +1,20 @@
+# @package _global_
+
 # === Run identity ===
-name: repro_collapse_local_3090
+name: vanilla_19500
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
 wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
-wandb_run_name: repro_collapse_local_3090
+wandb_run_name: vanilla_19500
 wandb_run_id: null      # auto-generated at runtime if null
 output_dir: null
 tensorboard: false
 tensorboard_dir: null
 
 # === Resume ===
-resume_from_checkpoint: repro_collapse_local_3090
-resume_step: 15000
+resume_from_checkpoint: false
+resume_step: null
 
 # === Dataset (vision PoC) ===
 dataset: clevr_multimodal
@@ -51,7 +53,7 @@ attn_implementation: sdpa
 use_pretrained_weights: false
 
 recursive:
-  enable: true
+  enable: false
   base_depth: null
   num_recursion: 3
   sharing: middle_cycle
@@ -65,7 +67,7 @@ kv_sharing:
   sharing: null
 
 mor:
-  enable: true
+  enable: false
   type: token
   capacity: null        # unused under token-choice
   rand_router: false
@@ -130,8 +132,8 @@ deepspeed: ds_configs/stage2.config
 # To enable Cosmos: pip install cosmos-tokenizer and point cosmos_model_path to
 # a CausalVideoTokenizer checkpoint (e.g. "nvidia/Cosmos-Tokenizer-DI8x8").
 vision_eval:
-  enable: true
+  enable: false
   eval_epoch_interval: 5   
   num_val_samples: 2
   patch_grid_size: 16          # 16×16 = 256 tokens for tok_rgb@256
-  cosmos_model_path: ${oc.env:COSMOS_TOKENIZER_PATH,pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16}
+  cosmos_model_path: /home/gianfranco/projects/2025/Visual_Intelligence_Project/Mixture-of-Recursions-for-Vision/pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16      # set to enable Cosmos RGB decode

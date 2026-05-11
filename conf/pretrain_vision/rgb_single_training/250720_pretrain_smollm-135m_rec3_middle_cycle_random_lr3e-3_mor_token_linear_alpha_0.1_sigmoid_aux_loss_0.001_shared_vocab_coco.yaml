@@ -1,3 +1,5 @@
+# @package _global_
+
 # === Run identity ===
 name: smoke_19500_coco_rgb
 wandb: true
