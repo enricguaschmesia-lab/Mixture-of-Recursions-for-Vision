@@ -12,16 +12,15 @@ For 'text' modalities: file contains a JSON list of K strings.
 """
 from importlib.resources import path
 import json
-import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 from tokenizers.processors import TemplateProcessing
-from lm_dataset.multimodal_vocab_shared_caption_scene_desc import MODALITIES, PAD_ID, TOTAL_VOCAB_SIZE, get_modality
+from lm_dataset.multimodal_vocab_shared_caption_scene_desc import MODALITIES, PAD_ID, get_modality
 
 
 class MultimodalTokenizedDataset(Dataset):
@@ -55,11 +54,17 @@ class MultimodalTokenizedDataset(Dataset):
         self.text_tokenizer_path = text_tokenizer_path
         self.text_max_length = text_max_length
         self.seed = seed
+        self._augmentation_count_cache: Dict[str, int] = {}
 
         for m in self.active_modalities:
             get_modality(m)   # validates
         if len(self.active_modalities) == 0:
             raise ValueError("active_modalities must be non-empty.")
+        if self.sample_from_k_augmentations <= 0:
+            raise ValueError(
+                "sample_from_k_augmentations must be positive, "
+                f"got {self.sample_from_k_augmentations}"
+            )
 
         # Use the first active modality to enumerate sample stems, matching
         # the convention in SimpleMultimodalDataset.
@@ -128,6 +133,32 @@ class MultimodalTokenizedDataset(Dataset):
         tokens = tokens + info.codebook_offset
         return tokens
 
+    def _modality_augmentation_count(self, modality: str, stem: str) -> int:
+        info = get_modality(modality)
+        path = Path(self.root_dir) / self.split / modality / f"{stem}{info.file_ext}"
+        if info.data_type == 'tokens':
+            arr = np.load(path, mmap_mode='r')
+            return int(arr.shape[0]) if arr.ndim > 1 else 1
+        if info.data_type == 'text':
+            with open(path, 'r') as f:
+                return len(json.load(f))
+        raise ValueError(f"Unknown data_type: {info.data_type}")
+
+    def _available_augmentations(self, stem: str) -> int:
+        if stem not in self._augmentation_count_cache:
+            counts = [
+                self._modality_augmentation_count(modality, stem)
+                for modality in self.active_modalities
+            ]
+            available = min(self.sample_from_k_augmentations, *counts)
+            if available <= 0:
+                raise ValueError(
+                    f"Sample '{stem}' has no available augmentations for "
+                    f"modalities {self.active_modalities}; counts={counts}"
+                )
+            self._augmentation_count_cache[stem] = available
+        return self._augmentation_count_cache[stem]
+
     def _load_text_modality(self, modality: str, stem: str, aug_idx: int) -> torch.Tensor:
         info = get_modality(modality)
         path = Path(self.root_dir) / self.split / modality / f"{stem}{info.file_ext}"
@@ -171,7 +202,7 @@ class MultimodalTokenizedDataset(Dataset):
         stem = self.file_stems[idx]
         rng = self._get_rng(idx)
 
-        aug_idx = int(rng.integers(0, self.sample_from_k_augmentations))
+        aug_idx = int(rng.integers(0, self._available_augmentations(stem)))
 
         if self.modality_order == 'random' and len(self.active_modalities) > 1:
             perm = rng.permutation(len(self.active_modalities))
@@ -185,7 +216,6 @@ class MultimodalTokenizedDataset(Dataset):
         # Truncate or pad to max_length.
         if seq.shape[0] > self.max_length:
             seq = seq[: self.max_length]
-        pad_len = self.max_length - seq.shape[0]
 
         input_ids = torch.full((self.max_length,), PAD_ID, dtype=torch.long)
         input_ids[: seq.shape[0]] = seq

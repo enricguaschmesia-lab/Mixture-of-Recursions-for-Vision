@@ -1,0 +1,66 @@
+{
+  "checkpoint": "gbasi18/Vanilla-10000-Multimodality",
+  "n_samples": 16,
+  "num_recursion": 3,
+  "num_mor_layers": 1,
+  "per_modality_stats": {
+    "caption": {
+      "mean": 1.9580318379160637,
+      "std": 0.23383459000792917,
+      "frac_d1": 0.049204052098408106,
+      "frac_d2": 0.9435600578871202,
+      "frac_d3": 0.00723589001447178,
+      "n_tokens": 691
+    },
+    "tok_rgb@256": {
+      "mean": 1.38427734375,
+      "std": 0.48642395791165993,
+      "frac_d1": 0.61572265625,
+      "frac_d2": 0.38427734375,
+      "frac_d3": 0.0,
+      "n_tokens": 4096
+    },
+    "tok_depth@256": {
+      "mean": 2.70263671875,
+      "std": 0.45709775783111584,
+      "frac_d1": 0.0,
+      "frac_d2": 0.29736328125,
+      "frac_d3": 0.70263671875,
+      "n_tokens": 4096
+    },
+    "tok_normal@256": {
+      "mean": 1.098388671875,
+      "std": 0.2986580358397771,
+      "frac_d1": 0.90185546875,
+      "frac_d2": 0.097900390625,
+      "frac_d3": 0.000244140625,
+      "n_tokens": 4096
+    }
+  },
+  "context_effect_mean_depth": {
+    "tok_rgb@256": {
+      "none": 1.37255859375,
+      "caption": 1.37939453125,
+      "rgb": null,
+      "caption+rgb": null
+    },
+    "tok_depth@256": {
+      "none": 2.69873046875,
+      "caption": 2.701171875,
+      "rgb": 2.693359375,
+      "caption+rgb": 2.71630859375
+    },
+    "tok_normal@256": {
+      "none": 1.1171875,
+      "caption": 1.1162109375,
+      "rgb": 1.10400390625,
+      "caption+rgb": 1.10205078125
+    },
+    "caption": {
+      "none": 1.9523910880088806,
+      "caption": null,
+      "rgb": 1.9531915187835693,
+      "caption+rgb": null
+    }
+  }
+}
