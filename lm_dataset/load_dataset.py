@@ -10,11 +10,17 @@ num_proc = 24
 # Override per-machine via: export CLEVR_ROOT=/path/to/clevr_dataset
 CLEVR_ROOT = os.environ.get("CLEVR_ROOT", os.path.join(PROJECT_ROOT, "data", "clevr_dataset"))
 
+COCO_ROOT = os.environ.get("COCO_ROOT", os.path.join(PROJECT_ROOT, "data", "coco_dataset"))
+
 MULTIMODAL_DATASETS = {
     "clevr_multimodal": {
         "root_dir": CLEVR_ROOT,
     },
+    "coco_multimodal": {
+        "root_dir": COCO_ROOT,
+    },
 }
+
 
 
 def load_dataset_from_config(cfg):

@@ -167,7 +167,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
         if not state.is_world_process_zero:
             return
         epoch = round(state.epoch)
-        if epoch <= 0 or epoch % self.eval_epoch_interval != 0 or epoch == self._last_eval_epoch:
+        if epoch < 0 or epoch % self.eval_epoch_interval != 0 or epoch == self._last_eval_epoch:
             return
         self._last_eval_epoch = epoch
 

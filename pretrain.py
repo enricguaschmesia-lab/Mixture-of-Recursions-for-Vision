@@ -5,6 +5,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # Auto-load <repo>/.env into os.environ so Hydra's ${oc.env:...} interpolation
 # and paths.py can see it. Must run before the paths import below.
 from util.env import load_dotenv
+from util.seeding import set_global_seed, seed_worker
 
 load_dotenv()
 
@@ -41,7 +42,11 @@ from util.misc import print_trainable_parameters, get_latest_checkpoint_path, pr
 @hydra.main(config_path="conf/pretrain_vision", config_name="smoke_50steps", version_base=None)
 def main(cfg: DictConfig):
     cfg = preprocess_config(cfg)
-    
+    # set_global_seed(
+    #     cfg.get("seed"),
+    #     deterministic_cuda=cfg.get("deterministic_cuda", False),
+    # )
+
     if cfg.wandb and cfg.get("wandb_run_id") is None:
         characters = string.ascii_letters + string.digits
         with open_dict(cfg):
@@ -63,7 +68,12 @@ def main(cfg: DictConfig):
             os.environ["WANDB_DIR"] = PROJECT_ROOT
         os.environ["WANDB_SAVE_CODE"] = "false"
         os.environ["WANDB_LOG_MODEL"] = "false"
-    
+        
+    set_global_seed(
+        cfg.get("seed"),
+        deterministic_cuda=cfg.get("deterministic_cuda", False),
+    )
+
     launcher_type = get_launcher_type()
     
     print ("Loading tokenizers...")
@@ -134,6 +144,8 @@ def main(cfg: DictConfig):
         logging_dir=cfg.tensorboard_dir,
         deepspeed=cfg.deepspeed if launcher_type == "deepspeed" else None,
         log_on_each_node=False,
+        seed=cfg.get("seed", 42),
+        data_seed=cfg.get("seed", 42),
     )
     
     callbacks = []

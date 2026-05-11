@@ -122,18 +122,20 @@ class MoRLlamaDecoderLayer(nn.Module):
                 torch.finfo(attention_mask.dtype).min,
                 dtype=attention_mask.dtype, device=attention_mask.device,
             )
-            for b in range(new_bs):
+            for b, sample_idx in enumerate(selected_batch_indices):
                 indices = selected_seq_indices[b]
                 s = indices.numel()
-                _mask = torch.gather(
-                    attention_mask, 2,
-                    indices.view(1, 1, s, 1).expand(bs, 1, s, seq_len),
+                # Gather rows then columns from THIS sample's mask only
+                sample_mask = attention_mask[sample_idx:sample_idx+1]   # [1, 1, seq_len, seq_len]
+                rows = torch.gather(
+                    sample_mask, 2,
+                    indices.view(1, 1, s, 1).expand(1, 1, s, seq_len),
                 )
-                _mask = torch.gather(
-                    _mask, 3,
-                    indices.view(1, 1, 1, s).expand(bs, 1, s, s),
+                block = torch.gather(
+                    rows, 3,
+                    indices.view(1, 1, 1, s).expand(1, 1, s, s),
                 )
-                new_attention_mask[b, :, :s, :s] = _mask
+                new_attention_mask[b, :, :s, :s] = block[0]
 
         elif attention_mask.dim() == 2:
             # Proper handling for 2D padding masks (was previously `pass`).
