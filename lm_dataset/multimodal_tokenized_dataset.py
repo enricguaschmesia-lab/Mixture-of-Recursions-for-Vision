@@ -140,7 +140,7 @@ class MultimodalTokenizedDataset(Dataset):
             arr = np.load(path, mmap_mode='r')
             return int(arr.shape[0]) if arr.ndim > 1 else 1
         if info.data_type == 'text':
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 return len(json.load(f))
         raise ValueError(f"Unknown data_type: {info.data_type}")
 
