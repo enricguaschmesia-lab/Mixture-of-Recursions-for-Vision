@@ -39,6 +39,7 @@ def load_dataset_from_config(cfg):
         sample_from_k = mm_cfg.get("sample_from_k_augmentations", 10)
         text_tokenizer_path = mm_cfg.get("text_tokenizer_path", "gpt2")
         text_max_length = mm_cfg.get("text_max_length", 64)
+        shuffle_image_patches = mm_cfg.get("shuffle_image_patches", False)
 
         return MultimodalTokenizedDataset(
             root_dir=ds_cfg["root_dir"],
@@ -49,6 +50,7 @@ def load_dataset_from_config(cfg):
             sample_from_k_augmentations=sample_from_k,
             text_tokenizer_path=text_tokenizer_path,
             text_max_length=text_max_length,
+            shuffle_image_patches=shuffle_image_patches,
         )
 
 
