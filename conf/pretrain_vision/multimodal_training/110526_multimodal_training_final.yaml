@@ -35,7 +35,7 @@ batch_size_rampup_steps: null
 
 # === Sequence length ===
 # <BO_rgb> + 256 Cosmos tokens + <EO_rgb> = 258. No text modality → no padding.
-max_length: 1024
+max_length: 1048
 
 add_bos_token: false
 global_shuffling: false
@@ -77,7 +77,7 @@ mor:
   # Paper enables z-loss by default for token-choice; penalizes large router
   # logits to fight saturation that precedes collapse.
   z_loss: true
-  z_coeff: 0.001
+  z_coeff: 0.003
   temp: 1.0
 
   # Expert settings kept for A/B with `type: expert`; inert under token-choice.
