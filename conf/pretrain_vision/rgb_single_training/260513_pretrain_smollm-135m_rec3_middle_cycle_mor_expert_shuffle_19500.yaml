@@ -1,0 +1,128 @@
+# @package _global_
+# 19500-step expert-choice MoR with image-patch shuffling enabled.
+
+# === Run identity ===
+name: 260513_pretrain_smollm-135m_rec3_middle_cycle_mor_expert_shuffle_19500
+wandb: true
+wandb_mode: online
+wandb_entity: ${oc.env:WANDB_ENTITY}
+wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
+wandb_run_name: null
+wandb_run_id: null
+output_dir: null
+tensorboard: false
+tensorboard_dir: null
+
+# === Resume ===
+resume_from_checkpoint: false
+resume_step: null
+
+# === Dataset ===
+dataset: clevr_multimodal
+multimodal:
+  split: train
+  active_modalities: ['tok_rgb@256']
+  modality_order: fixed
+  sample_from_k_augmentations: 10
+  shuffle_image_patches: true
+
+weights: null
+
+# === Batching ===
+total_batch_size: 256
+per_device_train_batch_size: 16
+gradient_accumulation_steps: null
+batch_size_rampup_steps: null
+
+# === Sequence length ===
+max_length: 258
+
+add_bos_token: false
+global_shuffling: false
+local_shuffling: false
+
+tokenizer: smollm
+
+model: smollm
+model_name_or_path: HuggingFaceTB/SmolLM-135M
+model_config:
+  num_hidden_layers: 29
+  vocab_size: 242271
+attn_implementation: sdpa
+use_pretrained_weights: false
+
+recursive:
+  enable: true
+  base_depth: null
+  num_recursion: 3
+  sharing: middle_cycle
+  ln_share: true
+  initialization: random
+
+kv_sharing:
+  enable: false
+  base_depth: null
+  num_recursion: null
+  sharing: null
+
+mor:
+  enable: true
+  type: expert
+  capacity: null
+  rand_router: false
+  router_type: linear
+  z_loss: false
+  z_coeff: 0.001
+  temp: 1.0
+  expert:
+    cap_warmup_step: 0
+    router_func: sigmoid
+    alpha: 0.1
+    sampling: aux_loss
+    include_first: true
+    coeff: 0.001
+    gating: weighted
+  token:
+    router_func: sigmoid
+    alpha: 0.1
+    balancing: loss
+    coeff: 0.001
+    u: 0.001
+    gating: weighted
+
+# === Training schedule ===
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 3900   # 20% of training
+  decay_type: linear
+learning_rate: 0.003
+adam_beta1: 0.9
+adam_beta2: 0.95
+weight_decay: 0.1
+precision: bf16
+max_grad_norm: 1.0
+# steps_per_epoch = 50k / 256 ≈ 195. 195 × 100 epochs = 19500.
+num_train_steps: 19500
+stop_steps: 19500
+num_warmup_steps: 975    # 5% of training
+save_interval: null
+save_steps: 5000
+fixed_save_steps: null
+save_total_limit: null
+logging_steps: 10
+dataloader_num_workers: 16
+gradient_checkpointing: false
+deepspeed: ds_configs/stage2.config
+
+# === Vision eval ===
+vision_eval:
+  enable: true
+  eval_epoch_interval: 5
+  num_val_samples: 2
+  patch_grid_size: 16
+  cosmos_model_path: ${oc.env:COSMOS_TOKENIZER_PATH,pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16}
+
+hf_upload:
+  enable: false
+  repo_id: "HugSib/mor_expert_shuffle_19500"
+  private: true

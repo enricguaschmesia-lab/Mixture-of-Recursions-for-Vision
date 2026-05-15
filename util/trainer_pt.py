@@ -61,6 +61,7 @@ if is_accelerate_available():
 from util.losses import DISTILL_LOSSES
 from util.misc import get_iterator
 from util.callback import MoRCallbackHandler, MorSaveCallback
+from lm_dataset.multimodal_vocab_shared_caption_scene_desc import ID_TO_MODALITY
 
 TRAINER_STATE_NAME = "trainer_state.json"
 
@@ -77,6 +78,14 @@ class MoRTrainer(Trainer):
         self.bal_tr_ratio = torch.tensor([0.0] * cfg.recursive.num_recursion).to(self.args.device)  # for logging balancing_ratio from MoR
         self.bal_tr_entropy = torch.tensor(0.0).to(self.args.device)  # for logging balancing_entropy from MoR
         self.router_z_loss = torch.tensor(0.0).to(self.args.device)  # for logging router_z_loss from MoR
+        # Per-modality CE accumulators (logging-only; main loss is unchanged).
+        # Steps where a modality is absent don't contribute, so we track a count too.
+        self.modality_tr_loss = {
+            name: torch.tensor(0.0).to(self.args.device) for name in ID_TO_MODALITY.values()
+        }
+        self.modality_tr_count = {
+            name: torch.tensor(0.0).to(self.args.device) for name in ID_TO_MODALITY.values()
+        }
         self.cfg = cfg
         
     def create_optimizer(self):
@@ -892,7 +901,7 @@ class MoRTrainer(Trainer):
             return loss_mb.reduce_mean().detach().to(self.args.device)
         
         with self.compute_loss_context_manager():
-            loss, sampling_loss, sampling_acc, sampling_topk_acc, uniformity, dead_token_seq, balancing_loss, balancing_ratio, router_z_loss \
+            loss, sampling_loss, sampling_acc, sampling_topk_acc, uniformity, dead_token_seq, balancing_loss, balancing_ratio, router_z_loss, per_modality_loss \
                 = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
             
         if self.cfg.mor.type == "expert":
@@ -988,12 +997,20 @@ class MoRTrainer(Trainer):
             self.update_metric(balancing_ratio, key="bal_tr_ratio")
         
         self.update_metric(router_z_loss, key="router_z_loss")
-        
+
+        for name, ce in per_modality_loss.items():
+            self.modality_tr_loss[name] = self.modality_tr_loss[name] + ce.to(self.modality_tr_loss[name].device)
+            self.modality_tr_count[name] = self.modality_tr_count[name] + 1
+
         return loss.detach()
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # How the loss is computed by Trainer. By default, all models return the loss in the first element.
         # Subclass and override for custom behavior.
+        # Strip modality_ids before forward: the model doesn't accept it, we use it
+        # only to compute logging-only per-modality CE from outputs.logits.
+        modality_ids = inputs.pop("modality_ids", None)
+        labels_for_per_modality = inputs.get("labels", None)
         if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
             labels = inputs.pop("labels")
         else:
@@ -1003,7 +1020,7 @@ class MoRTrainer(Trainer):
             if num_items_in_batch is not None:
                 loss_kwargs["num_items_in_batch"] = num_items_in_batch
             inputs = {**inputs, **loss_kwargs}
-        
+
         outputs = model(**inputs)
         
         # Save past state if it exists
@@ -1052,8 +1069,27 @@ class MoRTrainer(Trainer):
             balancing_loss *= self.accelerator.num_processes
             router_z_loss *= self.accelerator.num_processes
             
+        per_modality_loss: Dict[str, torch.Tensor] = {}
+        if modality_ids is not None and labels_for_per_modality is not None:
+            with torch.no_grad():
+                logits = outputs.logits if isinstance(outputs, dict) else outputs[1]
+                # Causal LM shift: predict token t+1 from position t.
+                shift_logits = logits[:, :-1, :]
+                shift_labels = labels_for_per_modality[:, 1:]
+                shift_modality_ids = modality_ids[:, 1:]
+                flat_logits = shift_logits.reshape(-1, shift_logits.size(-1))
+                flat_labels = shift_labels.reshape(-1)
+                flat_mids = shift_modality_ids.reshape(-1)
+                flat_valid = flat_labels.ne(-100)
+                for mid, name in ID_TO_MODALITY.items():
+                    mask = flat_valid & flat_mids.eq(mid)
+                    if mask.any():
+                        per_modality_loss[name] = torch.nn.functional.cross_entropy(
+                            flat_logits[mask], flat_labels[mask], reduction="mean"
+                        )
+
         return (loss, sampling_loss, sampling_acc, sampling_topk_acc, uniformity, dead_token_seq, \
-            balancing_loss, balancing_ratio, router_z_loss)
+            balancing_loss, balancing_ratio, router_z_loss, per_modality_loss)
 
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
         if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
@@ -1103,6 +1139,14 @@ class MoRTrainer(Trainer):
                 logs["balancing_entropy"] = round(bal_tr_entropy_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
                 logs["router_z_loss"] = round(router_z_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
             
+            for name in list(self.modality_tr_loss.keys()):
+                tot = self._nested_gather(self.modality_tr_loss[name]).sum().item()
+                cnt = self._nested_gather(self.modality_tr_count[name]).sum().item()
+                self.modality_tr_loss[name] -= self.modality_tr_loss[name]
+                self.modality_tr_count[name] -= self.modality_tr_count[name]
+                if cnt > 0:
+                    logs[f"loss_{name}"] = round(tot / cnt, 4)
+
             if grad_norm is not None:
                 logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
             logs["learning_rate"] = self._get_learning_rate()

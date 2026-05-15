@@ -105,6 +105,11 @@ def build_vocab() -> Tuple[Dict[str, ModalityInfo], int, int]:
 
 MODALITIES, PAD_ID, TOTAL_VOCAB_SIZE = build_vocab()
 
+# Per-token modality id used for per-modality loss logging.
+# 0 is reserved for "no modality" (pad / BO / EO / unlabeled).
+MODALITY_TO_ID: Dict[str, int] = {name: i + 1 for i, name in enumerate(MODALITIES)}
+ID_TO_MODALITY: Dict[int, str] = {i: name for name, i in MODALITY_TO_ID.items()}
+
 
 def get_modality(name: str) -> ModalityInfo:
     if name not in MODALITIES:
