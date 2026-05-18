@@ -153,6 +153,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
         ds_cfg = MULTIMODAL_DATASETS[ds_name]
         mm_cfg = self.cfg.get("multimodal", {})
         active_modalities = list(mm_cfg.get("active_modalities", ["tok_rgb@256"]))
+        shuffle_image_patches = bool(mm_cfg.get("shuffle_image_patches", False))
         self._val_dataset = MultimodalTokenizedDataset(
             root_dir=ds_cfg["root_dir"],
             split="val",
@@ -160,6 +161,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
             max_length=self.cfg.max_length,
             modality_order="fixed",
             sample_from_k_augmentations=1,  # always aug_idx=0 for reproducibility
+            shuffle_image_patches=shuffle_image_patches,
         )
         return self._val_dataset
 
@@ -205,6 +207,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
         samples = [val_dataset[i] for i in range(n)]
         input_ids = torch.stack([s["input_ids"] for s in samples]).to(device)
         attention_mask = torch.stack([s["attention_mask"] for s in samples]).to(device)
+        position_ids = torch.stack([s["position_ids"] for s in samples]).to(device)
 
         # Capture routing decisions from each MoR layer.
         # Expert-choice populates `selected_tokens` ([bs, top_k, 1]) once per recursion wrapper.
@@ -224,7 +227,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
 
         model.eval()
         with torch.no_grad():
-            m(input_ids=input_ids, attention_mask=attention_mask)
+            m(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids)
         for h in hooks:
             h.remove()
         model.train()
@@ -258,9 +261,10 @@ class MultimodalVisionEvalCallback(TrainerCallback):
             )
             
         ids_cpu = input_ids.cpu()
+        position_ids_cpu = position_ids.cpu()
 
         n_rows = n * n_mods
-        fig, axes = plt.subplots(n_rows, 2, figsize=(10, 4 * n_rows), squeeze=False)
+        fig, axes = plt.subplots(n_rows, 3, figsize=(15, 4 * n_rows), squeeze=False)
 
         for i in range(n):
             for j, mod_name in enumerate(active_modalities):
@@ -273,7 +277,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
                 bo_matches = (ids == info.bo_id).nonzero(as_tuple=True)[0]
                 eo_matches = (ids == info.eo_id).nonzero(as_tuple=True)[0]
                 if len(bo_matches) == 0 or len(eo_matches) == 0:
-                    for col in range(2):
+                    for col in range(3):
                         axes[row, col].axis("off")
                         axes[row, col].set_title(f"[{mod_name}] not in sequence (sample {i})")
                     continue
@@ -286,12 +290,15 @@ class MultimodalVisionEvalCallback(TrainerCallback):
                 # For text modalities:  body = [SOS+offset, tok_0+offset, ..., tok_N+offset, EOS+offset]
                 body_counts = counts[bo_pos + 1 : eo_pos].numpy()
                 body_tokens = ids[bo_pos + 1 : eo_pos]
+                # Canonical raster index per body slot: position_ids carries the
+                # pre-shuffle index, offset by bo_pos+1 → returns 0..n_body-1.
+                body_pos_ids = (position_ids_cpu[i, bo_pos + 1 : eo_pos] - (bo_pos + 1)).numpy()
                 # Subtract codebook_offset to recover raw codebook / tokenizer indices
                 raw_tokens = (body_tokens - info.codebook_offset).numpy()
 
                 if info.data_type == "tokens":
                     self._plot_image_modality(
-                        axes[row], mod_name, i, raw_tokens, body_counts, plt
+                        axes[row], mod_name, i, raw_tokens, body_counts, body_pos_ids, plt
                     )
 
                 elif info.data_type == "text":
@@ -302,6 +309,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
                     self._plot_text_modality(
                         axes[row], mod_name, i, raw_tokens, body_counts, plt, np
                     )
+                    axes[row, 2].axis("off")
 
         plt.suptitle(
             f"Vision MoR eval — epoch {round(state.epoch)}, step {state.global_step}",
@@ -324,20 +332,30 @@ class MultimodalVisionEvalCallback(TrainerCallback):
                 step=state.global_step,
             )
 
-    def _plot_image_modality(self, ax_row, mod_name, sample_idx, raw_tokens, body_counts, plt):
-        """Two panels: (left) clean Cosmos reconstruction, (right) reconstruction + recursion overlay."""
+    def _plot_image_modality(self, ax_row, mod_name, sample_idx, raw_tokens, body_counts, body_pos_ids, plt):
+        """Three panels: (left) clean Cosmos reconstruction in canonical raster order,
+        (middle) recursion heatmap indexed by sequence position,
+        (right) recursion heatmap reindexed by position_ids (canonical raster)."""
         import numpy as np
         from matplotlib.colors import BoundaryNorm, ListedColormap
-        
-        # ---- Base image: Cosmos decode, or normalised token-ID grid as fallback ----
+
+        # Reorder tokens and counts into canonical raster order via position_ids.
+        # body_pos_ids[i] gives the canonical raster index of the token sitting at
+        # current sequence slot i. Scatter back to canonical order for both.
+        canonical_tokens = np.empty_like(raw_tokens)
+        canonical_tokens[body_pos_ids] = raw_tokens
+        canonical_counts = np.zeros_like(body_counts)
+        canonical_counts[body_pos_ids] = body_counts
+
+        # ---- Base image: Cosmos decode (canonical order), or normalised token-ID grid as fallback ----
         decoded = self._try_decode_cosmos(
-            torch.from_numpy(raw_tokens).long().unsqueeze(0)
+            torch.from_numpy(canonical_tokens).long().unsqueeze(0)
         )
         if decoded is not None:
             base_img = np.clip(decoded[0], 0.0, 1.0)        # [H, W, 3]
             base_label = f"[{mod_name}] Cosmos reconstruction (sample {sample_idx})"
         else:
-            g = raw_tokens.astype(float).reshape(self.patch_grid_size, self.patch_grid_size)
+            g = canonical_tokens.astype(float).reshape(self.patch_grid_size, self.patch_grid_size)
             g = (g - g.min()) / (g.max() - g.min() + 1e-8)
             base_img = np.stack([g, g, g], axis=-1)          # grayscale -> RGB for consistency
             base_label = f"[{mod_name}] Token-ID grid (sample {sample_idx})"
@@ -352,27 +370,40 @@ class MultimodalVisionEvalCallback(TrainerCallback):
         bounds = np.arange(n_levels + 1) - 0.5               # [-0.5, 0.5, 1.5, 2.5, 3.5]
         norm = BoundaryNorm(bounds, cmap.N)
 
-        heatmap = body_counts.reshape(self.patch_grid_size, self.patch_grid_size)
+        heatmap_seq = body_counts.reshape(self.patch_grid_size, self.patch_grid_size)
+        heatmap_canonical = canonical_counts.reshape(self.patch_grid_size, self.patch_grid_size)
 
-        # ---- Left: clean reconstruction ----
+        # ---- Left: clean reconstruction (canonical) ----
         ax_row[0].imshow(base_img, extent=extent)
         ax_row[0].set_title(base_label, fontsize=9)
         ax_row[0].axis("off")
 
-        # ---- Right: reconstruction + semi-transparent recursion overlay ----
-        ax_row[1].imshow(base_img, extent=extent)
-        im = ax_row[1].imshow(
-            heatmap, cmap=cmap, norm=norm,
-            alpha=0.55, interpolation="nearest",
-            extent=extent,
+        # ---- Middle: heatmap indexed by sequence position (cell (i,j) = depth at seq slot row-major) ----
+        im_seq = ax_row[1].imshow(
+            heatmap_seq, cmap=cmap, norm=norm,
+            interpolation="nearest", extent=extent,
         )
-        cbar = plt.colorbar(im, ax=ax_row[1], ticks=np.arange(n_levels))
-        cbar.set_label("# recursions")
+        cbar_seq = plt.colorbar(im_seq, ax=ax_row[1], ticks=np.arange(n_levels))
+        cbar_seq.set_label("# recursions")
         ax_row[1].set_title(
-            f"[{mod_name}] Reconstruction + recursion map (sample {sample_idx})",
+            f"[{mod_name}] depth by sequence index (sample {sample_idx})",
             fontsize=9,
         )
         ax_row[1].axis("off")
+
+        # ---- Right: heatmap reindexed by position_ids (canonical raster) + reconstruction underlay ----
+        ax_row[2].imshow(base_img, extent=extent)
+        im_can = ax_row[2].imshow(
+            heatmap_canonical, cmap=cmap, norm=norm,
+            alpha=0.55, interpolation="nearest", extent=extent,
+        )
+        cbar_can = plt.colorbar(im_can, ax=ax_row[2], ticks=np.arange(n_levels))
+        cbar_can.set_label("# recursions")
+        ax_row[2].set_title(
+            f"[{mod_name}] depth by position_ids (sample {sample_idx})",
+            fontsize=9,
+        )
+        ax_row[2].axis("off")
 
     def _plot_text_modality(self, ax_row, mod_name, sample_idx, raw_tokens, body_counts, plt, np):
         """
