@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - /pretrain_vision/260503_pretrain_baseline_smollm-135m_random@_global_   # inherits full model architecture at global root
+  - /pretrain_vision/baseline_random/260503_pretrain_baseline_smollm-135m_random@_global_   # inherits full model architecture at global root
   - _self_                                    # values below override the defaults
 
 # Disable wandb/logging for inference

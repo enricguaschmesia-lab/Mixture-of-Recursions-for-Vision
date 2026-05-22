@@ -177,6 +177,20 @@ uv run python infer.py --config-name=infer/my_run
 
 Outputs (decoded PNG and, for expert-choice MoR, the `*_depth_overlay.png` heatmap) are written to `results/infer/`. To skip the extra forward pass used for the overlay, set `infer.save_depth_overlay=false`.
 
+## Reproduce metrics
+
+`scripts/reproduce_metrics.py` regenerates `results/milestone2/metrics/summary_pivot.{md,csv,tex}` by evaluating four checkpoints (`baseline_vanilla`, `random_router_5000`, `mor_5000_3r`, `mor_5000_4r`) on 500 CLEVR test scenes at `aug_idx=0` across three directions:
+
+- **RGB within** — teacher-forced perplexity (25%→75%)
+- **RGB → caption** — CLIPScore (ViT-B/32) + BLEU-4
+- **Caption → RGB** — Pixel-MSE + SSIM (Cosmos DI-16×16 decode)
+
+```bash
+uv run python scripts/reproduce_metrics.py
+```
+
+Per-sample results are cached under `results/milestone2/metrics/per_sample/` so reruns resume incrementally. Requires CUDA for the Cosmos tokenizer.
+
 ## Citation
 
 ```

@@ -1,0 +1,74 @@
+# @package _global_
+defaults:
+  # romanevrwld/Random-Router-Baseline-5000-Multimodality:
+  #   29 layers (num_recursion=3 → (29-2)/3=9 middle_cycle blocks),
+  #   vocab=242271, MoR token-choice with rand_router=True (routing is random,
+  #   not learned), active_modalities=[tok_rgb, tok_depth, tok_normal, caption, scene_desc].
+  #   Used as a content-independent routing control for RQ1/RQ3.
+  - /pretrain_vision/multimodal_training/110526_multimodal_training_final@_global_
+  - _self_
+
+wandb: false
+
+name: random_router_5000_multimodality_infer
+wandb_run_name: random_router_5000_multimodality_infer
+
+# rand_router=true: argmax is replaced by a uniform random draw at every forward pass.
+mor:
+  enable: true
+  type: token
+  capacity: null
+  rand_router: true
+  router_type: mlp
+  z_loss: false
+  z_coeff: 0.0
+  temp: 1.0
+  expert:
+    cap_warmup_step: 0
+    router_func: sigmoid
+    alpha: 0.1
+    sampling: aux_loss
+    include_first: true
+    coeff: 0.001
+    gating: weighted
+  token:
+    router_func: softmax
+    alpha: 1.0
+    balancing: loss
+    coeff: 0.1
+    u: 0.001
+    gating: weighted
+    bal_warmup_step: 0
+
+infer:
+  checkpoint: romanevrwld/Random-Router-Baseline-5000-Multimodality
+  generate_modality: tok_rgb@256
+  max_new_tokens: 257
+  num_generations: 1
+  use_cache: false   # MoR routing requires full-sequence recompute
+  device: cuda
+
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: true
+
+  save_depth_overlay: true
+  depth_overlay_alpha: 0.45
+
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

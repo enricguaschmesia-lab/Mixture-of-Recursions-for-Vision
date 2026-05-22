@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - /pretrain_vision/smoke_50steps_token@_global_   # inherits token-choice MoR architecture at global root
+  - /pretrain_vision/rgb_single_training/smoke_50steps_token@_global_   # inherits token-choice MoR architecture at global root
   - _self_                                    # values below override the defaults
 
 # Disable wandb/logging for inference
