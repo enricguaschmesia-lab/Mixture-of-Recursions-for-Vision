@@ -199,7 +199,6 @@ hf_cache/
 hf_datasets/
 hf_models/
 *.png
-*.pdf
 *.html
 *.csv
 outputs
