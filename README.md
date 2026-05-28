@@ -61,41 +61,6 @@ The default path is `<repo>/data/clevr_dataset`. Override with:
 export CLEVR_ROOT=/path/to/clevr_dataset
 ```
 
-### COCO
-
-Follow these steps to download, extract, and tokenize the COCO dataset for the MoR model.
-
-Create the raw data directory and download the COCO 2017 Train and Val splits. 
-*(Estimated time: ~18 mins for train, ~2 mins for val)*
-
-```bash
-# Create the directory and navigate into it
-mkdir -p data/coco_dataset/raw
-cd data/coco_dataset/raw
-
-wget http://images.cocodataset.org/zips/train2017.zip
-unzip -n train2017.zip
-
-wget http://images.cocodataset.org/zips/val2017.zip
-unzip -n val2017.zip
-
-# Return to the project root
-cd ../../../
-```
-
-Then be sure to have the Cosmos tokenizer.
-```bash
-huggingface-cli download nvidia/Cosmos-0.1-Tokenizer-DI16x16 \
-  --local-dir pretrained_ckpts/Cosmos-0.1-Tokenizer-DI16x16
-```
-
-Run the preparation script to crop the images to 256x256 and generate the .npy token files.
-(Estimated time: ~6 mins)
-```bash
-cd lm_dataset
-uv run python prepare_coco.py
-```
-
 
 ## Run
 

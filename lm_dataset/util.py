@@ -102,6 +102,12 @@ def data_file_path(prefix_path):
 
 
 class MMapIndexedDataset(torch.utils.data.Dataset):
+    """
+    Memory-mapped indexed dataset backed by <prefix>.idx and <prefix>.bin files.
+
+    The .idx file stores dtype, sequence lengths, byte offsets, and document
+    indices. The .bin file stores the flattened token data.
+    """
     class Index(object):
         _HDR_MAGIC = b"MMIDIDX\x00\x00"
 

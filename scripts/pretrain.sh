@@ -1,5 +1,35 @@
 #!/bin/bash
 
+# -----------------------------------------------------------------------------
+# Launch script for MoR vision/multimodal pretraining.
+# This script is the recommended entry point for training runs. It launches pretrain.py through either Hugging Face Accelerate or DeepSpeed and passes the
+# selected Hydra config explicitly with:
+
+# pretrain.py --config-name <config_name>
+
+# Usage:
+
+# bash scripts/pretrain.sh [accelerate|deepspeed] [online|offline] <gpu_ids> <config_name_1> [config_name_2 ...]
+
+# Examples:
+
+# bash scripts/pretrain.sh accelerate offline 0 my_config
+# bash scripts/pretrain.sh accelerate online 0,1 config_a config_b
+# bash scripts/pretrain.sh deepspeed offline 0,1,2,3 my_config
+
+# Arguments:
+
+# - launcher type: optional, either "accelerate" or "deepspeed".
+# Defaults to "accelerate" if omitted.
+# - W&B mode: optional, either "online" or "offline".
+# Exported as WANDB_MODE before launching training.
+# - gpu_ids: comma-separated GPU IDs, e.g. "0" or "0,1".
+# - config_name(s): Hydra config names from conf/pretrain_vision/.
+
+# All arguments after <gpu_ids> are interpreted as config names.
+
+# -----------------------------------------------------------------------------
+
 launcher_type="accelerate"
 
 if [[ "$1" == "deepspeed" ]] || [[ "$1" == "accelerate" ]]; then
