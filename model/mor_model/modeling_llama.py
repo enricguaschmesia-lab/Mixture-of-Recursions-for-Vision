@@ -74,6 +74,13 @@ class MoRBaseModelOutputWithPast(ModelOutput):
 
             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
             heads.
+    MoR-specific fields:
+        sampling_loss: expert-choice auxiliary loss used to train the router.
+        sampling_acc: expert-choice router selection accuracy.
+        sampling_topk_acc: expert-choice top-k selection accuracy.
+        balancing_loss: token-choice load-balancing loss.
+        balancing_ratio: fraction of tokens assigned to each recursion depth.
+        router_z_loss: optional router logit regularization loss.
     """
 
     last_hidden_state: Optional[torch.FloatTensor] = None
@@ -117,6 +124,14 @@ class MoRCausalLMOutputWithPast(ModelOutput):
 
             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
             heads.
+
+    MoR-specific fields:
+        sampling_loss: expert-choice auxiliary loss used to train the router.
+        sampling_acc: expert-choice router selection accuracy.
+        sampling_topk_acc: expert-choice top-k selection accuracy.
+        balancing_loss: token-choice load-balancing loss.
+        balancing_ratio: fraction of tokens assigned to each recursion depth.
+        router_z_loss: optional router logit regularization loss.
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -224,7 +239,6 @@ class MoRLlamaModel(LlamaModel):
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-                # TODO: support MoRLlamaDecoderLayer
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
@@ -258,10 +272,6 @@ class MoRLlamaModel(LlamaModel):
                             sampling_acc_list.append(layer_outputs.sampling_acc)
                         if layer_outputs.sampling_topk_acc is not None:
                             sampling_topk_acc_list.append(layer_outputs.sampling_topk_acc)
-                        # if layer_outputs.uniformity is not None:
-                        #     uniformity += layer_outputs.uniformity
-                        # if layer_outputs.dead_token_seq is not None:
-                        #     dead_token_seq = layer_outputs.dead_token_seq
                         if layer_outputs.router_z_loss is not None:
                             router_z_loss += layer_outputs.router_z_loss
                             

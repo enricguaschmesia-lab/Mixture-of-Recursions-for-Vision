@@ -73,8 +73,9 @@ PATCH_GRID   = 16
 N_SAMPLES    = 500
 COSMOS_PATH  = 'nvidia/Cosmos-0.1-Tokenizer-DI16x16'
 
-DATA_TEST       = PROJECT_DIR / 'data' / 'clevr_dataset' / 'test'
-METRICS_DIR     = PROJECT_DIR / 'results_' / 'milestone2' / 'metrics'
+CLEVR_ROOT = Path(os.environ.get("CLEVR_ROOT", PROJECT_DIR / "data" / "clevr_dataset"))
+DATA_TEST = CLEVR_ROOT / "test"
+METRICS_DIR     = PROJECT_DIR / 'results' / 'milestone2' / 'metrics'
 PER_SAMPLE_DIR  = METRICS_DIR / 'per_sample'
 METRICS_DIR.mkdir(parents=True, exist_ok=True)
 PER_SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
@@ -121,8 +122,10 @@ def load_model(cfg_name: str):
     if cfg.get('mor') and cfg.mor.get('enable'):
         if cfg.mor.type == 'token':
             m.transform_layer_to_mor_token(cfg)
-        else:
+        elif cfg.mor.type == 'expert':
             m.transform_layer_to_mor_expert(cfg)
+        else:
+            raise ValueError(f"Unknown MoR type: {cfg.mor.type}")
     m = load_checkpoint(m, cfg.infer.checkpoint)
     return m.to(DEVICE).eval()
 

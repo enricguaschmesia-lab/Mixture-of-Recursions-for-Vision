@@ -1,3 +1,19 @@
+"""
+Training entry point for MoR vision and multimodal pretraining.
+
+All the config files used with this script are in this folder:
+    conf/pretrain_vision/
+
+This script is used by scripts/pretrain.sh: please launch all your trainings from pretrain.sh,
+not directly from this script.
+
+Main outputs:
+    SAVE_DIR/pretrain/<cfg.output_dir>/
+
+Notes:
+    Paths are resolved through .env, environment variables, and paths.py.
+"""
+
 import os
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -5,11 +21,13 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # Auto-load <repo>/.env into os.environ so Hydra's ${oc.env:...} interpolation
 # and paths.py can see it. Must run before the paths import below.
 from util.env import load_dotenv
-from util.seeding import set_global_seed, seed_worker
+from util.seeding import set_global_seed
 
 load_dotenv()
 
-from paths import SAVE_DIR, PROJECT_ROOT, HF_CACHE_DIR; os.environ["HF_HOME"] = HF_CACHE_DIR
+from paths import SAVE_DIR, PROJECT_ROOT, HF_CACHE_DIR
+
+os.environ["HF_HOME"] = HF_CACHE_DIR
 
 
 import string
@@ -30,7 +48,7 @@ except ImportError:
 import transformers.modeling_utils
 transformers.modeling_utils.DTensor = DTensor
 
-from lm_dataset.load_dataset import load_dataset_from_config ,MULTIMODAL_DATASETS
+from lm_dataset.load_dataset import load_dataset_from_config, MULTIMODAL_DATASETS
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
 from util.config import preprocess_config
@@ -41,11 +59,8 @@ from util.misc import print_trainable_parameters, get_latest_checkpoint_path, pr
 
 @hydra.main(config_path="conf/pretrain_vision", config_name="smoke_50steps", version_base=None)
 def main(cfg: DictConfig):
+    # Resolve derived config fields and normalize Hydra config before use.
     cfg = preprocess_config(cfg)
-    # set_global_seed(
-    #     cfg.get("seed"),
-    #     deterministic_cuda=cfg.get("deterministic_cuda", False),
-    # )
 
     if cfg.wandb and cfg.get("wandb_run_id") is None:
         characters = string.ascii_letters + string.digits
@@ -76,7 +91,8 @@ def main(cfg: DictConfig):
 
     launcher_type = get_launcher_type()
     
-    print ("Loading tokenizers...")
+    print("Loading tokenizers...")
+    # Load tokenizer early so tokenizer-related errors fail before training starts
     tokenizer = load_tokenizer_from_config(cfg)
 
     print("Loading dataset...")
@@ -93,15 +109,17 @@ def main(cfg: DictConfig):
 
 
     print ("Loading models...")
+    # Build the base model first, then apply recursive parameter sharing,
+    # optional KV-sharing settings, and finally MoR router transformations.
     model = load_model_from_config(cfg)
     
     if cfg.recursive.get("enable"):        
-        # KV cache sharing strategy
         model, lora_init_dict = SHARING_STRATEGY[cfg.model](cfg, model)
     
     if "kv_sharing" in cfg and cfg.kv_sharing.get("enable"):
         model.set_kv_sharing_config(cfg)
-    if "mor" in cfg and cfg.mor.get("enable"):            
+    if "mor" in cfg and cfg.mor.get("enable"):         
+        # MoR models need a custom trainer for router-specific losses/logging.   
         if cfg.mor.type == "expert":
             model.transform_layer_to_mor_expert(cfg)
         elif cfg.mor.type == "token":

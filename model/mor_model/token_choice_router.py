@@ -15,8 +15,22 @@ from util.misc import get_torch_dtype
 
 
 class MoRLlamaDecoderLayer(nn.Module):
-    """The Mixtures of Depth Block that dynamically which tokens to process in a block.
-    Wraps around decoder block to allow for token dropping.
+    """
+    Token-choice MoR wrapper around a list of recursive decoder blocks.
+
+    For each token, a router assigns a recursion depth in {0, ..., Nr-1}.
+    A token assigned to depth d is processed by blocks 0..d and then exits.
+    This implements adaptive per-token computation while keeping the recursive
+    blocks shared/structured according to the selected sharing strategy.
+
+    Expected input shape:
+        x: [batch_size, seq_len, hidden_dim]
+
+    Main routing tensors:
+        router_weights:      [batch_size, seq_len, num_recursion]
+        router_probs:        [batch_size, seq_len, num_recursion]
+        top_expert_indices:  [batch_size, seq_len], 0-based assigned depth
+        weights:             [batch_size, seq_len, 1], selected router weight
     """
 
     def __init__(self, config, block_list, cfg, bal_warmup_step=0):
@@ -54,8 +68,8 @@ class MoRLlamaDecoderLayer(nn.Module):
             if isinstance(block, nn.ModuleList):
                 for blk in block:
                     blk.set_activation_checkpointing(strategy)
-        else:
-            block.set_activation_checkpointing(strategy)
+            else:
+                block.set_activation_checkpointing(strategy)
         
     def select_tokens_and_batch_with_padding(
         self,
@@ -68,6 +82,23 @@ class MoRLlamaDecoderLayer(nn.Module):
         index: Optional[int] = None, 
         padding_value: float = 0.0,
     ):
+        """
+        Select tokens active at recursion step `index` and pack them into a padded batch.
+
+        A token is active at step `index` if:
+            top_expert_indices[b, t] >= index
+
+        Args:
+            x: [batch_size, seq_len, hidden_dim]
+            top_expert_indices: [batch_size, seq_len], assigned final recursion depth.
+            index: current recursion step.
+
+        Returns:
+            batched_x: [new_batch_size, max_selected_tokens, hidden_dim]
+            new_attention_mask: [new_batch_size, 1, max_selected_tokens, max_selected_tokens]
+            selected_batch_indices: list of original batch indices
+            selected_seq_indices: list of 1D tensors containing selected token positions
+        """
         batched_x = []
         selected_batch_indices = []
         selected_seq_indices = []

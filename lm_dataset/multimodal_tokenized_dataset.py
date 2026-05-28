@@ -10,10 +10,9 @@ K = number of augmentations.
 
 For 'text' modalities: file contains a JSON list of K strings.
 """
-from importlib.resources import path
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -85,22 +84,6 @@ class MultimodalTokenizedDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.file_stems)
-
-    # def _get_text_tokenizer(self):
-    #     # DataLoader workers each get their own instance only when the text tokenizer is needed. Since for
-    #     # our PoC we only have the image modality.
-    #     if self._text_tokenizer is None:
-    #         tok = AutoTokenizer.from_pretrained(self.text_tokenizer_path)
-    #         tok.add_special_tokens({'pad_token': '[PAD]'})
-    #         tok.add_special_tokens({'bos_token': '[SOS]', 'eos_token': '[EOS]'})
-    #         # We choosed this design choice. So we have a general text SOS and EOS. While we have also BO and EO for each modality.
-    #         # In this case it will bound the text modality with SOS and EOS.
-    #         tok._tokenizer.post_processor = TemplateProcessing(
-    #             single="[SOS] $A [EOS]",
-    #             special_tokens=[('[EOS]', tok.eos_token_id), ('[SOS]', tok.bos_token_id)],
-    #         )
-    #         self._text_tokenizer = tok
-    #     return self._text_tokenizer
     
     
     def _get_text_tokenizer(self):
@@ -108,7 +91,7 @@ class MultimodalTokenizedDataset(Dataset):
             tok = AutoTokenizer.from_pretrained(self.text_tokenizer_path)
             tok.add_special_tokens({'pad_token': '[PAD]'})
             tok.add_special_tokens({'bos_token': '[SOS]', 'eos_token': '[EOS]'})
-            # We choosed this design choice. So we have a general text SOS and EOS. While we have also BO and EO for each modality.
+            # Design choice: text is wrapped with general [SOS]/[EOS] tokens insidethe modality-level <BO_text> ... <EO_text> wrapper. While we have also BO and EO for each modality.
             # In this case it will bound the text modality with SOS and EOS.
             tok._tokenizer.post_processor = TemplateProcessing(
                 single="[SOS] $A [EOS]",
@@ -129,7 +112,34 @@ class MultimodalTokenizedDataset(Dataset):
     def _load_tokens_modality(self, modality: str, stem: str, aug_idx: int) -> torch.Tensor:
         info = get_modality(modality)
         path = Path(self.root_dir) / self.split / modality / f"{stem}{info.file_ext}"
-        arr = np.load(path)                          # shape (K, N)
+        
+        # sanity check
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Missing token file for modality='{modality}', split='{self.split}', "
+                f"stem='{stem}': {path}"
+            )
+
+        arr = np.load(path) # shape (K, N)
+
+        # sanity check
+        if arr.ndim == 1:
+            if aug_idx != 0:
+                raise IndexError(
+                    f"File {path} has no augmentation dimension, but aug_idx={aug_idx} was requested."
+                )
+            raw = arr
+        elif arr.ndim == 2:
+            if aug_idx >= arr.shape[0]:
+                raise IndexError(
+                    f"aug_idx={aug_idx} out of bounds for {path}, which has {arr.shape[0]} augmentations."
+                )
+            raw = arr[aug_idx]
+        else:
+            raise ValueError(
+                f"Expected token array with shape (N,) or (K, N), got shape {arr.shape} in {path}"
+            )
+
         tokens = torch.from_numpy(arr[aug_idx]).long().flatten()
         # Shift into unified vocab range.
         tokens = tokens + info.codebook_offset

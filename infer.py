@@ -136,6 +136,8 @@ def main(cfg: DictConfig):
             model.transform_layer_to_mor_expert(cfg)
         elif cfg.mor.type == "token":
             model.transform_layer_to_mor_token(cfg)
+        else:
+            raise ValueError(f"Unknown MoR type {cfg.mor.type}. Expected 'expert' or 'token'.")
 
     print(f"Loading checkpoint: {icfg.checkpoint}")
     model = load_checkpoint(model, icfg.checkpoint)

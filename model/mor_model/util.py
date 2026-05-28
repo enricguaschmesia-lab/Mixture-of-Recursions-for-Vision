@@ -61,6 +61,22 @@ ROUTER_TYPES = {
 
 @dataclass
 class MoRLayerOutputWithPast(ModelOutput):
+    """
+    Output container for one MoR decoder wrapper.
+
+    hidden_state:
+        [batch_size, seq_len, hidden_dim], full sequence after routing updates.
+    selected_tokens:
+        Expert-choice selection mask or indices, if applicable.
+    token_expert_indices:
+        [batch_size, seq_len], token-choice assigned recursion depth.
+    balancing_loss:
+        Token-choice load-balancing loss.
+    balancing_ratio:
+        [num_recursion], fraction of tokens assigned to each recursion depth.
+    router_z_loss:
+        Optional router logit regularization.
+    """
 
     hidden_state: Optional[torch.FloatTensor] = None
     attention_weights: Optional[torch.FloatTensor] = None

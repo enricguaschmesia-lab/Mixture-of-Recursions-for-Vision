@@ -1,16 +1,20 @@
-# lm_dataset/multimodal_vocab.py
+# lm_dataset/multimodal_vocab_shared_caption_scene_desc.py
+# WARNING:
+# This vocabulary layout defines the token IDs expected by checkpoints trained
+# with shared caption/scene-description text embeddings. Do not reorder entries
+# in _MODALITY_REGISTRY. Only append new modalities/groups at the end.
+# Changing this file changes token IDs and makes existing checkpoints incompatible.
 """
 Unified vocabulary layout for multimodal tokenized data.
 
 Token IDs are allocated in three zones:
-  1. Per-modality codebooks (each shifted by a cumulative offset) we decided to allocate a fixed-size codebook for each modality.
-  # We belive that this is good since in this way we can add new modalities without changing the vocabolary structure. 
-  2. Per-modality special tokens: <BO_mod>, <EO_mod>
-  3. Global special tokens: <PAD>
+  1. Per-modality codebooks, shifted by cumulative offsets.
+  2. Per-modality special tokens: <BO_mod>, <EO_mod>.
+  3. One global padding token: <PAD>.
 
-All five CLEVR-relevant modalities have slots reserved regardless of which
-are active in a given run, so you can add modalities later without
-shifting the token IDs of already-trained modalities.
+The modality registry order is part of the checkpoint format. Do not reorder
+existing entries. Only append new modalities to preserve compatibility with
+previously trained checkpoints.
 """
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -22,7 +26,7 @@ class ModalityInfo:
     codebook_size: int
     file_ext: str
     data_type: str
-    codebook_group: str           # NEW: modalities in the same group share codebook_offset
+    codebook_group: str # NEW: modalities in the same group share codebook_offset
     codebook_offset: int = 0
     bo_id: int = 0
     eo_id: int = 0
