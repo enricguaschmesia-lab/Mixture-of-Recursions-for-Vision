@@ -1,0 +1,59 @@
+# @package _global_
+# Inference config for the vanilla multimodal baseline.
+# Inherits the exact training architecture used to produce the released checkpoint.
+defaults:
+  - /pretrain_vision/baseline_vanilla/110526_multimodal_training_final_baseline_vanilla@_global_
+  - _self_
+
+# Disable wandb/logging for inference.
+wandb: false
+
+name: scene_desc_vanilla_infer
+wandb_run_name: scene_desc_vanilla_infer
+
+# Vanilla = no recursion, no MoR. Belt-and-braces in case the parent config drifts.
+recursive:
+  enable: false
+kv_sharing:
+  enable: false
+mor:
+  enable: false
+
+# === Inference parameters ===
+infer:
+  checkpoint: Mahlia/baseline-multimodal-vanilla
+  generate_modality: scene_desc
+  max_new_tokens: 130
+  num_generations: 1
+  # Vanilla has no MoR routing → KV cache is safe and faster. Match this
+  # against use_cache:false if you want an exactly identical decode loop
+  # to the MoR-token comparison, but vanilla has no causal reason to need it.
+  use_cache: true
+  device: cuda
+
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: false
+
+  # Vanilla has no routing map to overlay.
+  save_depth_overlay: false
+  depth_overlay_alpha: 0.45
+
+  # Greedy decoding — matches MoR-token run for fair comparison.
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

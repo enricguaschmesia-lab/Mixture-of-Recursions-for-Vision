@@ -1,0 +1,48 @@
+# @package _global_
+# Inference config for the random-router MoR baseline.
+# Inherits from the baseline_random training config so the MoR transform is
+# applied during build_model — without it, the checkpoint's `block_list` keys
+# don't match the model's flat layer keys (243 missing / 243 unexpected).
+defaults:
+  - /pretrain_vision/baseline_random/110526_multimodal_training_final_baseline_random@_global_
+  - _self_
+
+wandb: false
+
+name: scene_desc_random_router_infer
+wandb_run_name: scene_desc_random_router_infer
+
+# === Inference parameters ===
+infer:
+  checkpoint: romanevrwld/Random-Router-Baseline-5000-Multimodality
+  generate_modality: scene_desc
+  max_new_tokens: 130
+  num_generations: 1
+  # MoR token-choice needs full-sequence recompute for correct routing.
+  use_cache: false
+  device: cuda
+
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: false
+
+  save_depth_overlay: false
+  depth_overlay_alpha: 0.45
+
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

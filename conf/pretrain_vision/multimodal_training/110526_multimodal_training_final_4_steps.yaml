@@ -1,12 +1,12 @@
 # @package _global_
 
 # === Run identity ===
-name: multimodal_training_final_1
+name: multimodal_training_final
 wandb: true
 wandb_mode: online
 wandb_entity: ${oc.env:WANDB_ENTITY}
 wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
-wandb_run_name: multimodal_training_final_1
+wandb_run_name: multimodal_training_final
 wandb_run_id: null      # auto-generated at runtime if null
 output_dir: null
 tensorboard: false
@@ -47,7 +47,7 @@ model: smollm
 model_name_or_path: HuggingFaceTB/SmolLM-135M
 model_config:
   # Override from 30 → 29 so (num_hidden_layers - 2) is divisible by num_recursion=3.
-  num_hidden_layers: 29
+  #num_hidden_layers: 29
   # 3 × 64000 (image) + 50260 (text) + 10 (BO/EO) + 1 (PAD) = 242271
   vocab_size: 242271
 attn_implementation: sdpa
@@ -56,7 +56,7 @@ use_pretrained_weights: false
 recursive:
   enable: true
   base_depth: null
-  num_recursion: 3
+  num_recursion: 4
   sharing: middle_cycle
   ln_share: true
   initialization: random

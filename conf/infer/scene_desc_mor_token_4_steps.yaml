@@ -1,0 +1,55 @@
+# @package _global_
+# Inference config for scene_desc generation from RGB tokens.
+# Inherits the exact training architecture used to produce checkpoint-5000.
+defaults:
+  - /pretrain_vision/multimodal_training/110526_multimodal_training_final_4_steps@_global_
+  - _self_
+
+# Disable wandb/logging for inference.
+wandb: false
+
+name: scene_desc_mor_token_infer
+wandb_run_name: scene_desc_mor_token_infer
+
+# === Inference parameters ===
+infer:
+  checkpoint: gbasi18/MoR-5000-Multimodality-all-4-recursions-steps
+  generate_modality: scene_desc
+  # scene_desc bodies in CLEVR are short (typically <128 GPT-2 tokens). 130 leaves
+  # headroom and we trust the <EO_scene_desc> stopping criterion to halt earlier.
+  max_new_tokens: 130
+  num_generations: 1
+  # Token-choice MoR needs full-sequence recompute for correct routing/masks.
+  use_cache: false
+  device: cuda
+
+  # Prompts are built per-sample inside generate_scene_desc.py from RGB tokens.
+  # The Hydra-level prompt fields are unused for this script but kept for compat.
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  # Output dir is overridden by the generation script; left null here.
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: false
+
+  # Text output: depth overlay is irrelevant.
+  save_depth_overlay: false
+  depth_overlay_alpha: 0.45
+
+  # Greedy decoding — deterministic and reproducible across runs/machines.
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+# Keep Hydra from changing the working directory.
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false
