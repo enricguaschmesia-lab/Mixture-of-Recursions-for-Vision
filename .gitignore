@@ -212,3 +212,5 @@ logs
 clevr_com_304
 .hydra/
 pretrained_ckpts
+
+media/

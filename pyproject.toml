@@ -21,6 +21,7 @@ dependencies = [
     "pillow>=10.0",
     "huggingface_hub>=0.20,<1.0",
     "cosmos-tokenizer",
+    "manim>=0.18.1",
 ]
 
 [tool.uv.sources]
