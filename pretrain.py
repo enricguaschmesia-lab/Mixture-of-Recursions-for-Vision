@@ -57,7 +57,7 @@ from util.trainer_pt import MoRTrainer
 from util.callback import FixedStoppingCallback, ScalingLawsSaveCallback, MultimodalVisionEvalCallback
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
 
-@hydra.main(config_path="conf/pretrain_vision", config_name="smoke_50steps", version_base=None)
+@hydra.main(config_path="conf/pretrain_vision", config_name="rgb_single_training/smoke_50steps", version_base=None)
 def main(cfg: DictConfig):
     # Resolve derived config fields and normalize Hydra config before use.
     cfg = preprocess_config(cfg)

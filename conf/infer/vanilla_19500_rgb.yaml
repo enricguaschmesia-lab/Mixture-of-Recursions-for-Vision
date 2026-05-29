@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - /pretrain_vision/250720_pretrain_smollm-135m_vanilla_lr3e-3@_global_
+  - /pretrain_vision/baseline_vanilla/250720_pretrain_smollm-135m_vanilla_lr3e-3@_global_
   - _self_
 
 # Disable wandb/logging for inference

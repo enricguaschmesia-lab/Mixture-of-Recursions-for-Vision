@@ -80,13 +80,13 @@ nano .env   # set WANDB_ENTITY
 One-off overrides still work the ordinary way:
 
 ```bash
-WANDB_MODE=offline uv run bash scripts/pretrain.sh accelerate offline 0 smoke_50steps
+WANDB_MODE=offline uv run bash scripts/pretrain.sh accelerate offline 0 rgb_single_training/smoke_50steps
 ```
 
 Smoke test (1 GPU, 50 steps, RGB only):
 
 ```bash
-uv run bash scripts/pretrain.sh accelerate online 0 smoke_50steps
+uv run bash scripts/pretrain.sh accelerate online 0 rgb_single_training/smoke_50steps
 ```
 
 For intermediate plotting during training, download the Cosmos tokenizer:
@@ -99,14 +99,14 @@ Full Milestone I unimodal RGB run (135M, R=3, middle_cycle, expert-choice router
 
 ```bash
 uv run bash scripts/pretrain.sh accelerate online 0,1 \
-  250720_pretrain_smollm-135m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001
+  rgb_single_training/250720_pretrain_smollm-135m_rec3_middle_cycle_random_lr3e-3_mor_expert_linear_alpha_0.1_sigmoid_aux_loss_0.001
 ```
 
 Vanilla fixed-depth baseline (for RQ3 compute comparison):
 
 ```bash
 uv run bash scripts/pretrain.sh accelerate online 0 \
-  250720_pretrain_smollm-135m_vanilla_lr3e-3
+  baseline_vanilla/250720_pretrain_smollm-135m_vanilla_lr3e-3
 ```
 
 ## Inference

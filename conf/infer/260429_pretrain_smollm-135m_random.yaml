@@ -8,7 +8,7 @@ wandb: false
 
 # === Inference parameters ===
 infer:
-  checkpoint: /home/hugues/Documents/Visual_Intelligence/Mixture-of-Recursions-for-Vision/results/pretrain/MoR-SmolLM-135M-Random/checkpoint-19500
+  checkpoint: results/pretrain/MoR-SmolLM-135M-Random/checkpoint-19500
   generate_modality: tok_rgb@256
   max_new_tokens: 257          # 256 body tokens + 1 EO
   num_generations: 2           # number of samples to generate and show in the output grid
