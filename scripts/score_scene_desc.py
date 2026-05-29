@@ -22,7 +22,7 @@ Aggregates written to <out-dir>/metrics.json (mean over samples) and
 Usage:
     python scripts/score_scene_desc.py \\
         --predictions /results/eval/scene_desc/random_router/predictions.jsonl \\
-        --gt-dir /home/.../clevr_com_304/test/scene_desc \\
+        --gt-dir <path-to-clevr-test-split>/scene_desc \\
         --out-dir /results/eval/scene_desc/random_router \\
         --aug-idx 0
 """

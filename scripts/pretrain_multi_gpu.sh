@@ -23,7 +23,10 @@ set -x
 cat "$0"
 
 # === Repo root (pretrain.py lives here) ===
-cd /home/gbasile/Mixture-of-Recursions-for-Vision
+# SLURM_SUBMIT_DIR is the directory sbatch was launched from; submit from the
+# repo root. Falls back to the current directory for non-SLURM runs.
+REPO_ROOT="${SLURM_SUBMIT_DIR:-$(pwd)}"
+cd "$REPO_ROOT"
 
 # === Env ===
 export WANDB_API_KEY=$WANDB_KEY
@@ -35,7 +38,7 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # === Rendezvous ===
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 export MASTER_PORT=25678
-export HF_HOME=/home/gbasile/Mixture-of-Recursions-for-Vision/hf_cache
+export HF_HOME="$REPO_ROOT/hf_cache"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
@@ -51,7 +54,7 @@ echo "MASTER_ADDR=$MASTER_ADDR PORT=$MASTER_PORT WORLD_SIZE=$WORLD_SIZE"
 uv sync --frozen
 
 srun --kill-on-bad-exit=1 --export=ALL bash -c '
-  export HF_HOME=/home/gbasile/Mixture-of-Recursions-for-Vision/hf_cache
+  export HF_HOME='"$HF_HOME"'
   export HF_HUB_OFFLINE=1
   export TRANSFORMERS_OFFLINE=1
 

@@ -10,13 +10,15 @@ Writes one JSON line per sample to <out-dir>/predictions.jsonl:
      "gen_seconds": 0.83}
 
 Usage (from repo root):
-    PYTHONPATH=. uv run python scripts/generate_scene_desc.py --config infer/scene_desc_random --data-dir /home/gianfranco/projects/2025/Visual_Intelligence_Project/Dataset/clevr_com_304/test --n-samples 500 --out-dir results/eval/scene_desc/random_router
-    
-    
-    
+    PYTHONPATH=. uv run python scripts/generate_scene_desc.py \\
+        --config infer/scene_desc_random \\
+        --data-dir <path-to-clevr-test-split> \\
+        --n-samples 500 \\
+        --out-dir results/eval/scene_desc/random_router
+
     uv run python scripts/generate_scene_desc.py \\
         --config infer/scene_desc_mor_token \\
-        --data-dir /home/gianfranco/projects/2025/Visual_Intelligence_Project/Dataset/clevr_com_304/test \\
+        --data-dir <path-to-clevr-test-split> \\
         --n-samples 500 \\
         --out-dir results/eval/scene_desc/mor_token
 """
