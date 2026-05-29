@@ -89,7 +89,7 @@ Smoke test (1 GPU, 50 steps, RGB only):
 uv run bash scripts/pretrain.sh accelerate online 0 smoke_50steps
 ```
 
-If you want to plot during training intermediate plotting download the tokenizer. 
+For intermediate plotting during training, download the Cosmos tokenizer:
 
 ```bash
 huggingface-cli download nvidia/Cosmos-0.1-Tokenizer-DI16x16 \

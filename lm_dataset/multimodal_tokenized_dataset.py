@@ -91,8 +91,9 @@ class MultimodalTokenizedDataset(Dataset):
             tok = AutoTokenizer.from_pretrained(self.text_tokenizer_path)
             tok.add_special_tokens({'pad_token': '[PAD]'})
             tok.add_special_tokens({'bos_token': '[SOS]', 'eos_token': '[EOS]'})
-            # Design choice: text is wrapped with general [SOS]/[EOS] tokens insidethe modality-level <BO_text> ... <EO_text> wrapper. While we have also BO and EO for each modality.
-            # In this case it will bound the text modality with SOS and EOS.
+            # Design choice: text is wrapped with general [SOS]/[EOS] tokens
+            # inside the modality-level <BO_text> ... <EO_text> wrapper, so the
+            # text modality is bounded by SOS/EOS as well as BO/EO.
             tok._tokenizer.post_processor = TemplateProcessing(
                 single="[SOS] $A [EOS]",
                 special_tokens=[('[EOS]', tok.eos_token_id), ('[SOS]', tok.bos_token_id)],
@@ -140,7 +141,7 @@ class MultimodalTokenizedDataset(Dataset):
                 f"Expected token array with shape (N,) or (K, N), got shape {arr.shape} in {path}"
             )
 
-        tokens = torch.from_numpy(arr[aug_idx]).long().flatten()
+        tokens = torch.from_numpy(raw).long().flatten()
         # Shift into unified vocab range.
         tokens = tokens + info.codebook_offset
         return tokens

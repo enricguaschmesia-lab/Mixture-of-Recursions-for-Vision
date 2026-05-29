@@ -152,8 +152,10 @@ gradient_checkpointing: false
 deepspeed: ds_configs/stage2.config
 
 # === Vision eval: per-patch recursion heatmap on COCO val ===
-# COCO val split is the official val2017 (5000 images), written by prepare_coco.py
-# to data/coco_dataset/val/tok_rgb@256/.
+# Expects a pre-tokenized COCO val2017 split (5000 images) under
+# data/coco_dataset/val/tok_rgb@256/. The COCO preparation pipeline was
+# removed from the repo; regenerate this split externally if you intend to
+# run this config (otherwise prefer the CLEVR-based configs).
 vision_eval:
   enable: true
   eval_epoch_interval: 5
