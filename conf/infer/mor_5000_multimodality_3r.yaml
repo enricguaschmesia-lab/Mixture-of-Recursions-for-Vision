@@ -1,0 +1,46 @@
+# @package _global_
+defaults:
+  # gbasi18/MoR-5000-Multimodality-all-modalities:
+  #   29 layers (num_recursion=3 → (29-2)/3=9 middle_cycle blocks),
+  #   vocab=242271, max_length=1048, MoR token-choice,
+  #   active_modalities=[tok_rgb, tok_depth, tok_normal, caption, scene_desc].
+  - /pretrain_vision/multimodal_training/110526_multimodal_training_final@_global_
+  - _self_
+
+wandb: false
+
+name: mor_5000_multimodality_3r_infer
+wandb_run_name: mor_5000_multimodality_3r_infer
+
+infer:
+  checkpoint: gbasi18/MoR-5000-Multimodality-all-modalities
+  generate_modality: tok_rgb@256
+  max_new_tokens: 257
+  num_generations: 1
+  use_cache: false
+  device: cuda
+
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: true
+
+  save_depth_overlay: true
+  depth_overlay_alpha: 0.45
+
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

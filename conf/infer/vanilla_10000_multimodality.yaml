@@ -6,7 +6,7 @@ defaults:
   # active_modalities=[tok_rgb, tok_depth, tok_normal, caption], random order).
   # That file is the source of truth for the checkpoint architecture; this
   # infer config only overrides runtime knobs.
-  - /pretrain_vision/pretrain_smollm_135m_token_alpha_1_shared_vocab_multimodality@_global_
+  - /pretrain_vision/multimodal_training/pretrain_smollm_135m_token_alpha_1_shared_vocab_multimodality@_global_
   - _self_
 
 # Disable wandb/logging for inference

@@ -1,0 +1,80 @@
+# @package _global_
+defaults:
+  # Mahlia/baseline-multimodal-vanilla:
+  #   29 layers, vocab=242271, standard LlamaCausalLM (no MoR, no recursive sharing),
+  #   active_modalities=[tok_rgb, tok_depth, tok_normal, caption, scene_desc].
+  #   This is the fixed-depth baseline for RQ3 comparison.
+  - /pretrain_vision/multimodal_training/110526_multimodal_training_final@_global_
+  - _self_
+
+wandb: false
+
+name: baseline_multimodal_vanilla_infer
+wandb_run_name: baseline_multimodal_vanilla_infer
+
+# Disable recursive sharing and MoR — this is a standard transformer.
+recursive:
+  enable: false
+  base_depth: null
+  num_recursion: null
+  sharing: null
+  ln_share: false
+  initialization: random
+
+mor:
+  enable: false
+  type: token
+  capacity: null
+  rand_router: false
+  router_type: mlp
+  z_loss: false
+  z_coeff: 0.0
+  temp: 1.0
+  expert:
+    cap_warmup_step: 0
+    router_func: sigmoid
+    alpha: 0.1
+    sampling: aux_loss
+    include_first: true
+    coeff: 0.001
+    gating: weighted
+  token:
+    router_func: softmax
+    alpha: 1.0
+    balancing: loss
+    coeff: 0.1
+    u: 0.001
+    gating: weighted
+    bal_warmup_step: 0
+
+infer:
+  checkpoint: Mahlia/baseline-multimodal-vanilla
+  generate_modality: tok_rgb@256
+  max_new_tokens: 257
+  num_generations: 1
+  use_cache: true   # standard transformer: caching is safe and faster
+  device: cuda
+
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: true
+
+  save_depth_overlay: false   # no routing to overlay
+
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

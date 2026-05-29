@@ -1,0 +1,61 @@
+# @package _global_
+defaults:
+  # Inherit the multimodal training config and override the two architectural
+  # knobs that differ for gbasi18/Vanilla-5000-Multimodality-all-4-recursions-steps:
+  #   - num_hidden_layers = 30 (SmolLM-135M default, NOT the locally-pinned 29)
+  #   - recursive.num_recursion = 4 (so (30-2)/4 = 7 cycles under middle_cycle)
+  # Same vocab=242271, max_length=1048, MoR token-choice, active_modalities
+  # [tok_rgb, tok_depth, tok_normal, caption, scene_desc], random order.
+  - /pretrain_vision/multimodal_training/110526_multimodal_training_final@_global_
+  - _self_
+
+wandb: false
+
+name: vanilla_5000_multimodality_all_4_recursions_infer
+wandb_run_name: vanilla_5000_multimodality_all_4_recursions_infer
+
+# Architecture overrides for this checkpoint.
+model_config:
+  num_hidden_layers: 30
+  vocab_size: 242271
+
+recursive:
+  enable: true
+  base_depth: null
+  num_recursion: 4
+  sharing: middle_cycle
+  ln_share: true
+  initialization: random
+
+infer:
+  checkpoint: gbasi18/Vanilla-5000-Multimodality-all-4-recursions-steps
+  generate_modality: tok_rgb@256
+  max_new_tokens: 257
+  num_generations: 1
+  use_cache: false
+  device: cuda
+
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: true
+
+  save_depth_overlay: true
+  depth_overlay_alpha: 0.45
+
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

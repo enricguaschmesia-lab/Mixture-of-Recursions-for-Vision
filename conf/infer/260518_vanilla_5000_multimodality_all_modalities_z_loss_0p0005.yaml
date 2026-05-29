@@ -1,0 +1,53 @@
+# @package _global_
+defaults:
+  # Inherit the actual training config used to produce
+  # gbasi18/Vanilla-5000-Multimodality-all-modalities-z-loss-0.0005
+  # (29 layers, num_recursion=3, middle_cycle sharing, vocab=242271,
+  # max_length=1048, active_modalities=[tok_rgb, tok_depth, tok_normal, caption, scene_desc],
+  # random order, MoR token-choice, z_loss enabled).
+  - /pretrain_vision/multimodal_training/110526_multimodal_training_final@_global_
+  - _self_
+
+# Disable wandb/logging for inference
+wandb: false
+
+name: vanilla_5000_multimodality_all_mod_z0p0005_infer
+wandb_run_name: vanilla_5000_multimodality_all_mod_z0p0005_infer
+
+# === Inference parameters ===
+infer:
+  checkpoint: gbasi18/Vanilla-5000-Multimodality-all-modalities-z-loss-0.0005
+  generate_modality: tok_rgb@256
+  max_new_tokens: 257          # 256 body tokens + 1 EO
+  num_generations: 1
+  use_cache: false             # token-choice MoR needs full-sequence recompute for correct routing
+  device: cuda
+
+  # Unconditional generation by default.
+  prompt_npy: null
+  prompt_text: null
+  aug_idx: 0
+  prefix_len: null
+
+  # Output
+  output_dir: null
+  cosmos_model_path: nvidia/Cosmos-0.1-Tokenizer-DI16x16
+  patch_grid_size: 16
+  compute_reconstruction_metrics: true
+
+  # Token-choice MoR routing heatmap.
+  save_depth_overlay: true
+  depth_overlay_alpha: 0.45
+
+  # Greedy decoding by default.
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  do_sample: false
+  seed: null
+
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false
