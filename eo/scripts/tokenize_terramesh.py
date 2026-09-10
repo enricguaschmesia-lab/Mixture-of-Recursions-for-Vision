@@ -32,6 +32,9 @@ import numpy as np
 import pandas as pd
 import torch
 
+import sys as _sys, pathlib as _pathlib
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from terramesh_tok import contract as C, io as tio, preprocess as P, tokenizers as T
 
 VAL = Path("/data/enric/data/TerraMesh/val")
