@@ -12,12 +12,21 @@ CLEVR_ROOT = os.environ.get("CLEVR_ROOT", os.path.join(PROJECT_ROOT, "data", "cl
 
 COCO_ROOT = os.environ.get("COCO_ROOT", os.path.join(PROJECT_ROOT, "data", "coco_dataset"))
 
+# Root of the Phase-1 tokenized TerraMesh split (contains <MOD>_tok/ and
+# tok_index.parquet). Override with: export TERRAMESH_TOK_ROOT=/path/to/val
+TERRAMESH_TOK_ROOT = os.environ.get(
+    "TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val"
+)
+
 MULTIMODAL_DATASETS = {
     "clevr_multimodal": {
         "root_dir": CLEVR_ROOT,
     },
     "coco_multimodal": {
         "root_dir": COCO_ROOT,
+    },
+    "terramesh_multimodal": {
+        "root_dir": TERRAMESH_TOK_ROOT,
     },
 }
 
@@ -34,6 +43,23 @@ def load_dataset_from_config(cfg):
         ds_cfg = MULTIMODAL_DATASETS[ds_name]
 
         mm_cfg = cfg.get("multimodal", {})
+
+        # EO branch: tokenized TerraMesh. Different storage model (one
+        # memory-mapped matrix per modality, presence masks, no augmentations,
+        # no text), shared sequence assembly.
+        if ds_name == "terramesh_multimodal":
+            from eo.mor_data.terramesh_token_dataset import TerraMeshTokenDataset
+
+            return TerraMeshTokenDataset(
+                root_dir=ds_cfg["root_dir"],
+                split=mm_cfg.get("split", "val"),
+                active_modalities=mm_cfg.get("active_modalities", None),
+                max_length=cfg.max_length,
+                modality_order=mm_cfg.get("modality_order", "fixed"),
+                seed=cfg.get("seed", 42),
+                shuffle_image_patches=mm_cfg.get("shuffle_image_patches", False),
+            )
+
         active_modalities = list(mm_cfg.get("active_modalities", ["tok_rgb@256"]))
         modality_order = mm_cfg.get("modality_order", "fixed")
         sample_from_k = mm_cfg.get("sample_from_k_augmentations", 10)

@@ -20,6 +20,7 @@ from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 from tokenizers.processors import TemplateProcessing
 from lm_dataset.multimodal_vocab_shared_caption_scene_desc import MODALITIES, MODALITY_TO_ID, PAD_ID, get_modality
+from lm_dataset.sequence_assembly import assemble_sequence
 
 
 class MultimodalTokenizedDataset(Dataset):
@@ -225,56 +226,12 @@ class MultimodalTokenizedDataset(Dataset):
 
         chunks = [self._load_modality_chunk(m, stem, aug_idx) for m in ordered]
 
-        # Track which intra-sequence ranges are image-token bodies (exclude BO/EO),
-        # so we can permute them while keeping their canonical positions in RoPE.
-        # Also build a per-token modality id (0 = pad/BO/EO, >0 = body of a modality)
-        # used downstream for per-modality loss logging.
-        body_ranges: List[Tuple[int, int]] = []
-        per_token_modality_ids: List[torch.Tensor] = []
-        cursor = 0
-        for m, chunk in zip(ordered, chunks):
-            mid = MODALITY_TO_ID[m]
-            ids = torch.zeros(chunk.shape[0], dtype=torch.long)
-            if chunk.shape[0] > 2:
-                ids[1:-1] = mid
-            per_token_modality_ids.append(ids)
-            if self.shuffle_image_patches and get_modality(m).data_type == 'tokens' and chunk.shape[0] > 2:
-                body_ranges.append((cursor + 1, cursor + chunk.shape[0] - 1))
-            cursor += chunk.shape[0]
-        seq = torch.cat(chunks, dim=0)
-        seq_modality_ids = torch.cat(per_token_modality_ids, dim=0)
-
-        # Truncate or pad to max_length.
-        if seq.shape[0] > self.max_length:
-            seq = seq[: self.max_length]
-            seq_modality_ids = seq_modality_ids[: self.max_length]
-            body_ranges = [(s, min(e, self.max_length)) for s, e in body_ranges if s < self.max_length]
-            body_ranges = [(s, e) for s, e in body_ranges if e - s >= 2]
-
-        input_ids = torch.full((self.max_length,), PAD_ID, dtype=torch.long)
-        input_ids[: seq.shape[0]] = seq
-        modality_ids = torch.zeros(self.max_length, dtype=torch.long)
-        modality_ids[: seq_modality_ids.shape[0]] = seq_modality_ids
-
-        attention_mask = torch.zeros(self.max_length, dtype=torch.long)
-        attention_mask[: seq.shape[0]] = 1
-
-        position_ids = torch.arange(self.max_length, dtype=torch.long)
-
-        # Permute image-patch bodies in-place; position_ids carries the pre-shuffle
-        # index so RoPE encodes canonical raster position, not shuffled sequence position.
-        for s, e in body_ranges:
-            sigma = torch.from_numpy(rng.permutation(e - s)).long() + s
-            input_ids[s:e] = input_ids[sigma]
-            position_ids[s:e] = sigma
-
-        labels = input_ids.clone()
-        labels[attention_mask == 0] = -100
-
-        return {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'labels': labels,
-            'position_ids': position_ids,
-            'modality_ids': modality_ids,
-        }
+        return assemble_sequence(
+            chunks=chunks,
+            chunk_modality_ids=[MODALITY_TO_ID[m] for m in ordered],
+            chunk_shufflable=[get_modality(m).data_type == 'tokens' for m in ordered],
+            max_length=self.max_length,
+            pad_id=PAD_ID,
+            rng=rng,
+            shuffle_image_patches=self.shuffle_image_patches,
+        )

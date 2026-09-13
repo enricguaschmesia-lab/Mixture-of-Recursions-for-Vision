@@ -1,0 +1,58 @@
+{
+ "what": "SHA-256 of every MultimodalTokenizedDataset output key over the synthetic CLEVR fixture, across all V0 configs. Captured before the sequence_assembly.py extraction; must not change after it.",
+ "configs": [
+  [
+   1048,
+   "fixed",
+   false
+  ],
+  [
+   1048,
+   "random",
+   false
+  ],
+  [
+   1048,
+   "random",
+   true
+  ],
+  [
+   400,
+   "random",
+   false
+  ],
+  [
+   400,
+   "fixed",
+   true
+  ]
+ ],
+ "fixture": {
+  "stems": 12,
+  "k": 3,
+  "modalities": [
+   [
+    "tok_rgb@256",
+    256,
+    64000
+   ],
+   [
+    "tok_depth@256",
+    200,
+    64000
+   ],
+   [
+    "tok_normal@256",
+    128,
+    64000
+   ]
+  ]
+ },
+ "digests": {
+  "input_ids": "d893d75a15fa67c0bd26284eeb1b479b73c537b3a29838a3b92b67789a4d298f",
+  "attention_mask": "05a84b9f77276b201f68e497fef679a8ab9faf49cbc94c8ca5fe68a91058c809",
+  "labels": "55cbda4f5b6b5ddbb4f1555ede743ba8af2c086c1007b7a00b3b9510c3c191aa",
+  "position_ids": "30f0bd2de1c1f422a6e2e11f4c02079c55cead2c456c493708a69326e293f390",
+  "modality_ids": "c2a71c3962806cb736e1d6e844fe59973ea34e237fd7cfdec7150fb365d44433"
+ }
+}
