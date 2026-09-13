@@ -1,7 +1,7 @@
 """Phase 1 Step 7 (D1.8) verification gate.
 
-Six checks, per docs/STEP7_PLAN.md section 6. Every check ships with a
-deliberately-broken control that proves it can fail (CLAUDE.md rule 2).
+Six checks. Every check ships with a deliberately-broken control that proves
+it can fail, so a check that silently stops testing anything is detectable.
 
     V0  CLEVR bit-identity across the sequence_assembly extraction
     V1  round-trip: assembled sequence -> back to the Step-4 tokens.npy rows
@@ -39,7 +39,8 @@ sys.path.insert(0, str(REPO))
 
 BASELINE = Path(__file__).resolve().parent / "fixtures" / "clevr_assembly_baseline.json"
 
-# Sequence keys the model/trainer contract allows. See STEP7_PLAN.md 2.1.
+# Sequence keys the model/trainer contract allows. MoRTrainer.compute_loss pops
+# 'modality_ids' and forwards the rest into model(**inputs), so this set is closed.
 KEYS = ("input_ids", "attention_mask", "labels", "position_ids", "modality_ids")
 
 
