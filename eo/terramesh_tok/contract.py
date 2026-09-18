@@ -5,24 +5,55 @@ analysis) must both import from here rather than re-deriving any of it.
 
 Every constant below was established empirically in Phase 1 Step 3; see
 STEP3_PLAN.md sections 1.1-1.5 and notes/tokenizer_bringup.md for the evidence.
+The one exception is CROP, which is a supervisor decision rather than a
+measurement -- see its comment below.
 """
 from __future__ import annotations
 
 # --- Geometry -----------------------------------------------------------
 NATIVE = 264          # TerraMesh on-disk spatial size
-CROP = 256            # 264 is not divisible by the 16px patch size; 256 keeps
-                      # 94% of ground area and is in-distribution for ALL six
-                      # tokenizers (DEM and NDVI were trained at 256 ONLY).
+CROP = 224            # Ratified at Meeting 2, 2026-09-15: 224 is TerraMind's
+                      # own operating point and the standard EO crop. This
+                      # REVERSES the Phase 1 decision of 256, against which the
+                      # D1.5 artifact was originally produced.
 PATCH = 16
-GRID = CROP // PATCH  # 16 -> 256 tokens/sample
-CROP_OFF = (NATIVE - CROP) // 2   # 4 px off each side, exactly symmetric
+GRID = CROP // PATCH  # 14 -> 196 tokens/sample
+CROP_OFF = (NATIVE - CROP) // 2   # 20 px off each side, exactly symmetric
+
+# Why 224 is safe, since the obvious objection has already been raised once and
+# retracted once, and the evidence for it is still sitting in terratorch:
+#
+#   DEM and NDVI really were trained at 256 ONLY -- terratorch records each
+#   tokenizer's original training args, and those two carry
+#   input_size_min=256, input_size_max=256 (tokenizer_register.py:240 and :295),
+#   where S2L2A (:157), S1GRD (:184, :212) and LULC (:268) carry
+#   input_size_min=224. An earlier version of this comment used that fact to
+#   argue 224 would be out of distribution.
+#
+#   That inference was MEASURED FALSE on 2026-09-09 (worklog: STEP3_PLAN 1.3
+#   retraction). 224 reconstructs within +-10% of 256 on every modality,
+#   including DEM and NDVI. The fact stands; the conclusion drawn from it does
+#   not. Do not re-litigate this from the training args alone.
+#
+# The mechanism, because it is the non-obvious part and it has a consequence:
+# tokenizers.build() builds at the registry default image_size=256 and is NOT
+# changed for 224. ViTEncoder.forward bicubically interpolates pos_emb from the
+# built 16x16 grid to whatever patch grid the input actually produces, and
+# asserts only divisibility by the patch size (terratorch .../terramind/
+# tokenizer/models/vit_models.py:550-555, assert at :542). A 224 input yields a
+# 14x14 grid = 196 tokens at forward time, with no builder change.
+#
+#   CONSEQUENCE: the 224 tokens are NOT a sub-crop of the 256 tokens.
+#   Interpolating the position embeddings perturbs every patch embedding, so
+#   all 196 differ from any 196 of the old set. There is no cheap cross-check
+#   against the 256 artifact; the 224 set is verified on its own terms.
 
 # --- Token layout -------------------------------------------------------
 # tokenizer.encode() returns (B, H_q, W_q). We flatten ROW-MAJOR (C order):
 #     token k  <->  patch (row = k // GRID, col = k % GRID)
 # Phase 4's patch<->token mapping depends on this. Do not change it.
 FLATTEN_ORDER = "row-major C order; row = k // GRID, col = k % GRID"
-TOKENS_PER_SAMPLE = GRID * GRID   # 256
+TOKENS_PER_SAMPLE = GRID * GRID   # 196
 
 # --- Standardization ----------------------------------------------------
 # Source: terratorch terramind_register.py  v1_pretraining_mean/std, 'tok_*'
@@ -100,3 +131,37 @@ NAN_POLICY = "mean"
 
 # Token dtype: 15360 > 255, so uint8 is impossible; uint16 is exact and minimal.
 TOKEN_DTYPE = "uint16"
+
+# --- On-disk artifact layout --------------------------------------------
+# Tokenized output lives at <root>/<MODALITY><TOK_DIR_SUFFIX>/. The crop is IN
+# THE DIRECTORY NAME, deliberately: two token sets now coexist (the Phase 1 256
+# set and the ratified 224 one), and the highest-consequence silent failure in
+# Phase 2 is training against the wrong one. Deriving the suffix from CROP makes
+# that structurally impossible rather than merely asserted -- there is no flag to
+# forget and no way to write 224 arrays into a 256-named directory.
+#
+# Every reader of the artifact imports this instead of hardcoding "_tok":
+# eo/scripts/{tokenize_terramesh,tokenize_coords,verify_step4,verify_step5,
+# verify_step7}.py and eo/mor_data/terramesh_token_dataset.py.
+TOK_DIR_SUFFIX = f"_tok{CROP}"
+
+# Modalities whose tokens do not depend on the crop, and which therefore keep an
+# UNSUFFIXED directory and are never re-tokenized when the crop changes. Coords
+# is tokenized from the scene's centre_lon/centre_lat (val_metadata.parquet);
+# both the 256 and 224 crops are centred on that same point, so the coordinate
+# -- and every token derived from it -- is identical at any crop.
+# This is why Coords_tok/ carries an older date than the image modalities. The
+# set is here rather than special-cased in each caller so that fact is stated
+# once, in the contract, instead of being rediscovered from a directory listing.
+CROP_INDEPENDENT = {"Coords"}
+
+
+def tok_dir_name(modality: str) -> str:
+    """Directory name holding one modality's tokens at the contract crop.
+
+    Crop-independent modalities (Coords) keep the unsuffixed '<MOD>_tok' name,
+    because there is no per-crop version of them to disambiguate.
+    """
+    if modality in CROP_INDEPENDENT:
+        return f"{modality}_tok"
+    return f"{modality}{TOK_DIR_SUFFIX}"

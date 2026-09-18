@@ -28,12 +28,15 @@ as its single source of truth without dragging terratorch into the training env.
       eo_vocab.py           PROVISIONAL unified vocabulary -- Phase 2 owns the real one
       terramesh_token_dataset.py   map-style Dataset over the *_tok arrays
     terramesh_tok/        the preprocessing contract, as code -- SINGLE SOURCE OF TRUTH
-      contract.py           crop, standardization stats, codebooks, flatten order
+      contract.py           crop, standardization stats, codebooks, flatten order,
+                            output-directory naming (TOK_DIR_SUFFIX/tok_dir_name)
       io.py                 reading TerraMesh WebDataset/Zarr shards
       preprocess.py         prepare(): raw array -> encoder-ready tensor
       tokenizers.py         build / encode / decode
     scripts/
       tokenize_terramesh.py   batch tokenization CLI (resumable, atomic, provenance)
+      make_gate_reference.py  regenerates the gate's single-sample reference per crop
+      bringup_224.py          Step 1.4 bring-up + off-centre-crop control (rule 2)
       gate_equivalence.py     reproducibility gate: determinism + padding invariance
       verify_step4.py         hand-off verification incl. end-to-end row alignment
       tokenize_coords.py      optional coords modality
@@ -45,22 +48,35 @@ Import anything from `terramesh_tok` rather than re-deriving a constant. The scr
 
 ## Usage
 
+    python eo/scripts/make_gate_reference.py                        # once per crop change
+    python eo/scripts/bringup_224.py                                # rule 2: verify before scaling
+    python eo/scripts/gate_equivalence.py                           # before any full run
     python eo/scripts/tokenize_terramesh.py --modality DEM          # one modality
     python eo/scripts/tokenize_terramesh.py --modality DEM --dry-run
-    python eo/scripts/gate_equivalence.py                           # before any full run
     python eo/scripts/verify_step4.py                               # after
 
     # dataloader gate -- note the DIFFERENT interpreter (.venv, not the mor env)
     HF_HOME=/data/enric/hf ./.venv/bin/python eo/scripts/verify_step7.py
 
-Output goes to `/data/enric/data/TerraMesh/val/<MOD>_tok/` — **never under `/home`**:
+Output goes to `/data/enric/data/TerraMesh/val/<MOD>_tok<CROP>/` — **never under `/home`**:
 
     tok_index.parquet     canonical row order for all 89,088 samples (at the val/ root)
-    <MOD>_tok/
-      tokens.npy          (89088, 256) uint16 -- SAME row order for every modality
+    <MOD>_tok224/
+      tokens.npy          (89088, 196) uint16 -- SAME row order for every modality
       present.npy         (89088,) bool -- S1RTC/S1GRD cover complementary halves
       shards/*.npy        per source tar; the resumable unit
       metadata.json       tokenizer revision, stats used, crop, contract_git_rev, ...
+
+**The directory name carries the crop.** Two token sets coexist — Phase 1's
+`<MOD>_tok256` and the ratified `<MOD>_tok224` — and training against the wrong one
+is the highest-consequence silent failure available here. The name is derived from
+`contract.TOK_DIR_SUFFIX`, so there is no flag to forget and no way to write 224
+arrays into a 256-named directory. Never hardcode `_tok`; call `contract.tok_dir_name(mod)`.
+
+`Coords_tok/` is the exception: coords are tokenized from the scene centre, which is
+invariant to the crop, so it keeps an unsuffixed name, is never re-tokenized when the
+crop changes, and records `"crop": null, "crop_independent": true` in its metadata. A
+loader asserting `crop` must read null as "applies at every crop", not as missing.
 
 Joining modalities is `arr[i]`: all six share one row order, so there is no runtime
 lookup. Always consult `present.npy` — absent rows are zero-filled and zero is a valid
@@ -69,7 +85,7 @@ token.
 ## Using the dataloader
 
     from eo.mor_data.terramesh_token_dataset import TerraMeshTokenDataset
-    ds = TerraMeshTokenDataset(modality_order='random')     # 89,088 samples, 1,290 tokens
+    ds = TerraMeshTokenDataset(modality_order='random')     # 89,088 samples
 
 or through the training config: `dataset: terramesh_multimodal`, rooted at
 `TERRAMESH_TOK_ROOT`. It yields exactly `input_ids, attention_mask, labels,

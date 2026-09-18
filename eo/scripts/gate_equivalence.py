@@ -17,11 +17,28 @@ So the gate now asserts what is actually required for reproducibility:
      same tokens for its real samples as a genuinely full batch. This is what
      lets a 1000-sample shard avoid encoding its last 8 samples on a different
      kernel path.
-  3. AGREEMENT WITH STEP 3               -- the batched path must reproduce the
-     Step 3 single-sample tokens to within the measured bin-flip rate, not
-     exactly. Threshold 0.1%; anything larger is a real contract divergence.
+  3. AGREEMENT WITH THE SINGLE-SAMPLE PATH -- the batched path must reproduce
+     the single-sample reference to within the measured bin-flip rate, not
+     exactly.
+
+     The threshold is an ABSOLUTE COUNT derived from the sample size, not a
+     rate. A fixed 0.1% rate was the original formulation and it is wrong here:
+     the reference is only 3 samples x TOKENS_PER_SAMPLE per modality (588 at
+     the 224 crop), and 0.1% of 588 is 0.588 tokens -- i.e. the threshold
+     silently demanded ZERO flips, which is exactly the criterion this gate was
+     rewritten to stop demanding. At the 256 crop it passed only because no
+     token happened to flip in a 768-token sample; it was always one unlucky
+     flip from a false failure. Found 2026-09-18, when NDVI flipped 1 token in
+     588 (0.170%) and was decoded to be a single FSQ digit moving a single bin
+     -- the documented mechanism, not a divergence.
+
+     So: allow up to the Poisson tail bound at BIN_FLIP_RATE, which scales with
+     the sample size. A real contract divergence (wrong stats, wrong crop, wrong
+     band order) moves tens of percent of tokens -- Step 3 measured 19-51/256
+     for S2L2A and up to 72/256 for DEM -- so this still separates the two cases
+     by orders of magnitude.
 """
-import json, os, sys, warnings
+import json, math, os, sys, warnings
 os.environ.setdefault("HF_HOME", "/data/enric/hf")
 warnings.filterwarnings("ignore")
 import numpy as np, torch, pandas as pd
@@ -30,11 +47,37 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from terramesh_tok import contract as C, io as tio, preprocess as P, tokenizers as T
 
-REF = json.load(open("/data/enric/figures/step3/tokens.json"))
+# Single-sample reference at the CURRENT contract crop. Crop-specific by
+# necessity: a different crop means a different patch grid, the ViT interpolates
+# its position embeddings, and every token changes -- so the 256 reference is not
+# comparable at 224 (contract.py, CROP comment). Regenerate with
+# eo/scripts/make_gate_reference.py whenever the crop changes.
+_REF_PATH = _pathlib.Path(f"/data/enric/figures/step3/tokens{C.CROP}.json")
+if not _REF_PATH.exists():
+    sys.exit(f"missing single-sample reference for crop {C.CROP}: {_REF_PATH}\n"
+             f"generate it first:  python eo/scripts/make_gate_reference.py")
+REF = json.load(open(_REF_PATH))
 META = pd.read_parquet("/data/enric/data/TerraMesh/val_metadata.parquet")
 STEM2TAR = dict(zip(META.zarr.str[: -len(".zarr.zip")], META.tar))
 DEV, BS = T.DEVICE, 32
-TOL = 0.001          # 0.1%; measured bin-flip rate is 0.012%
+BIN_FLIP_RATE = 1 / 8192   # measured in Step 4: one token in 8,192 (0.012%)
+FALSE_ALARM = 1e-3         # tolerated probability of a spurious gate failure
+
+
+def flip_budget(n_tokens: int, rate: float = BIN_FLIP_RATE,
+                alpha: float = FALSE_ALARM) -> int:
+    """Max flips consistent with `rate`, at a false-alarm probability of alpha.
+
+    Smallest k with P(X > k) < alpha for X ~ Poisson(n * rate). Computed
+    directly -- k stays tiny, and this keeps the gate free of scipy.
+    """
+    lam = n_tokens * rate
+    cdf, term, k = math.exp(-lam), math.exp(-lam), 0
+    while 1.0 - cdf >= alpha:
+        k += 1
+        term *= lam / k
+        cdf += term
+    return k
 fail = 0
 
 
@@ -94,19 +137,22 @@ for mod in MODS:
           f"{'YES' if ok else 'NO -- FAIL'}")
 
 print()
-print(f"=== 3. agreement with Step 3's verified single-sample tokens ===")
-print(f"  {'mod':6s} {'differing':>12s} {'rate':>9s}   verdict (tol {100*TOL:.1f}%)")
+print(f"=== 3. agreement with the single-sample path (crop {C.CROP}) ===")
+_n_ref = 3 * C.TOKENS_PER_SAMPLE
+print(f"  budget: <= {flip_budget(_n_ref)} flips in {_n_ref} tokens "
+      f"(Poisson bound at {BIN_FLIP_RATE:.2e}, false alarm {FALSE_ALARM:.0e})")
+print(f"  {'mod':6s} {'differing':>12s} {'rate':>9s} {'budget':>7s}   verdict")
 for mod, samples in REF.items():
     tok = T.build(mod)
     stems = list(samples)
     got = encode(mod, tok, load(mod, stems))
     want = np.asarray([samples[s] for s in stems], dtype=np.uint16)
     n_diff, n = int((got != want).sum()), want.size
-    rate = n_diff / n
-    ok = rate <= TOL
+    budget = flip_budget(n)
+    ok = n_diff <= budget
     fail += not ok
-    print(f"  {mod:6s} {n_diff:6d}/{n:5d} {100*rate:8.3f}%   "
-          f"{'OK' if ok else 'FAIL -- exceeds bin-flip tolerance'}")
+    print(f"  {mod:6s} {n_diff:6d}/{n:5d} {100*n_diff/n:8.3f}% {budget:7d}   "
+          f"{'OK' if ok else 'FAIL -- exceeds bin-flip budget, real divergence'}")
 
 print()
 print("GATE PASSED" if not fail else f"GATE FAILED ({fail} check(s))")

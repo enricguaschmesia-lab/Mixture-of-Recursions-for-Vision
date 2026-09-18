@@ -35,7 +35,7 @@ print(f"  {'mod':6s} {'shape':16s} {'dtype':8s} {'present':>8s} {'tok range':>16
       f"{'uniq codes':>11s} {'nan':>5s}")
 tokens, present = {}, {}
 for mod in MODS:
-    d = VAL / f"{mod}_tok"
+    d = VAL / C.tok_dir_name(mod)
     t = np.load(d / "tokens.npy", mmap_mode="r")
     p = np.load(d / "present.npy")
     meta = json.load(open(d / "metadata.json"))
@@ -106,9 +106,9 @@ for mod in MODS:
 
 print()
 print("=== 5. provenance recorded ===")
-revs = {json.load(open(VAL / f'{m}_tok/metadata.json'))["contract_git_rev"][:7]
+revs = {json.load(open(VAL / C.tok_dir_name(m) / 'metadata.json'))["contract_git_rev"][:7]
         for m in MODS}
-stats = {json.load(open(VAL / f'{m}_tok/metadata.json'))
+stats = {json.load(open(VAL / C.tok_dir_name(m) / 'metadata.json'))
          ["standardization"]["source"] for m in MODS}
 print(f"  contract git rev across modalities : {revs}")
 print(f"  standardization source             : {stats}")

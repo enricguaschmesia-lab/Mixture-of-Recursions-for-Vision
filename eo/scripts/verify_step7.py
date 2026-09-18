@@ -175,14 +175,15 @@ def v0_check() -> bool:
 def _eo_deps():
     from eo.mor_data import eo_vocab
     from eo.mor_data.terramesh_token_dataset import TerraMeshTokenDataset
-    return eo_vocab, TerraMeshTokenDataset
+    from eo.terramesh_tok.contract import tok_dir_name
+    return eo_vocab, TerraMeshTokenDataset, tok_dir_name
 
 
 def v1_roundtrip(n: int = 200) -> bool:
     """Assembled sequence -> back to the Step-4 tokens.npy rows, bit-identically."""
-    eo_vocab, DS = _eo_deps()
+    eo_vocab, DS, tok_dir_name = _eo_deps()
     ds = DS(modality_order="random")
-    tok = {m: np.load(Path(ds.root_dir) / f"{m}_tok" / "tokens.npy", mmap_mode="r")
+    tok = {m: np.load(Path(ds.root_dir) / tok_dir_name(m) / "tokens.npy", mmap_mode="r")
            for m in ds.active_modalities}
     rng = np.random.default_rng(7)
     rows = rng.choice(len(ds), size=n, replace=False)
@@ -217,7 +218,7 @@ def v1_roundtrip(n: int = 200) -> bool:
 
 def v2_range() -> bool:
     """Every id inside its own modality's slot; nothing outside the vocabulary."""
-    eo_vocab, DS = _eo_deps()
+    eo_vocab, DS, tok_dir_name = _eo_deps()
     ds = DS(modality_order="random")
     rng = np.random.default_rng(11)
     ok = True
@@ -247,7 +248,7 @@ def v2_range() -> bool:
 
 def v3_presence() -> bool:
     """Exactly one of S1GRD/S1RTC per row, never both, never neither."""
-    eo_vocab, DS = _eo_deps()
+    eo_vocab, DS, tok_dir_name = _eo_deps()
     ds = DS(modality_order="random")
     grd, rtc = ds._present["S1GRD"], ds._present["S1RTC"]
     complement = bool((grd ^ rtc).all()) and not bool((grd & rtc).any())
@@ -279,7 +280,7 @@ def v3_presence() -> bool:
 
 def v4_masks() -> bool:
     """attention/labels/position_ids invariants, and truncation refusal."""
-    eo_vocab, DS = _eo_deps()
+    eo_vocab, DS, tok_dir_name = _eo_deps()
     ok = True
     for order, shuffle in (("fixed", False), ("random", False), ("random", True)):
         ds = DS(modality_order=order, shuffle_image_patches=shuffle)
@@ -326,7 +327,7 @@ def v5_forward(batch_size: int = 4) -> bool:
     from model.sharing_strategy import SHARING_STRATEGY
 
     torch.manual_seed(0)   # model init is random; pin it so the loss is reproducible
-    eo_vocab, DS = _eo_deps()
+    eo_vocab, DS, tok_dir_name = _eo_deps()
     ds = DS(modality_order="random")
 
     # MoR block copied from conf/pretrain_vision/multimodal_training/

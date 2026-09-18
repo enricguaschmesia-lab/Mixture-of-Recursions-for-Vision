@@ -2,18 +2,20 @@
 """Phase 1 Step 4 — batch tokenization of the TerraMesh val split.
 
 Applies the Step 3 contract (terramesh_tok) to every sample of one modality and
-writes val/<MOD>_tok/. Resumable, atomic per shard, provenance-recording.
+writes val/<MOD>_tok<CROP>/. Resumable, atomic per shard, provenance-recording.
 
     python tokenize_terramesh.py --modality DEM
     python tokenize_terramesh.py --modality DEM --dry-run          # one shard
     python tokenize_terramesh.py --modality DEM --shards majortom_shard_000001.tar
 
-Output layout (see STEP4_PLAN.md 2.2):
-    val/tok_index.parquet        canonical row order for all 89,088 samples
-    val/<MOD>_tok/shards/*.npy   (N,256) uint16, one per source tar (resumable unit)
-    val/<MOD>_tok/tokens.npy     (89088,256) uint16 -- SAME rows for every modality
-    val/<MOD>_tok/present.npy    (89088,) bool
-    val/<MOD>_tok/metadata.json
+Output layout (see STEP4_PLAN.md 2.2). The directory carries the crop, from
+contract.TOK_DIR_SUFFIX -- two token sets coexist (Phase 1's 256 and the
+ratified 224) and the naming is what makes mixing them impossible:
+    val/tok_index.parquet             canonical row order, all 89,088 samples
+    val/<MOD>_tok224/shards/*.npy     (N,196) uint16, per source tar (resume unit)
+    val/<MOD>_tok224/tokens.npy       (89088,196) uint16 -- SAME rows every modality
+    val/<MOD>_tok224/present.npy      (89088,) bool
+    val/<MOD>_tok224/metadata.json
 """
 from __future__ import annotations
 
@@ -104,7 +106,7 @@ def get_index(rebuild: bool = False) -> pd.DataFrame:
 # ----------------------------------------------------------------- encode
 @torch.no_grad()
 def tokenize_shard(mod: str, shard: str, tok, batch_size: int, device: str):
-    """Returns (stems, tokens uint16 (N,256), nan_counts)."""
+    """Returns (stems, tokens uint16 (N, TOKENS_PER_SAMPLE), nan_counts)."""
     stems, nans, out, buf = [], [], [], []
 
     def flush():
@@ -155,7 +157,9 @@ def check_invariants(mod, shard, stems, toks, expect_stems):
     if len(set(stems)) != n:
         raise RuntimeError(f"{mod}/{shard}: duplicate stems")
     if toks.shape != (n, C.TOKENS_PER_SAMPLE):
-        raise RuntimeError(f"{mod}/{shard}: shape {toks.shape}, expected {(n, 256)}")
+        raise RuntimeError(
+            f"{mod}/{shard}: shape {toks.shape}, "
+            f"expected {(n, C.TOKENS_PER_SAMPLE)}")
     if toks.dtype != np.uint16:
         raise RuntimeError(f"{mod}/{shard}: dtype {toks.dtype}, expected uint16")
     # the NaN-poisoning signature: every token collapsing to one value
@@ -169,7 +173,7 @@ def check_invariants(mod, shard, stems, toks, expect_stems):
 # ----------------------------------------------------------------- driver
 def run(mod: str, batch_size: int, device: str, shards, force: bool,
         index: pd.DataFrame):
-    outdir = VAL / f"{mod}_tok"
+    outdir = VAL / C.tok_dir_name(mod)
     (outdir / "shards").mkdir(parents=True, exist_ok=True)
     tok = T.build(mod, device=device)
     by_shard = {s: g for s, g in index.groupby("source_shard")}

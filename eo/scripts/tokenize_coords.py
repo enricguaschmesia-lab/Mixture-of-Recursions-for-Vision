@@ -21,7 +21,7 @@ from terratorch.models.backbones.terramind.tokenizer.tokenizer_register import (
     terramind_v1_coords_tokenizer)
 
 VAL = Path("/data/enric/data/TerraMesh/val")
-OUT = VAL / "Coords_tok"
+OUT = VAL / C.tok_dir_name("Coords")   # unsuffixed: crop-independent
 OUT.mkdir(parents=True, exist_ok=True)
 index = pd.read_parquet(VAL / "tok_index.parquet")
 meta = pd.read_parquet("/data/enric/data/TerraMesh/val_metadata.parquet")
@@ -83,6 +83,23 @@ json.dump({
              "negative zero before formatting."),
     "dtype": "uint16", "n_samples": int(len(tokens)),
     "row_order": "val/tok_index.parquet", "not_part_of": "D1.5",
+    # Crop-independence, stated in the artifact rather than left to be inferred
+    # from a directory listing. Coords is tokenized from the scene's
+    # centre_lon/centre_lat, and every crop is centred on that same point, so
+    # the value -- and every token derived from it -- is identical at any crop.
+    # This is why Coords_tok/ keeps an unsuffixed name and carries an older date
+    # than the image modalities: it is not re-tokenized when the crop changes.
+    # A loader asserting metadata['crop'] against contract.CROP must treat null
+    # as "applies at every crop", NOT as a missing field.
+    "crop": None,
+    "crop_independent": True,
+    "crop_independent_reason": (
+        "tokens derive from the scene centre coordinate, which is invariant to "
+        "the crop size because every crop is centred on that point; see "
+        "eo/terramesh_tok/contract.py CROP_INDEPENDENT"),
+    "tok_dir_unsuffixed": True,
+    "no_shards_subdir": ("written in a single pass, not per source tar -- the "
+                         "absence of shards/ is by design, not a truncated run"),
     "date": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
 }, open(OUT / "metadata.json", "w"), indent=1)
 print(f"wrote {OUT}/tokens.npy ({tokens.nbytes/1e6:.2f} MB), present.npy, metadata.json")

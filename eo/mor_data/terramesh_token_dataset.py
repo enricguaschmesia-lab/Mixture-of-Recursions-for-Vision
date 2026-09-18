@@ -3,9 +3,14 @@
 
 Disk layout (Phase 1 Step 4, see docs/PHASE1_REPORT.md section 6):
 
-    <root>/<MOD>_tok/tokens.npy    (89088, T) uint16, T=256 for images, 3 for Coords
-    <root>/<MOD>_tok/present.npy   (89088,)  bool
-    <root>/tok_index.parquet       row, stem, source_shard, corpus
+    <root>/<MOD>_tok<CROP>/tokens.npy   (89088, T) uint16, T=196 images, 3 Coords
+    <root>/<MOD>_tok<CROP>/present.npy  (89088,)  bool
+    <root>/tok_index.parquet            row, stem, source_shard, corpus
+
+The directory name carries the crop (contract.TOK_DIR_SUFFIX), so a dataset
+built under one contract cannot silently read another crop's arrays. Coords is
+crop-independent and keeps an unsuffixed 'Coords_tok' -- see contract.
+CROP_INDEPENDENT.
 
 Every modality's tokens.npy uses the same canonical row order, so joining
 modalities is arr[i] with no lookup. Absent rows are zero-filled and 0 is a
@@ -31,6 +36,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from eo.terramesh_tok.contract import tok_dir_name
 from eo.mor_data.eo_vocab import (
     IMAGE_MODALITIES,
     MODALITY_TO_ID,
@@ -124,7 +130,7 @@ class TerraMeshTokenDataset(Dataset):
 
     # -- paths and lazy handles ------------------------------------------
     def _mod_dir(self, modality: str) -> Path:
-        return self.root_dir / f"{modality}_tok"
+        return self.root_dir / tok_dir_name(modality)
 
     def _token_arrays(self) -> Dict[str, np.ndarray]:
         """Memory-map on first use inside each worker, not in __init__."""

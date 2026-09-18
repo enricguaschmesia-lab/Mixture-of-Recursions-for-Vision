@@ -13,7 +13,11 @@ from . import contract as C
 
 
 def center_crop(a: np.ndarray) -> np.ndarray:
-    """(..., 264, 264) -> (..., 256, 256). Symmetric, 4 px per side."""
+    """(..., NATIVE, NATIVE) -> (..., CROP, CROP), symmetric, CROP_OFF per side.
+
+    At the ratified 224 crop that is (..., 264, 264) -> (..., 224, 224), 20 px
+    per side. Both numbers come from contract.py; never restate them here.
+    """
     o, c = C.CROP_OFF, C.CROP
     return a[..., o:o + c, o:o + c]
 
@@ -35,14 +39,21 @@ def fill_nan(x: np.ndarray, modality: str, stats_mean) -> tuple[np.ndarray, int]
 
 def prepare(arr: np.ndarray, modality: str, *, stats: str = "v1",
             device: str = "cuda:0", crop: int | None = None,
+            crop_off: int | None = None,
             reverse_bands: bool = False, standardize: bool = True,
             ) -> tuple[torch.Tensor, dict]:
     """Raw on-disk array -> (1, C, crop, crop) float32 tensor on device.
 
     arr:  (1, C, 264, 264) as stored (leading time dim).
     stats: 'v1' (production, D3.2) or 'yaml' (A/B control only).
-    The reverse_bands / standardize / crop overrides exist ONLY to build the
-    deliberately-broken controls of Step 3.6.
+    The reverse_bands / standardize / crop / crop_off overrides exist ONLY to
+    build deliberately-broken controls (Step 3.6, and Phase 2 Step 1.4).
+
+    crop_off shifts the crop window off-centre while keeping its size. It is
+    the control for the 224 re-tokenization: `crop` alone cannot express an
+    off-centre window, because it recomputes a centred offset from its own
+    size. A control that cannot differ from the production path proves
+    nothing, so this override exists to make the 1.4 control expressible.
     """
     info = {}
     a = arr
@@ -53,12 +64,18 @@ def prepare(arr: np.ndarray, modality: str, *, stats: str = "v1",
         f"{modality}: unexpected channel count {a.shape[0]}"
 
     # crop
-    if crop is None or crop == C.CROP:
-        a = center_crop(a)
+    c = C.CROP if crop is None else crop
+    if crop_off is None:
+        o = C.CROP_OFF if crop is None or crop == C.CROP else (C.NATIVE - c) // 2
     else:
-        o = (C.NATIVE - crop) // 2
-        a = a[..., o:o + crop, o:o + crop]
+        o = crop_off            # deliberately-broken control: off-centre window
+    if o < 0 or o + c > C.NATIVE:
+        raise ValueError(
+            f"crop window [{o}, {o + c}) does not fit in {C.NATIVE}px "
+            f"(crop={c}, crop_off={o})")
+    a = a[..., o:o + c, o:o + c]
     info["crop"] = a.shape[-1]
+    info["crop_off"] = o
 
     if modality == "LULC":
         # one-hot over 10 classes; NO standardization (tok_lulc mean 0 std 1)

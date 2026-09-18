@@ -57,8 +57,8 @@ print("=== 5.3 code-usage histograms (full population) ===")
 fig, axes = plt.subplots(2, 3, figsize=(15, 8))
 usage_summary = []
 for ax, mod in zip(axes.flat, MODS):
-    t = np.load(VAL / f"{mod}_tok/tokens.npy", mmap_mode="r")
-    p = np.load(VAL / f"{mod}_tok/present.npy")
+    t = np.load(VAL / C.tok_dir_name(mod) / "tokens.npy", mmap_mode="r")
+    p = np.load(VAL / C.tok_dir_name(mod) / "present.npy")
     vals = np.asarray(t[p]).ravel()
     counts = np.bincount(vals, minlength=C.CODEBOOK[mod])
     used = int((counts > 0).sum())
