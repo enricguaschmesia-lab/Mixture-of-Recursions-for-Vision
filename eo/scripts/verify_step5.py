@@ -40,7 +40,13 @@ import matplotlib.pyplot as plt
 from terramesh_tok import contract as C, io as tio, preprocess as P, tokenizers as T
 
 VAL = pathlib.Path("/data/enric/data/TerraMesh/val")
-OUT = pathlib.Path("/data/enric/reports/phase1_step5")
+# Crop-suffixed, for the same reason the token directories are (contract.py,
+# TOK_DIR_SUFFIX): this script is re-run whenever the crop changes, and an
+# unsuffixed path silently overwrites the previous crop's figures. That happened
+# once -- the 2026-09-18 224 run overwrote Phase 1's 256 figures before this was
+# fixed. They are regenerable (check out the 256 contract and re-run) but were
+# not recoverable from disk.
+OUT = pathlib.Path(f"/data/enric/reports/step5_crop{C.CROP}")
 OUT.mkdir(parents=True, exist_ok=True)
 RNG = np.random.default_rng(42)
 
