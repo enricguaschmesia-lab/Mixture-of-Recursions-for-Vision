@@ -159,7 +159,19 @@ def main(cfg: DictConfig):
         logging_steps=cfg.logging_steps,
         save_steps=cfg.save_steps,
         save_total_limit=cfg.save_total_limit,
-        save_safetensors=False if launcher_type == "accelerate" else True,
+        # ⚠ safetensors cannot serialize SHARED storage, and recursive parameter
+        # sharing is exactly that: every block_list entry is a literal alias of
+        # one tensor, so save_pretrained raises
+        #   "The weights trying to be saved contained shared tensors ..."
+        # The condition used to be launcher-based alone, which meant any
+        # non-accelerate launch of a recursive model trained fine and then died
+        # at its FIRST checkpoint -- after the training time was already spent.
+        # Found on the first EO smoke run, 2026-09-20.
+        save_safetensors=False if (
+            launcher_type == "accelerate"
+            or cfg.recursive.get("enable")
+            or ("mor" in cfg and cfg.mor.get("enable"))
+        ) else True,
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
         gradient_checkpointing=cfg.gradient_checkpointing,
         max_grad_norm=cfg.max_grad_norm,
@@ -174,6 +186,19 @@ def main(cfg: DictConfig):
         log_on_each_node=False,
         seed=cfg.get("seed", 42),
         data_seed=cfg.get("seed", 42),
+        # ⚠ MUST be False. With the default True, Trainer.get_train_dataloader
+        # wraps the collator in RemoveColumnsCollator for any dataset that is not
+        # a datasets.Dataset -- ours are plain torch Datasets -- and that strips
+        # every key absent from model.forward()'s signature. `modality_ids` is
+        # exactly such a key: it is carried for per-modality loss logging and is
+        # deliberately popped before the forward.
+        #
+        # The failure is silent. No warning, no error: modality_ids simply never
+        # reaches compute_loss, per_modality_loss stays empty, and the
+        # `loss_<modality>` entries are absent from every log line. Measured on
+        # the first EO smoke run (2026-09-20), where 30 steps trained cleanly and
+        # logged no per-modality loss at all. Those numbers feed Phase 4.
+        remove_unused_columns=False,
     )
     
     callbacks = []

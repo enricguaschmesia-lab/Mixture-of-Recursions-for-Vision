@@ -60,12 +60,19 @@ multimodal:
 weights: null
 
 # === Batching ===
-# ⚠ per_device_train_batch_size is a CONSERVATIVE STARTING POINT, not a measured
-# value. The logits tensor is (B, L, V) = (B, 995, 87556); at fp32 that is
-# 1.30 GiB at B=4 and 2.60 GiB at B=8 on an 11.8 GiB card, before activations.
-# D2.7 step 7.2 measures the real ceiling — raise this once it has.
+# MEASURED on the TITAN V (11.77 GiB usable), fp32, max_length 1048, V=87,556
+# — D2.7 step 7.2, 2026-09-20:
+#     B=2   6,883 MiB peak   4.36 samples/s
+#     B=3   9,739 MiB peak   5.26 samples/s   <- ceiling, ~82% of the card
+#     B=4   OUT OF MEMORY (died in backward after 11 steps)
+# ~2,856 MiB per unit of batch, dominated by the (B, L, V) logits: at B=4 that
+# tensor alone is 1.47 GiB and needs a second copy in backward.
+#
+# 2 is the shipped value, not 3: 3 leaves under 2 GiB of headroom, and a long
+# run that fragments will OOM hours in. Raise to 3 only with
+# PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True and an eye on it.
 total_batch_size: 256
-per_device_train_batch_size: 4
+per_device_train_batch_size: 2
 gradient_accumulation_steps: null   # auto-computed by preprocess_config
 batch_size_rampup_steps: null
 
@@ -155,15 +162,31 @@ learning_rate: 0.003
 adam_beta1: 0.9
 adam_beta2: 0.95
 weight_decay: 0.1
-# ⚠ fp16, NOT bf16 — this is a hardware constraint, not a preference.
-# Measured on the TITAN V (sm_70), 4096^3 matmul:
-#     fp32  12.5 TFLOP/s   fp16  90.1 TFLOP/s   bf16  9.7 TFLOP/s
-# Volta has fp16 tensor cores but NO native bf16, so bf16 is emulated and lands
-# ~9x slower than fp16 and slower even than fp32. torch.cuda.is_bf16_supported()
-# returns True anyway, which is why this has to be stated rather than probed.
-# The CLEVR reference config uses bf16; that is the one optimizer-side
-# difference from it, and it is forced by the GPU.
-precision: fp16
+# ⚠ fp32, and the reasoning matters because both obvious alternatives are worse
+# here. Measured on the TITAN V (sm_70), 4096^3 matmul:
+#     fp32  12.5 TFLOP/s    fp16  90.1 TFLOP/s    bf16  9.7 TFLOP/s
+#
+#   bf16 (what the CLEVR reference config uses) is the WORST option on this
+#   card. Volta has fp16 tensor cores but no native bf16, so bf16 is emulated
+#   and lands slower even than fp32. torch.cuda.is_bf16_supported() returns True
+#   regardless -- it reports emulation, not tensor-core support -- so this cannot
+#   be probed at runtime and has to be chosen deliberately.
+#
+#   fp16 is by far the fastest but DOES NOT RUN in this codebase today.
+#   `precision` sets the model's torch_dtype (model/util.py get_torch_dtype) AND
+#   TrainingArguments(fp16=True). That makes the PARAMETERS fp16, while the
+#   GradScaler that fp16=True enables requires fp32 master weights, so training
+#   dies at the first optimizer step with "Attempting to unscale FP16
+#   gradients." bf16 escapes this only because bf16 needs no GradScaler. So the
+#   fp16 path has never worked; nothing had exercised it before this run.
+#
+# fp32 is therefore the correct default here: it is right, and on this hardware
+# it is also faster than the alternative that works. Making fp16 work is a real
+# ~7x throughput opportunity for the pretraining milestone -- it needs the model
+# left in fp32 and autocast doing the casting, rather than the weights
+# themselves being fp16 -- but that is a change to shared model-loading code and
+# is out of Phase 2's scope.
+precision: fp32
 max_grad_norm: 1.0
 # ⚠ PLACEHOLDER — the training budget belongs to the pretraining milestone
 # (worklog §1), not to Phase 2. Derivation for whoever sets it:
@@ -185,10 +208,17 @@ logging_steps: 10
 # The box has 4 cores / 4 threads, so 16 (the CLEVR value) would oversubscribe.
 dataloader_num_workers: 4
 gradient_checkpointing: false
-# Only applied when launched under deepspeed. The two GPUs are heterogeneous
-# (sm_70 and sm_52, and only the TITAN V has fp16 tensor cores), so this runs
+# ⚠ null, and NOT "only applied if you launch with deepspeed" -- that is wrong.
+# util/misc.get_launcher_type() returns "deepspeed" for ANYTHING that is not an
+# accelerate launch, plain `python pretrain.py` included, so a non-null value
+# here is honoured on every run. deepspeed is not installed in this .venv, so a
+# non-null value fails at TrainingArguments construction with a
+# PackageNotFoundError that does not mention the config at all.
+#
+# null is also the right value on merit: the two GPUs are heterogeneous (sm_70
+# and sm_52, and only the TITAN V has fp16 tensor cores), so this runs
 # single-GPU on cuda:0 rather than sharding across them.
-deepspeed: ds_configs/stage2.config
+deepspeed: null
 
 # === Vision eval ===
 # ⚠ MUST stay false on the EO path. MultimodalVisionEvalCallback is CLEVR-shaped
