@@ -130,10 +130,59 @@ class MultimodalVisionEvalCallback(TrainerCallback):
           num_val_samples: 2
           patch_grid_size: 16       # sqrt(num_image_tokens); 16×16 = 256 tokens
           cosmos_model_path: null   # path / HF id for CausalVideoTokenizer (optional)
+
+    ⚠ CLEVR/COCO ONLY. This callback refuses to construct on an EO run, and the
+    refusal is deliberate rather than a TODO -- three separate things here are
+    CLEVR-shaped, and each would fail differently:
+
+      1. `_get_val_dataset` builds `MultimodalTokenizedDataset` unconditionally,
+         including `sample_from_k_augmentations`, which `TerraMeshTokenDataset`
+         does not accept and does not have an analogue for (no augmentation
+         dimension). Pointed at the EO root it raises, and `on_epoch_end` catches
+         FileNotFoundError/RuntimeError and downgrades it to a warning -- so the
+         failure mode is a silently skipped eval, not a stop.
+      2. `get_modality` is imported from the CLEVR registry, so BO/EO ids are
+         looked up in the wrong id space (same class of bug as trainer_pt.py's;
+         see lm_dataset/modality_registry.py).
+      3. `patch_grid_size` defaults to 16. At the ratified 224 crop the EO grid
+         is 14 (196 tokens). Worse, the heatmap does
+         `body_counts.reshape(patch_grid_size, patch_grid_size)`, which assumes
+         every active modality is a square image grid. Coords is 3 tokens and is
+         an active EO training modality, so that reshape cannot succeed for it --
+         an EO-aware version has to skip non-image modalities explicitly.
+
+    Making it EO-aware is real work, not a config flip, and its only consumer is
+    Phase 4's routing analysis. Two constraints for whoever does it:
+
+      * The token-ID-grid fallback (no Cosmos) is the tractable path: it needs a
+        registry-selected `get_modality`, a dataset selected the same way,
+        `patch_grid_size` taken from `eo/terramesh_tok/contract.py` (GRID) rather
+        than hardcoded, and a skip for modalities whose token count is not a
+        perfect square.
+      * Real pixel decoding for EO needs the TerraMind DiVAE decoders, which live
+        in the `mor` conda env and CANNOT be imported from the training `.venv`
+        (the repo pins transformers==4.52.4; terratorch needs a newer floor --
+        see eo/README.md). So EO reconstruction is inherently a cross-env
+        problem: decode offline in `mor` and load the images, or run the decode
+        as a subprocess. That design is out of Phase 2 scope, but it is written
+        down here so it is not rediscovered as a surprise mid-Phase-4.
     """
 
     def __init__(self, cfg):
+        from lm_dataset.modality_registry import is_eo, registry_kind
+
+        if is_eo(cfg):
+            raise ValueError(
+                "vision_eval is CLEVR/COCO-only and does not support the EO "
+                "(terramesh_multimodal) path -- see this class's docstring for the "
+                "three reasons and what an EO-aware version would need.\n"
+                "  Set `vision_eval.enable: false` in the EO config. It is disabled "
+                "explicitly here rather than left to fail at the first epoch end, "
+                "where it would be caught and downgraded to a warning and the eval "
+                "would simply never run."
+            )
         self.cfg = cfg
+        self.registry_kind = registry_kind(cfg)
         vcfg = cfg.get("vision_eval", {})
         self.eval_epoch_interval = int(vcfg.get("eval_epoch_interval", 10))
         self.num_val_samples = int(vcfg.get("num_val_samples", 2))

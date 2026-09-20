@@ -61,7 +61,7 @@ if is_accelerate_available():
 from util.losses import DISTILL_LOSSES
 from util.misc import get_iterator
 from util.callback import MoRCallbackHandler, MorSaveCallback
-from lm_dataset.multimodal_vocab_shared_caption_scene_desc import ID_TO_MODALITY
+from lm_dataset.modality_registry import get_id_to_modality
 
 TRAINER_STATE_NAME = "trainer_state.json"
 
@@ -80,11 +80,18 @@ class MoRTrainer(Trainer):
         self.router_z_loss = torch.tensor(0.0).to(self.args.device)  # for logging router_z_loss from MoR
         # Per-modality CE accumulators (logging-only; main loss is unchanged).
         # Steps where a modality is absent don't contribute, so we track a count too.
+        #
+        # The registry is selected from cfg, NOT imported at module scope. It used
+        # to be CLEVR's unconditionally, which on an EO run mislabelled every
+        # modality (DEM -> 'caption') and dropped LULC and Coords entirely, since
+        # CLEVR has only 5 ids. These numbers feed Phase 4, so the mislabelling
+        # would have been read as a result. See lm_dataset/modality_registry.py.
+        self.id_to_modality = get_id_to_modality(cfg)
         self.modality_tr_loss = {
-            name: torch.tensor(0.0).to(self.args.device) for name in ID_TO_MODALITY.values()
+            name: torch.tensor(0.0).to(self.args.device) for name in self.id_to_modality.values()
         }
         self.modality_tr_count = {
-            name: torch.tensor(0.0).to(self.args.device) for name in ID_TO_MODALITY.values()
+            name: torch.tensor(0.0).to(self.args.device) for name in self.id_to_modality.values()
         }
         self.cfg = cfg
         
@@ -1081,7 +1088,7 @@ class MoRTrainer(Trainer):
                 flat_labels = shift_labels.reshape(-1)
                 flat_mids = shift_modality_ids.reshape(-1)
                 flat_valid = flat_labels.ne(-100)
-                for mid, name in ID_TO_MODALITY.items():
+                for mid, name in self.id_to_modality.items():
                     mask = flat_valid & flat_mids.eq(mid)
                     if mask.any():
                         per_modality_loss[name] = torch.nn.functional.cross_entropy(

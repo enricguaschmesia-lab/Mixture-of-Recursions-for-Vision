@@ -49,6 +49,7 @@ import transformers.modeling_utils
 transformers.modeling_utils.DTensor = DTensor
 
 from lm_dataset.load_dataset import load_dataset_from_config, MULTIMODAL_DATASETS
+from lm_dataset.modality_registry import assert_vocab_size
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
 from util.config import preprocess_config
@@ -109,6 +110,15 @@ def main(cfg: DictConfig):
 
 
     print ("Loading models...")
+    # Check vocab_size against the registry BEFORE building the model: the
+    # embedding table is the largest tensor in the model, and a mismatch here is
+    # not reliably fatal later (too small raises far from the cause; too large
+    # just carries dead rows and a wrong ln(V) baseline). No-op when the config
+    # has no explicit model_config.vocab_size.
+    _expected_vocab = assert_vocab_size(cfg)
+    if _expected_vocab is not None:
+        print(f"vocab_size checked against registry: {_expected_vocab}")
+
     # Build the base model first, then apply recursive parameter sharing,
     # optional KV-sharing settings, and finally MoR router transformations.
     model = load_model_from_config(cfg)
