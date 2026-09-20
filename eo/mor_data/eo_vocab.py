@@ -167,9 +167,22 @@ MODALITIES, PAD_ID, TOTAL_VOCAB_SIZE = build_vocab()
 MODALITY_TO_ID: Dict[str, int] = {name: i + 1 for i, name in enumerate(MODALITIES)}
 ID_TO_MODALITY: Dict[int, str] = {i: name for name, i in MODALITY_TO_ID.items()}
 
-# Modalities carrying pixel data, i.e. every slot except Coords. Used as the
-# default active set and as the patch-shuffle eligibility test.
+# Modalities carrying pixel data, i.e. every slot except Coords. This is the
+# PATCH-SHUFFLE ELIGIBILITY TEST only -- a 3-token coordinate chunk has no patch
+# grid to shuffle.
+#
+# It used to double as the default active set, which is how the dataset came to
+# silently emit image-only sequences: Meeting 2 (2026-09-15) put Coords in the
+# training set, but the default excluded it, so nothing carried it. The two roles
+# are separated here because they genuinely differ -- Coords is trained on, and
+# is not patch-shuffled.
 IMAGE_MODALITIES: List[str] = list(_CONTRACT_MODALITIES)
+
+# The ratified training modality set (Meeting 2, 2026-09-15): all six tokenized
+# image modalities plus Coords. Per row the presence masks pick exactly one of
+# S1GRD/S1RTC, so a sequence carries 5 image modalities + Coords = 995 tokens at
+# the 224 crop. Order is randomized per sample by the dataset, Coords included.
+DEFAULT_ACTIVE_MODALITIES: List[str] = list(MODALITIES)
 
 # --- Import-time invariants ----------------------------------------------
 # Pure arithmetic, no I/O, so this module stays importable without the dataset

@@ -85,7 +85,15 @@ token.
 ## Using the dataloader
 
     from eo.mor_data.terramesh_token_dataset import TerraMeshTokenDataset
-    ds = TerraMeshTokenDataset(modality_order='random')     # 89,088 samples
+    ds = TerraMeshTokenDataset(modality_order='random')     # 89,088 samples, 995 tokens
+
+The default active set is `eo_vocab.DEFAULT_ACTIVE_MODALITIES` — the six image
+modalities **plus Coords**, as ratified at Meeting 2. Per row the presence masks pick
+exactly one of S1GRD/S1RTC, so every sequence is 5 × (196 + BO + EO) + (3 + BO + EO) =
+**995 tokens**, the same length on every row: padding is zero and batch shapes are stable.
+Do not confuse `DEFAULT_ACTIVE_MODALITIES` with `IMAGE_MODALITIES` — the latter is only
+the patch-shuffle eligibility test (Coords has no patch grid to shuffle), and using it as
+the default is what previously made the dataset emit image-only 990-token sequences.
 
 or through the training config: `dataset: terramesh_multimodal`, rooted at
 `TERRAMESH_TOK_ROOT`. It yields exactly `input_ids, attention_mask, labels,

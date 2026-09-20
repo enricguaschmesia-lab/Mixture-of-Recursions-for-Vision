@@ -39,6 +39,7 @@ from torch.utils.data import Dataset
 from eo.terramesh_tok.contract import tok_dir_name
 from eo.mor_data.eo_vocab import (
     assert_artifact_fits,
+    DEFAULT_ACTIVE_MODALITIES,
     IMAGE_MODALITIES,
     MODALITY_TO_ID,
     PAD_ID,
@@ -73,7 +74,12 @@ class TerraMeshTokenDataset(Dataset):
         # and the tokenized arrays sit directly under root_dir.
         self.root_dir = Path(root_dir)
         self.split = split
-        self.active_modalities = list(active_modalities) if active_modalities else list(IMAGE_MODALITIES)
+        # Defaults to the ratified training set -- all six image modalities PLUS
+        # Coords. It used to default to IMAGE_MODALITIES, which excludes Coords,
+        # so the dataset silently produced image-only sequences (990 tokens
+        # instead of 995) even though Meeting 2 put Coords in the training set.
+        self.active_modalities = (list(active_modalities) if active_modalities
+                                  else list(DEFAULT_ACTIVE_MODALITIES))
         self.modality_order = modality_order
         self.seed = seed
         self.shuffle_image_patches = shuffle_image_patches
