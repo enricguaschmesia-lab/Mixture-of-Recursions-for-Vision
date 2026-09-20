@@ -1,0 +1,205 @@
+# @package _global_
+#
+# TerraMesh EO pretraining — MoR, token-choice routing.
+#
+# The EO counterpart of conf/pretrain_vision/multimodal_training/
+# 110526_multimodal_training_final.yaml. Model, router and optimizer settings are
+# deliberately kept IDENTICAL to that config wherever the data does not force a
+# change, because Phase 3 compares EO routing against the CLEVR results and every
+# gratuitous difference is one more thing that would have to be controlled for.
+# Every field that does differ says why below.
+#
+# Phase 2 delivers this config and proves the loop runs (D2.7 smoke run).
+# It does NOT set the training budget — num_train_steps and the batch schedule
+# belong to the pretraining milestone (worklog §1), not to this phase.
+#
+#   smoke run:   python pretrain.py --config-path conf/pretrain_vision/eo_terramesh \
+#                    --config-name terramesh_mor_token stop_steps=30 wandb=false
+
+# === Run identity ===
+name: terramesh_mor_token
+wandb: true
+wandb_mode: online
+wandb_entity: ${oc.env:WANDB_ENTITY}
+wandb_project: ${oc.env:WANDB_PROJECT,mixture-of-recursions-vision}
+wandb_run_name: terramesh_mor_token
+wandb_run_id: null
+output_dir: null
+tensorboard: false
+tensorboard_dir: null
+
+# === Resume ===
+resume_from_checkpoint: false
+resume_step: null
+
+# === Dataset ===
+# Rooted at $TERRAMESH_TOK_ROOT (default /data/enric/data/TerraMesh/val). The
+# crop lives in the directory name (<MOD>_tok224), derived from
+# contract.TOK_DIR_SUFFIX, so this config cannot silently read the 256 set.
+dataset: terramesh_multimodal
+multimodal:
+  # Only the val split is tokenized; train is ~14 TB and not needed yet
+  # (Meeting 2, worklog §5). 'split' is carried for symmetry — the arrays sit
+  # directly under root_dir.
+  split: val
+  # The ratified training set (Meeting 2): all six tokenized image modalities
+  # plus Coords. The presence masks pick exactly one of S1GRD/S1RTC per row, so
+  # a sequence carries 5 image modalities + Coords. Listed explicitly rather
+  # than relying on eo_vocab.DEFAULT_ACTIVE_MODALITIES so the run's modality set
+  # is visible in the config that produced the checkpoint.
+  active_modalities: ['S2L2A', 'S1GRD', 'S1RTC', 'DEM', 'NDVI', 'LULC', 'Coords']
+  # Randomized per sample, Coords included — so the model learns to predict any
+  # modality from any other rather than from a fixed layout. Coords is in the
+  # shuffle, not pinned: pinning would confound Phase 4, which is precisely
+  # about whether Coords routes differently.
+  modality_order: random
+  shuffle_image_patches: false
+  # NOTE: sample_from_k_augmentations / text_tokenizer_path / text_max_length are
+  # CLEVR-only. The EO dataset has no augmentation dimension and no text branch,
+  # and load_dataset.py's EO branch does not pass them. Do not add them here.
+weights: null
+
+# === Batching ===
+# ⚠ per_device_train_batch_size is a CONSERVATIVE STARTING POINT, not a measured
+# value. The logits tensor is (B, L, V) = (B, 995, 87556); at fp32 that is
+# 1.30 GiB at B=4 and 2.60 GiB at B=8 on an 11.8 GiB card, before activations.
+# D2.7 step 7.2 measures the real ceiling — raise this once it has.
+total_batch_size: 256
+per_device_train_batch_size: 4
+gradient_accumulation_steps: null   # auto-computed by preprocess_config
+batch_size_rampup_steps: null
+
+# === Sequence length ===
+# Measured on all 89,088 rows (Phase 2 Step 4): every sequence is exactly
+#   5 x (196 + BO + EO)  +  (3 + BO + EO)  =  995
+# tokens — 5 present image modalities at the 224 crop (14x14 = 196) plus Coords.
+# One distinct length across the whole split, so padding is zero and batch
+# shapes are constant. 1048 is inherited from the CLEVR configs and kept
+# unchanged: 995 fits it, and matching CLEVR removes one difference from the
+# Phase 3 comparison. The 53 tokens of slack are pure padding on every row.
+max_length: 1048
+
+add_bos_token: false
+global_shuffling: false
+local_shuffling: false
+
+tokenizer: smollm
+
+model: smollm
+model_name_or_path: HuggingFaceTB/SmolLM-135M
+model_config:
+  # 30 -> 29 so (num_hidden_layers - 2) is divisible by num_recursion=3.
+  num_hidden_layers: 29
+  # 5x15,360 + 4,375 (LULC) + 6,366 (Coords) + 14 BO/EO + 1 PAD = 87,556.
+  # ⚠ Do NOT hand-edit. This is asserted at startup against
+  # eo_vocab.TOTAL_VOCAB_SIZE (lm_dataset/modality_registry.assert_vocab_size);
+  # a mismatch is rejected before the model is built. Too small indexes past the
+  # embedding table; too large carries dead rows AND makes the ln(V) loss
+  # baseline wrong, which is exactly what the smoke run checks against.
+  vocab_size: 87556
+# flash_attention_2 needs Ampere (sm_80+). Both cards here are older —
+# TITAN V is sm_70, GTX TITAN X is sm_52 — so sdpa it is.
+attn_implementation: sdpa
+use_pretrained_weights: false
+
+recursive:
+  enable: true
+  base_depth: null
+  num_recursion: 3
+  sharing: middle_cycle
+  ln_share: true
+  initialization: random
+
+kv_sharing:
+  enable: false
+  base_depth: null
+  num_recursion: null
+  sharing: null
+
+mor:
+  enable: true
+  type: token
+  capacity: null
+  rand_router: false
+  router_type: mlp
+  z_loss: true
+  z_coeff: 0.001
+  temp: 1.0
+
+  expert:
+    cap_warmup_step: 0
+    router_func: sigmoid
+    alpha: 0.1
+    sampling: aux_loss
+    include_first: true
+    coeff: 0.001
+    gating: weighted
+
+  token:
+    router_func: softmax
+    # ⚠ alpha MUST be 1.0. alpha in {0.1, 0.5} caused router collapse.
+    alpha: 1.0
+    balancing: loss
+    coeff: 0.1
+    u: 0.001
+    gating: weighted
+    # First N steps force every token to max depth, which hides the router
+    # entirely. Keep at 0 for short runs.
+    bal_warmup_step: 0
+
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 2000
+  decay_type: linear
+learning_rate: 0.003
+adam_beta1: 0.9
+adam_beta2: 0.95
+weight_decay: 0.1
+# ⚠ fp16, NOT bf16 — this is a hardware constraint, not a preference.
+# Measured on the TITAN V (sm_70), 4096^3 matmul:
+#     fp32  12.5 TFLOP/s   fp16  90.1 TFLOP/s   bf16  9.7 TFLOP/s
+# Volta has fp16 tensor cores but NO native bf16, so bf16 is emulated and lands
+# ~9x slower than fp16 and slower even than fp32. torch.cuda.is_bf16_supported()
+# returns True anyway, which is why this has to be stated rather than probed.
+# The CLEVR reference config uses bf16; that is the one optimizer-side
+# difference from it, and it is forced by the GPU.
+precision: fp16
+max_grad_norm: 1.0
+# ⚠ PLACEHOLDER — the training budget belongs to the pretraining milestone
+# (worklog §1), not to Phase 2. Derivation for whoever sets it:
+#   89,088 samples / 256 total_batch_size = 348 steps/epoch.
+# The value below is 348 x 100 epochs, matching the CLEVR reference's 100
+# epochs, and is a placeholder for arithmetic only — it has not been chosen on
+# any convergence grounds. The D2.7 smoke run overrides it with stop_steps=30.
+num_train_steps: 34800
+stop_steps: 34800
+num_warmup_steps: 1740   # 5% of training
+save_interval: null
+save_steps: 5000
+fixed_save_steps: null
+save_total_limit: null
+logging_steps: 10
+# ⚠ Modality ORDER depends on this value: _get_rng seeds on
+# (seed, worker_id, idx), so a run is bit-reproducible only at a FIXED worker
+# count. Token CONTENT is unaffected. Do not change it mid-experiment.
+# The box has 4 cores / 4 threads, so 16 (the CLEVR value) would oversubscribe.
+dataloader_num_workers: 4
+gradient_checkpointing: false
+# Only applied when launched under deepspeed. The two GPUs are heterogeneous
+# (sm_70 and sm_52, and only the TITAN V has fp16 tensor cores), so this runs
+# single-GPU on cuda:0 rather than sharding across them.
+deepspeed: ds_configs/stage2.config
+
+# === Vision eval ===
+# ⚠ MUST stay false on the EO path. MultimodalVisionEvalCallback is CLEVR-shaped
+# in three places (CLEVR dataset class and registry, and a square-grid reshape
+# that cannot work for Coords' 3 tokens) and refuses to construct on an EO run —
+# see util/callback.py. patch_grid_size is inert while this is false; it records
+# the correct EO value (224/16 = 14, not CLEVR's 16) for whenever an EO-aware
+# version is written, which is Phase 4 work.
+vision_eval:
+  enable: false
+  eval_epoch_interval: 2
+  num_val_samples: 2
+  patch_grid_size: 14
+  cosmos_model_path: null
