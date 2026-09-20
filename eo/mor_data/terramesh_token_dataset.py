@@ -28,6 +28,7 @@ constants and is safe to import from either env.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -36,7 +37,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from eo.terramesh_tok.contract import tok_dir_name
+from eo.terramesh_tok.contract import CROP, GRID, TOKENS_PER_SAMPLE, tok_dir_name
 from eo.mor_data.eo_vocab import (
     assert_artifact_fits,
     DEFAULT_ACTIVE_MODALITIES,
@@ -49,6 +50,65 @@ from eo.mor_data.eo_vocab import (
 from lm_dataset.sequence_assembly import assemble_sequence
 
 DEFAULT_ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
+
+
+def assert_artifact_crop(root_dir, modalities) -> Dict[str, object]:
+    """Every loaded artifact must have been tokenized at the contract crop.
+
+    PHASE2_PLAN section 4.1 promised this: "make the dataloader ASSERT
+    metadata.json's crop against contract.CROP at load. The assert is the real
+    safety mechanism; the directory naming is just hygiene."
+
+    Two token sets exist on disk -- <MOD>_tok224 and <MOD>_tok256 -- and training
+    against the wrong one is the highest-consequence silent failure in this
+    phase. tok_dir_name() already makes it structurally hard by deriving the
+    directory from contract.CROP, but that only guards the PATH. This guards the
+    CONTENT, so a renamed, copied or hand-placed directory is still caught.
+
+    Crop-independent modalities (Coords) record `"crop": null`, which means
+    "applies at every crop" -- NOT a missing field. Treating null as missing
+    would make this fire on every run with Coords active.
+
+    Returns {modality: recorded crop (None if crop-independent)}.
+    """
+    root = Path(root_dir)
+    seen: Dict[str, object] = {}
+    for name in modalities:
+        meta_path = root / tok_dir_name(name) / "metadata.json"
+        if not meta_path.exists():
+            continue
+        meta = json.loads(meta_path.read_text())
+        if "crop" not in meta:
+            raise RuntimeError(
+                f"'{name}' artifact records no crop at all ({meta_path}). Every "
+                f"artifact must state the crop it was tokenized at, or null if it "
+                f"is crop-independent. Re-run its tokenization script."
+            )
+        crop_block = meta["crop"]
+        if crop_block is None:                       # crop-independent (Coords)
+            seen[name] = None
+            continue
+        recorded = crop_block["crop"] if isinstance(crop_block, dict) else crop_block
+        seen[name] = recorded
+        if int(recorded) != CROP:
+            raise RuntimeError(
+                f"'{name}' was tokenized at crop {recorded}, but the contract is "
+                f"{CROP} ({meta_path}).\n"
+                f"  Training on a mismatched crop is silent: the token ids are all "
+                f"in range and the sequence assembles fine, it is simply a different "
+                f"scene geometry than every other modality in the batch.\n"
+                f"  Either point TERRAMESH_TOK_ROOT at the {CROP} artifacts or "
+                f"re-tokenize (eo/scripts/tokenize_terramesh.py)."
+            )
+        # grid/token-count must agree too, so a hand-edited crop field is caught
+        tps = meta.get("tokens_per_sample")
+        if tps is not None and int(tps) != TOKENS_PER_SAMPLE:
+            raise RuntimeError(
+                f"'{name}' records crop {recorded} but {tps} tokens/sample; the "
+                f"contract's {CROP} crop gives {TOKENS_PER_SAMPLE} "
+                f"({GRID}x{GRID}). The metadata is internally inconsistent."
+            )
+    return seen
 
 
 class TerraMeshTokenDataset(Dataset):
@@ -95,6 +155,11 @@ class TerraMeshTokenDataset(Dataset):
         # marker, so it corrupts silently instead of raising. O(1): reads the
         # max recorded by the run that wrote the tokens, not the arrays.
         assert_artifact_fits(self.root_dir, self.active_modalities)
+
+        # Does the data match the CONTRACT? Separate concern from the slot check
+        # above, and kept a separate function for that reason -- one name doing
+        # two jobs is what let Coords go missing from the sequence (Step 4).
+        assert_artifact_crop(self.root_dir, self.active_modalities)
 
         # Presence masks are tiny (89 KB each) and are needed up front to size
         # the sequence. Token matrices are memory-mapped lazily, per worker.

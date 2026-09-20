@@ -40,7 +40,8 @@ as its single source of truth without dragging terratorch into the training env.
       gate_equivalence.py     reproducibility gate: determinism + padding invariance
       verify_step4.py         hand-off verification incl. end-to-end row alignment
       tokenize_coords.py      optional coords modality
-      verify_step7.py         dataloader gate (runs in .venv) -- V0..V5, see below
+      verify_step7.py         Phase 1 dataloader gate (runs in .venv) -- V0..V5
+      verify_phase2.py        Phase 2 gate (.venv) -- V0..V10, every check + a control
     experiments/          the Step 3 scripts that established the contract (archival)
 
 Import anything from `terramesh_tok` rather than re-deriving a constant. The scripts put
@@ -55,8 +56,10 @@ Import anything from `terramesh_tok` rather than re-deriving a constant. The scr
     python eo/scripts/tokenize_terramesh.py --modality DEM --dry-run
     python eo/scripts/verify_step4.py                               # after
 
-    # dataloader gate -- note the DIFFERENT interpreter (.venv, not the mor env)
-    HF_HOME=/data/enric/hf ./.venv/bin/python eo/scripts/verify_step7.py
+    # dataloader gates -- note the DIFFERENT interpreter (.venv, not the mor env)
+    HF_HOME=/data/enric/hf ./.venv/bin/python eo/scripts/verify_step7.py    # Phase 1, V0-V5
+    HF_HOME=/data/enric/hf ./.venv/bin/python eo/scripts/verify_phase2.py   # Phase 2, V0-V10
+    ./.venv/bin/python eo/scripts/verify_phase2.py --skip-forward           # no GPU needed
 
 Output goes to `/data/enric/data/TerraMesh/val/<MOD>_tok<CROP>/` — **never under `/home`**:
 
