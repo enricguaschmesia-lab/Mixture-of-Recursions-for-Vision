@@ -38,6 +38,7 @@ from torch.utils.data import Dataset
 
 from eo.terramesh_tok.contract import tok_dir_name
 from eo.mor_data.eo_vocab import (
+    assert_artifact_fits,
     IMAGE_MODALITIES,
     MODALITY_TO_ID,
     PAD_ID,
@@ -51,7 +52,7 @@ DEFAULT_ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/
 
 class TerraMeshTokenDataset(Dataset):
     """One sample per TerraMesh scene: the present modalities, BO/EO-wrapped,
-    concatenated into one sequence over the provisional EO vocabulary."""
+    concatenated into one sequence over the EO vocabulary (eo_vocab, D2.2)."""
 
     def __init__(
         self,
@@ -81,6 +82,13 @@ class TerraMeshTokenDataset(Dataset):
             raise ValueError("active_modalities must be non-empty.")
         for m in self.active_modalities:
             get_modality(m)  # validates against the EO registry
+
+        # Does the DATA fit the vocabulary? eo_vocab's import-time invariants
+        # prove the layout is self-consistent, but not that the artifact's ids
+        # fit inside their slots -- and an id one past the end lands on a BO/EO
+        # marker, so it corrupts silently instead of raising. O(1): reads the
+        # max recorded by the run that wrote the tokens, not the arrays.
+        assert_artifact_fits(self.root_dir, self.active_modalities)
 
         # Presence masks are tiny (89 KB each) and are needed up front to size
         # the sequence. Token matrices are memory-mapped lazily, per worker.

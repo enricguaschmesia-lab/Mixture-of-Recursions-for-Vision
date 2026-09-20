@@ -76,6 +76,13 @@ json.dump({
     "observed_id_min": int(tokens.min()), "observed_id_max": int(tokens.max()),
     "vocab_size_needed": int(tokens.max()) + 1,
     "reported_get_vocab_size": int(ct.text_tokenizer.get_vocab_size()),
+    # The number eo_vocab's Coords slot must cover. Derived HERE because only
+    # the mor env can query the tokenizer; eo/mor_data/ runs in .venv and has no
+    # terratorch. Neither of the obvious sources is the bound: the vocabulary is
+    # sparse, so get_vocab_size() is an entry COUNT, and observed_id_max is only
+    # what this split happened to emit.
+    "tokenizer_id_bound": int(max(ct.text_tokenizer.get_vocab().values())) + 1,
+    "tokenizer_vocab_entries": int(len(ct.text_tokenizer.get_vocab())),
     "note": ("get_vocab_size() UNDER-reports: it is smaller than the largest id "
              "emitted, so Phase 2 must size the embedding slot from "
              "observed_id_max+1. The -0.00 latitude bug (36 samples -> six [UNK]) "

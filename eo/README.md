@@ -25,7 +25,7 @@ as its single source of truth without dragging terratorch into the training env.
 ## Layout
 
     mor_data/             training-side dataloader (runs in .venv, NOT the mor env)
-      eo_vocab.py           PROVISIONAL unified vocabulary -- Phase 2 owns the real one
+      eo_vocab.py           the unified EO vocabulary (final; docs D2.2 is the design)
       terramesh_token_dataset.py   map-style Dataset over the *_tok arrays
     terramesh_tok/        the preprocessing contract, as code -- SINGLE SOURCE OF TRUTH
       contract.py           crop, standardization stats, codebooks, flatten order,
@@ -111,9 +111,13 @@ Full evidence for all three is in the private docs repo, `notes/tokenizer_bringu
 
 Two more, on the dataloader side:
 
-4. **`eo_vocab.py` is provisional.** Its token ids are a placeholder so Step 7 had
-   something to load against. Phase 2 designs the real vocabulary; do not train anything
-   you intend to keep against these ids.
+4. **`eo_vocab.py` is a one-way door.** `TOTAL_VOCAB_SIZE = 87,556`, `PAD_ID = 87,555`,
+   final since Phase 2 Step 3. Anything trained against these ids is invalidated if the
+   layout changes, and resizing the *last* codebook slot shifts every BO/EO and PAD id.
+   Its import-time asserts check the derivation, **not** the codebook sizes — any set of
+   sizes yields a self-consistent layout, which is exactly how the Coords slot was one id
+   short for a while. Sizes are guarded by `contract.CODEBOOK` and, for Coords, by
+   `assert_artifact_fits()` against the `tokenizer_id_bound` recorded in the artifact.
 5. **Modality *order* depends on `dataloader_num_workers`.** `_get_rng` seeds on
    `(seed, worker_id, idx)` — inherited from the CLEVR dataset — so a run is only
    bit-reproducible at a fixed worker count. Token *content* is unaffected.
