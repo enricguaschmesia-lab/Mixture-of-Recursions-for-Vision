@@ -1,4 +1,4 @@
-# eo/mor_data/terramesh_token_dataset.py
+# eo/data/terramesh_token_dataset.py
 """Map-style dataset over the Phase 1 tokenized TerraMesh val split.
 
 Disk layout (Phase 1 Step 4, see docs/PHASE1_REPORT.md section 6):
@@ -38,7 +38,7 @@ import torch
 from torch.utils.data import Dataset
 
 from eo.terramesh_tok.contract import CROP, GRID, TOKENS_PER_SAMPLE, tok_dir_name
-from eo.mor_data.eo_vocab import (
+from eo.data.eo_vocab import (
     assert_artifact_fits,
     DEFAULT_ACTIVE_MODALITIES,
     IMAGE_MODALITIES,

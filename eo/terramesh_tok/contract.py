@@ -142,7 +142,7 @@ TOKEN_DTYPE = "uint16"
 #
 # Every reader of the artifact imports this instead of hardcoding "_tok":
 # eo/scripts/{tokenize_terramesh,tokenize_coords,verify_step4,verify_step5,
-# verify_step7}.py and eo/mor_data/terramesh_token_dataset.py.
+# verify_step7}.py and eo/data/terramesh_token_dataset.py.
 TOK_DIR_SUFFIX = f"_tok{CROP}"
 
 # Modalities whose tokens do not depend on the crop, and which therefore keep an

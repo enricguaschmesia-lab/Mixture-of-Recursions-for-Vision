@@ -4,7 +4,7 @@ WHY THIS EXISTS. There are two vocabulary registries in this repo and they are
 NOT interchangeable:
 
     lm_dataset/multimodal_vocab_shared_caption_scene_desc.py   CLEVR / COCO
-    eo/mor_data/eo_vocab.py                                    TerraMesh (EO)
+    eo/data/eo_vocab.py                                    TerraMesh (EO)
 
 They expose the same names (`MODALITY_TO_ID`, `ID_TO_MODALITY`, `get_modality`,
 `TOTAL_VOCAB_SIZE`, `PAD_ID`) over completely different id spaces. Before this
@@ -47,7 +47,7 @@ _REGISTRY_BY_DATASET: Dict[str, str] = {
 }
 
 CLEVR_REGISTRY = "lm_dataset.multimodal_vocab_shared_caption_scene_desc"
-EO_REGISTRY = "eo.mor_data.eo_vocab"
+EO_REGISTRY = "eo.data.eo_vocab"
 
 
 def dataset_names(cfg) -> List[str]:

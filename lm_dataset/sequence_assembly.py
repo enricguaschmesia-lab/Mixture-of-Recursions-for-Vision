@@ -2,7 +2,7 @@
 """Shared sequence finalization for multimodal token datasets.
 
 Lifted verbatim out of MultimodalTokenizedDataset.__getitem__ so that the CLEVR
-dataset and the TerraMesh EO dataset (eo/mor_data/terramesh_token_dataset.py)
+dataset and the TerraMesh EO dataset (eo/data/terramesh_token_dataset.py)
 cannot drift apart in how they pad, mask, truncate and position tokens. Phases 3–4
 compare EO routing behaviour against the CLEVR results, and a subtle difference
 here would confound that comparison at the source.

@@ -77,7 +77,7 @@ json.dump({
     "vocab_size_needed": int(tokens.max()) + 1,
     "reported_get_vocab_size": int(ct.text_tokenizer.get_vocab_size()),
     # The number eo_vocab's Coords slot must cover. Derived HERE because only
-    # the mor env can query the tokenizer; eo/mor_data/ runs in .venv and has no
+    # the mor env can query the tokenizer; eo/data/ runs in .venv and has no
     # terratorch. Neither of the obvious sources is the bound: the vocabulary is
     # sparse, so get_vocab_size() is an entry COUNT, and observed_id_max is only
     # what this split happened to emit.

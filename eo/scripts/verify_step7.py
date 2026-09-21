@@ -173,8 +173,8 @@ def v0_check() -> bool:
 # V1-V4 -- the EO dataset
 # --------------------------------------------------------------------------
 def _eo_deps():
-    from eo.mor_data import eo_vocab
-    from eo.mor_data.terramesh_token_dataset import TerraMeshTokenDataset
+    from eo.data import eo_vocab
+    from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
     from eo.terramesh_tok.contract import tok_dir_name
     return eo_vocab, TerraMeshTokenDataset, tok_dir_name
 

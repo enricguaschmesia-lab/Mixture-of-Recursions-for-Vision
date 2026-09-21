@@ -9,7 +9,7 @@ The repo pins `transformers==4.52.4` exactly; `terratorch` (which provides the T
 tokenizers) requires a newer floor. The two cannot coexist, deliberately. `uv sync` will
 not install this directory's dependencies and is not meant to.
 
-**The exception is `mor_data/`** (and `scripts/verify_step7.py`), which runs in the
+**The exception is `data/`** (and `scripts/verify_step7.py`), which runs in the
 `.venv` *by design* — it is the training-side dataloader. It imports numpy, torch and
 pyarrow but never terratorch; `terramesh_tok/contract.py` is pure constants and is
 importable from either environment, which is what lets the dataloader use the contract
@@ -24,9 +24,12 @@ as its single source of truth without dragging terratorch into the training env.
 
 ## Layout
 
-    mor_data/             training-side dataloader (runs in .venv, NOT the mor env)
+    data/                 training-side data (runs in .venv, NOT the mor env)
       eo_vocab.py           the unified EO vocabulary (final; docs D2.2 is the design)
       terramesh_token_dataset.py   map-style Dataset over the *_tok arrays
+    train/                training-side launch machinery (.venv)
+      gpu.py                resolve a GPU BY NAME, and prove CUDA handed us that one
+      preflight.py          every environment check, each with a control in the gate
     terramesh_tok/        the preprocessing contract, as code -- SINGLE SOURCE OF TRUTH
       contract.py           crop, standardization stats, codebooks, flatten order,
                             output-directory naming (TOK_DIR_SUFFIX/tok_dir_name)
@@ -42,7 +45,29 @@ as its single source of truth without dragging terratorch into the training env.
       tokenize_coords.py      optional coords modality
       verify_step7.py         Phase 1 dataloader gate (runs in .venv) -- V0..V5
       verify_phase2.py        Phase 2 gate (.venv) -- V0..V10, every check + a control
+      train_eo.sh             THE way to start an EO training run (see below)
     experiments/          the Step 3 scripts that established the contract (archival)
+
+Phase 3 adds `eval/`, `generate/` and `decode/` as it needs them. The rule: real code
+lives in a package under `eo/`, and `eo/scripts/` holds only thin CLI entry points.
+
+## Starting a training run
+
+**`eo/scripts/train_eo.sh` is the only supported entry point.** Not `scripts/pretrain.sh`,
+which launches through accelerate/deepspeed; the EO path is deliberately plain single-GPU
+`python`.
+
+    bash eo/scripts/train_eo.sh --arm mor --detach
+    bash eo/scripts/train_eo.sh --arm smoke stop_steps=30 total_batch_size=4 wandb=false
+
+It loads `.env`, pins `CUDA_DEVICE_ORDER=PCI_BUS_ID`, resolves `--gpu titanv|titanx` **by
+name**, runs `eo.train.preflight`, and refuses to start if any check fails. `--detach` puts
+it in tmux with a log under `/data/enric/logs/`.
+
+⚠ **The two GPU index orderings are inverted on this box** (measured 2026-09-20):
+`nvidia-smi` uses PCI bus order (0 = Titan X, 1 = TITAN V) while CUDA defaults to
+fastest-first (0 = TITAN V). Picking the wrong card is a ~2.4x slowdown with no error.
+That is why nothing here takes a raw index.
 
 Import anything from `terramesh_tok` rather than re-deriving a constant. The scripts put
 `eo/` on `sys.path` themselves, so they run from any working directory.
@@ -87,7 +112,7 @@ token.
 
 ## Using the dataloader
 
-    from eo.mor_data.terramesh_token_dataset import TerraMeshTokenDataset
+    from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
     ds = TerraMeshTokenDataset(modality_order='random')     # 89,088 samples, 995 tokens
 
 The default active set is `eo_vocab.DEFAULT_ACTIVE_MODALITIES` — the six image

@@ -63,8 +63,8 @@ EO_CONFIG = REPO / "conf/pretrain_vision/eo_terramesh/terramesh_mor_token.yaml"
 
 
 def _deps():
-    from eo.mor_data import eo_vocab
-    from eo.mor_data.terramesh_token_dataset import (
+    from eo.data import eo_vocab
+    from eo.data.terramesh_token_dataset import (
         TerraMeshTokenDataset, assert_artifact_crop)
     from eo.terramesh_tok import contract
     return eo_vocab, TerraMeshTokenDataset, assert_artifact_crop, contract
@@ -296,9 +296,9 @@ def v8_vocab_covers_artifacts() -> bool:
     # A wrong slot size must NOT be caught by import-time asserts -- if this
     # starts failing, the asserts changed and this comment is stale.
     import types
-    src = (REPO / "eo/mor_data/eo_vocab.py").read_text().replace(
+    src = (REPO / "eo/data/eo_vocab.py").read_text().replace(
         "COORDS_CODEBOOK = 6366", "COORDS_CODEBOOK = 6365")
-    mod = types.ModuleType("eo_vocab_mutant"); mod.__file__ = str(REPO / "eo/mor_data/eo_vocab.py")
+    mod = types.ModuleType("eo_vocab_mutant"); mod.__file__ = str(REPO / "eo/data/eo_vocab.py")
     sys.modules["eo_vocab_mutant"] = mod
     try:
         exec(compile(src, "eo_vocab_mutant", "exec"), mod.__dict__)

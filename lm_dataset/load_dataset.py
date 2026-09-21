@@ -48,7 +48,7 @@ def load_dataset_from_config(cfg):
         # memory-mapped matrix per modality, presence masks, no augmentations,
         # no text), shared sequence assembly.
         if ds_name == "terramesh_multimodal":
-            from eo.mor_data.terramesh_token_dataset import TerraMeshTokenDataset
+            from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
 
             return TerraMeshTokenDataset(
                 root_dir=ds_cfg["root_dir"],
