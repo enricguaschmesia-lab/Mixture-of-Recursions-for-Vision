@@ -42,11 +42,20 @@ def convert_to_serializable(obj):
 
 def check_saved_checkpoint(cfg, SAVE_DIR):
     """
-    Checks if any folders starting with {SAVE_DIR}/pretrain/{cfg.name}/checkpoint- exist.
-    If they do, return True
+    Checks if any folders starting with {SAVE_DIR}/pretrain/{cfg.output_dir}/checkpoint-
+    exist. If they do, return True.
+
+    Uses `output_dir`, not `name`: `output_dir` is what TrainingArguments actually
+    writes to, and what get_latest_checkpoint_path() below already reads. The two
+    coincide only because preprocess_config defaults output_dir to name -- so any
+    run that sets them apart (eo/scripts/train_eo.sh puts runs under
+    phase3/<run_id> while keeping a short name for W&B) made this look in a
+    directory that does not exist, and silently report "no checkpoint".
+    Measured 2026-09-21, Phase 3 Step 0.4.
     """
 
-    checkpoint_dir_pattern = os.path.join(SAVE_DIR, "pretrain", cfg.name, "checkpoint-*")
+    checkpoint_dir_pattern = os.path.join(
+        SAVE_DIR, "pretrain", cfg.get("output_dir") or cfg.name, "checkpoint-*")
     checkpoint_dirs = glob.glob(checkpoint_dir_pattern)
 
     if checkpoint_dirs:

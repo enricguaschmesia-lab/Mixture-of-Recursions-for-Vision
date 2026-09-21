@@ -40,7 +40,7 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from eo.train import gpu as gpu_mod
 
@@ -69,6 +69,8 @@ class PreflightContext:
     run_dir: Path
     config_path: Optional[Path] = None
     allow_existing: bool = False          # --resume or --force
+    resuming: bool = False                # --resume specifically
+    overrides: Dict[str, object] = field(default_factory=dict)
     env: dict = field(default_factory=lambda: dict(os.environ))
     check_torch: bool = True              # off in tests that must not init CUDA
 
@@ -239,8 +241,7 @@ def check_config(ctx: PreflightContext) -> CheckResult:
     if not path.is_file():
         return CheckResult("config", False, f"{path} does not exist")
 
-    import yaml
-    cfg = yaml.safe_load(path.read_text())
+    cfg = _load_config(path, ctx.overrides)
     from eo.data.eo_vocab import TOTAL_VOCAB_SIZE
 
     problems = []
@@ -264,6 +265,163 @@ def check_config(ctx: PreflightContext) -> CheckResult:
                        f"max_length {cfg.get('max_length')})")
 
 
+
+def _load_config(path: Path, overrides: Optional[Dict[str, object]] = None) -> dict:
+    """The YAML with CLI overrides applied.
+
+    Without the overrides this validates a file nobody actually runs: every
+    launch may pass `mor.enable=false`, `deepspeed=...` and so on, and a check
+    that reads only the file would pass while the run does something else.
+    """
+    import yaml
+    cfg = yaml.safe_load(path.read_text())
+    for dotted, value in (overrides or {}).items():
+        node, keys = cfg, dotted.split(".")
+        for k in keys[:-1]:
+            node = node.setdefault(k, {})
+        node[keys[-1]] = value
+    return cfg
+
+
+def _latest_checkpoint(run_dir: Path) -> Optional[Path]:
+    ckpts = [d for d in run_dir.glob("checkpoint-*") if d.is_dir() and d.name[11:].isdigit()]
+    return max(ckpts, key=lambda d: int(d.name[11:])) if ckpts else None
+
+
+def _checkpoint_param_keys(ckpt: Path) -> Optional[List[str]]:
+    """Parameter names in a checkpoint, without materializing the tensors."""
+    st = ckpt / "model.safetensors"
+    if st.is_file():
+        from safetensors import safe_open
+        with safe_open(str(st), framework="pt") as f:
+            return list(f.keys())
+    binp = ckpt / "pytorch_model.bin"
+    if binp.is_file():
+        import torch
+        return list(torch.load(binp, map_location="cpu", mmap=True, weights_only=True).keys())
+    return None
+
+
+def _arm_name(recursive: bool, mor: bool) -> str:
+    return "MoR" if mor else ("recursive-no-router" if recursive else "vanilla")
+
+
+def _checkpoint_arm(ckpt: Path, keys: List[str], cfg: dict) -> "tuple[bool, bool]":
+    """(recursive, mor) as the checkpoint ON DISK actually is.
+
+    Measured on real checkpoints from all three arms, 2026-09-21:
+
+        arm                   format        tensors  lm_head  mor_router  layers 1/10/19
+        vanilla               safetensors       263  absent   no          differ
+        recursive-no-router   bin               264  present  no          IDENTICAL
+        MoR                   bin               266  present  yes         n/a (block_list)
+
+    Two things this had to learn the hard way:
+
+      * `block_list` appears only under MoR. It is created by the MoR transform,
+        not by `sharing_strategy`, so the recursive-no-router arm keeps ordinary
+        `model.layers.N.*` names and is indistinguishable from vanilla BY NAME.
+        A name-only fingerprint mislabels it as vanilla -- it did, on the first
+        attempt here, and the positive control is what caught that.
+      * What actually defines "recursive" is that the shared layers ARE THE SAME
+        TENSOR. So test that directly: under `middle_cycle` with base_depth
+        (L-2)//num_recursion, layer 1 and layer 1+base_depth are one tensor.
+
+    (`lm_head.weight` present-vs-absent also separates them, because
+    `sharing_strategy` unties the head -- worklog open item 26. That is a
+    symptom of a bug rather than a definition, so it is not used as the test.)
+    """
+    if any("mor_router" in k for k in keys):
+        return True, True          # MoR implies recursive sharing here
+
+    n_layers = (cfg.get("model_config") or {}).get("num_hidden_layers")
+    n_rec = (cfg.get("recursive") or {}).get("num_recursion")
+    if not n_layers or not n_rec or n_rec < 2:
+        return False, False        # cannot tell; treat as non-recursive
+    base_depth = (int(n_layers) - 2) // int(n_rec)
+    a = f"model.layers.1.self_attn.q_proj.weight"
+    b = f"model.layers.{1 + base_depth}.self_attn.q_proj.weight"
+    if a not in keys or b not in keys:
+        return False, False
+
+    import torch
+    st = ckpt / "model.safetensors"
+    if st.is_file():
+        from safetensors import safe_open
+        with safe_open(str(st), framework="pt") as f:
+            shared = torch.equal(f.get_tensor(a), f.get_tensor(b))
+    else:
+        sd = torch.load(ckpt / "pytorch_model.bin", map_location="cpu",
+                        mmap=True, weights_only=True)
+        shared = torch.equal(sd[a], sd[b])
+    return bool(shared), False
+
+
+def check_resume_checkpoint(ctx: PreflightContext) -> CheckResult:
+    """On --resume, the checkpoint must be COMPLETE and match this arm.
+
+    Both failure modes here are silent, and they compose into a third that is
+    worse than either (all measured 2026-09-21, Phase 3 Step 0.4):
+
+      * `optimizer.pt` missing    -> HF resumes with FRESH Adam moments. No
+        warning, no error, exit 0. The loss curve looks continuous because the
+        weights are right; only the second-moment estimates are gone.
+      * architecture mismatch     -> the model load is a PARTIAL load. HF prints
+        "missing keys"/"unexpected keys" as warnings and carries on. It is
+        caught today only INCIDENTALLY, by the optimizer's param-group size
+        check -- which is to say, only when optimizer.pt happens to be present.
+      * both together             -> a run that prints "Continuing training from
+        global step N", trains happily, and is a randomly-initialized model with
+        the LR schedule fast-forwarded. Measured: loss 11.24 against
+        ln(87,556) = 11.38, i.e. untrained, reported as a continuation.
+
+    So this checks presence AND identity, because presence alone is what the
+    optimizer's accidental guard already gave us.
+    """
+    if not ctx.resuming:
+        return CheckResult("resume checkpoint", True, "not resuming")
+
+    ckpt = _latest_checkpoint(ctx.run_dir)
+    if ckpt is None:
+        return CheckResult("resume checkpoint", False, f"no checkpoint-* under {ctx.run_dir}",
+                           "Nothing to resume from. HF would start from scratch.")
+
+    required = ["optimizer.pt", "scheduler.pt", "trainer_state.json", "rng_state.pth"]
+    missing = [f for f in required if not (ckpt / f).is_file()]
+    if missing:
+        return CheckResult(
+            "resume checkpoint", False, f"{ckpt.name} is missing {missing}",
+            "A checkpoint missing optimizer.pt resumes SILENTLY with fresh Adam moments "
+            "-- no warning, exit 0. Missing scheduler/rng state loses the LR position and "
+            "the data order.")
+
+    keys = _checkpoint_param_keys(ckpt)
+    if keys is None:
+        return CheckResult("resume checkpoint", False,
+                           f"{ckpt.name} has neither pytorch_model.bin nor model.safetensors")
+
+    cfg = _load_config(ctx.config_path, ctx.overrides) if ctx.config_path else {}
+    want_recursive = bool((cfg.get("recursive") or {}).get("enable"))
+    want_mor = bool((cfg.get("mor") or {}).get("enable"))
+    got_recursive, got_mor = _checkpoint_arm(ckpt, keys, cfg)
+
+    if (got_recursive, got_mor) != (want_recursive, want_mor):
+        return CheckResult(
+            "resume checkpoint", False,
+            f"{ckpt.name} is a {_arm_name(got_recursive, got_mor)} checkpoint but this run "
+            f"is {_arm_name(want_recursive, want_mor)} "
+            f"(checkpoint recursive={got_recursive}/mor={got_mor}, "
+            f"config recursive={want_recursive}/mor={want_mor})",
+            "Resuming across arms is a PARTIAL model load that HF reports as a warning. "
+            "It is caught today only by the optimizer's param-group check, i.e. only when "
+            "optimizer.pt is present. Do not rely on that.")
+
+    step = ckpt.name[11:]
+    fmt = "safetensors" if (ckpt / "model.safetensors").is_file() else "bin"
+    return CheckResult("resume checkpoint", True,
+                       f"{ckpt.name} complete ({fmt}, step {step}, {len(keys)} tensors)")
+
+
 #: Evaluated in order. Environment checks come first so a misconfigured shell
 #: fails before torch is imported and CUDA is initialized.
 CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
@@ -276,6 +434,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_run_dir,
     check_disk,
     check_config,
+    check_resume_checkpoint,
     check_gpu_identity,      # last: the only one that touches CUDA
 ]
 
@@ -309,15 +468,33 @@ def main(argv=None) -> int:
     ap.add_argument("--config", type=Path, default=None)
     ap.add_argument("--allow-existing", action="store_true",
                     help="Set by --resume/--force in the launcher.")
+    ap.add_argument("--resuming", action="store_true",
+                    help="Set by --resume. Triggers the checkpoint completeness check.")
+    ap.add_argument("--override", action="append", default=[], metavar="k.v=VALUE",
+                    help="A Hydra override the run will use, so the config check "
+                         "validates what actually runs. Repeatable.")
     ap.add_argument("--no-torch", action="store_true",
                     help="Skip the CUDA-touching check (for tests).")
     args = ap.parse_args(argv)
+
+    import yaml as _yaml
+    overrides = {}
+    for item in args.override:
+        if "=" not in item:
+            continue
+        k, _, v = item.partition("=")
+        try:
+            overrides[k] = _yaml.safe_load(v)     # gives real bools/ints, not strings
+        except Exception:
+            overrides[k] = v
 
     ctx = PreflightContext(
         gpu_alias=args.gpu,
         run_dir=args.run_dir,
         config_path=args.config,
         allow_existing=args.allow_existing,
+        resuming=args.resuming,
+        overrides=overrides,
         check_torch=not args.no_torch,
     )
     results = run_checks(ctx)

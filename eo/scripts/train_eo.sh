@@ -101,15 +101,21 @@ RUN_DIR="${MOR_SAVE_DIR:-/data/enric/runs}/pretrain/${OUTPUT_DIR}"
 LOG_DIR="/data/enric/logs"
 LOG_FILE="${LOG_DIR}/${RUN_ID}.log"
 
-ALLOW_EXISTING=()
-if [[ $RESUME -eq 1 || $FORCE -eq 1 ]]; then ALLOW_EXISTING=(--allow-existing); fi
+PRE_FLAGS=()
+if [[ $RESUME -eq 1 || $FORCE -eq 1 ]]; then PRE_FLAGS+=(--allow-existing); fi
+if [[ $RESUME -eq 1 ]]; then PRE_FLAGS+=(--resuming); fi
+# Forward the Hydra overrides so the config check validates what actually runs,
+# not the file on disk -- `mor.enable=false` on the command line changes the arm.
+for _ov in "${HYDRA_ARGS[@]+"${HYDRA_ARGS[@]}"}"; do
+  [[ "$_ov" == *"="* ]] && PRE_FLAGS+=(--override "$_ov")
+done
 
 # --- 4. preflight: refuse to start if anything is wrong ----------------------
 "$PY" -m eo.train.preflight \
     --gpu "$GPU" \
     --run-dir "$RUN_DIR" \
     --config "conf/pretrain_vision/${CONFIG}.yaml" \
-    "${ALLOW_EXISTING[@]}"
+    "${PRE_FLAGS[@]+"${PRE_FLAGS[@]}"}"
 
 # --- 5. launch ---------------------------------------------------------------
 CMD=("$PY" pretrain.py
