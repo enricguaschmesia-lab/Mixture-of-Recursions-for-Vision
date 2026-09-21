@@ -34,7 +34,7 @@ The five decisions, in short. Reasons and numbers are in D2.2.
    mechanism is deliberately not carried over -- nothing here would use it.
 
 3. DEM is NOT compacted, though it uses only 1,026 of 15,360 codes (6.7%).
-   Compaction needs a dense<->FSQ remap that Phase 4 must invert, and the figure
+   Compaction needs a dense<->FSQ remap that Phase 5 must invert, and the figure
    is measured on val only -- a code val never hit would be unmappable if the
    train split arrives. A real 16.4% saving, declined deliberately: reduce batch
    size before revisiting this.
@@ -44,7 +44,7 @@ The five decisions, in short. Reasons and numbers are in D2.2.
    survives on its own merits: under `modality_order: 'random'` a chunk's first
    token IS its BO id, so the sequence is already self-describing, and a
    preamble would put a position-dependent signal at the front of every sequence
-   exactly where Phase 4 is trying to read whether depth tracks modality.
+   exactly where Phase 5 is trying to read whether depth tracks modality.
    TerraMind's [S_N] sentinels are span-masking markers, not chunk delimiters,
    and it keeps one embedding table per modality so it never needs either.
 

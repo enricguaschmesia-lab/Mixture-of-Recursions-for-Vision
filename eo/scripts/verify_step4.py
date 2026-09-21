@@ -5,7 +5,7 @@ This is NOT Step 5. Step 5 does the population statistics (code-usage
 histograms, spot reconstruction). This checks that what Step 4 wrote is
 structurally sound and, critically, that consolidation did not scramble rows --
 the one failure mode this format introduces (R9), which would silently pair the
-wrong S2L2A patch with the wrong LULC label and poison Phase 4.
+wrong S2L2A patch with the wrong LULC label and poison Phase 5.
 """
 import json, os, sys, warnings
 os.environ.setdefault("HF_HOME", "/data/enric/hf")

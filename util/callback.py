@@ -152,7 +152,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
          an EO-aware version has to skip non-image modalities explicitly.
 
     Making it EO-aware is real work, not a config flip, and its only consumer is
-    Phase 4's routing analysis. Two constraints for whoever does it:
+    Phase 5's routing analysis. Two constraints for whoever does it:
 
       * The token-ID-grid fallback (no Cosmos) is the tractable path: it needs a
         registry-selected `get_modality`, a dataset selected the same way,
@@ -165,7 +165,7 @@ class MultimodalVisionEvalCallback(TrainerCallback):
         see eo/README.md). So EO reconstruction is inherently a cross-env
         problem: decode offline in `mor` and load the images, or run the decode
         as a subprocess. That design is out of Phase 2 scope, but it is written
-        down here so it is not rediscovered as a surprise mid-Phase-4.
+        down here so it is not rediscovered as a surprise mid-Phase-5.
     """
 
     def __init__(self, cfg):

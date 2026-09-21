@@ -84,7 +84,7 @@ class MoRTrainer(Trainer):
         # The registry is selected from cfg, NOT imported at module scope. It used
         # to be CLEVR's unconditionally, which on an EO run mislabelled every
         # modality (DEM -> 'caption') and dropped LULC and Coords entirely, since
-        # CLEVR has only 5 ids. These numbers feed Phase 4, so the mislabelling
+        # CLEVR has only 5 ids. These numbers feed Phase 5, so the mislabelling
         # would have been read as a result. See lm_dataset/modality_registry.py.
         self.id_to_modality = get_id_to_modality(cfg)
         self.modality_tr_loss = {

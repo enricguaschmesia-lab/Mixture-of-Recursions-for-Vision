@@ -197,7 +197,7 @@ def main(cfg: DictConfig):
         # reaches compute_loss, per_modality_loss stays empty, and the
         # `loss_<modality>` entries are absent from every log line. Measured on
         # the first EO smoke run (2026-09-20), where 30 steps trained cleanly and
-        # logged no per-modality loss at all. Those numbers feed Phase 4.
+        # logged no per-modality loss at all. Those numbers feed Phase 5.
         remove_unused_columns=False,
     )
     

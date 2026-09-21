@@ -20,7 +20,7 @@ Differs from the CLEVR MultimodalTokenizedDataset in how a body is obtained --
 one memory-mapped matrix per modality rather than one file per sample, no
 augmentation dimension, no text branch, plus presence masks. Everything from
 BO/EO wrapping onward is shared via lm_dataset.sequence_assembly so the two
-paths cannot drift; Phase 3 compares EO routing against the CLEVR results.
+paths cannot drift; Phases 3–4 compare EO routing against the CLEVR results.
 
 Runs in the repo's own .venv, NOT the `mor` conda env: it imports numpy, torch
 and (lazily) pyarrow, but never terratorch. eo.terramesh_tok.contract is pure

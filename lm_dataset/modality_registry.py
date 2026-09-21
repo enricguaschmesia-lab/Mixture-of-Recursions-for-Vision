@@ -20,7 +20,7 @@ CLEVR's names. That does not crash — it silently mislabels, and partly drops:
     EO id 6 (LULC)   -> absent from CLEVR's dict: NEVER LOGGED AT ALL
     EO id 7 (Coords) -> absent from CLEVR's dict: NEVER LOGGED AT ALL
 
-Per-modality losses feed Phase 4's routing analysis directly, so this is a
+Per-modality losses feed Phase 5's routing analysis directly, so this is a
 correctness bug in the measurement, not a cosmetic one. See docs worklog §4
 item 15 and PHASE2_PLAN.md step 5.2.
 

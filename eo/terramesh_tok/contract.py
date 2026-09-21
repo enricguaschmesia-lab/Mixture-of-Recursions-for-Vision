@@ -1,6 +1,6 @@
 """The TerraMesh -> TerraMind FSQ token preprocessing contract.
 
-SINGLE SOURCE OF TRUTH. Step 4 (batch tokenization) and Phase 4 (routing
+SINGLE SOURCE OF TRUTH. Step 4 (batch tokenization) and Phase 5 (routing
 analysis) must both import from here rather than re-deriving any of it.
 
 Every constant below was established empirically in Phase 1 Step 3; see
@@ -51,7 +51,7 @@ CROP_OFF = (NATIVE - CROP) // 2   # 20 px off each side, exactly symmetric
 # --- Token layout -------------------------------------------------------
 # tokenizer.encode() returns (B, H_q, W_q). We flatten ROW-MAJOR (C order):
 #     token k  <->  patch (row = k // GRID, col = k % GRID)
-# Phase 4's patch<->token mapping depends on this. Do not change it.
+# Phase 5's patch<->token mapping depends on this. Do not change it.
 FLATTEN_ORDER = "row-major C order; row = k // GRID, col = k % GRID"
 TOKENS_PER_SAMPLE = GRID * GRID   # 196
 
