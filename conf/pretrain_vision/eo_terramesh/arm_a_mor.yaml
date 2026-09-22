@@ -1,0 +1,43 @@
+# @package _global_
+#
+# ARM A — recursion ON (MoR, token-choice routing).  Phase 3 D3.5.
+#
+# ┌── THE DIFF BETWEEN THE ARMS, IN FULL ───────────────────────────────┐
+# │                            arm A (this)   arm B (arm_b_vanilla)     │
+# │   recursive.enable            true            false                 │
+# │   mor.enable                  true            false                 │
+# │ Nothing else. Everything below the defaults list is inherited       │
+# │ unchanged from terramesh_mor_token.yaml by BOTH arms.               │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The two keys are restated here even though the base already sets them, so
+# that `diff arm_a_mor.yaml arm_b_vanilla.yaml` is the complete answer to
+# "how do the arms differ". W8 in eo/scripts/verify_phase3.py asserts that
+# the RESOLVED configs differ in exactly these keys and no others.
+#
+# ⚠ Do NOT express an arm as a CLI override. The config that produced a
+#   checkpoint has to be readable six weeks later (plan Step 4.d).
+#
+# MEASURED (2026-09-22):
+#   parameters     90.04 M total · 50.43 M embedding · 39.61 M non-embedding
+#                  11 unique layers; lm_head tied to the embeddings (verified)
+#   total_flos     63.76 TF/step at total_batch_size 256 — but see the caveat
+#                  in arm_b_vanilla.yaml before reporting this as compute
+#   throughput     13.37 samples/s (fp16, per_device 4)
+#   vs arm B       2.6x FEWER non-embedding parameters, but only ~4% faster
+#                  per sample, and that only because fp16 helps MoR and not
+#                  vanilla — at fp32 MoR is 1.7x SLOWER. ⚠ Whether MoR saves
+#                  COMPUTE is not established: `total_flos` is a parameter
+#                  proxy, not a measurement. See arm_b_vanilla.yaml.
+#
+#   launch:  bash eo/scripts/train_eo.sh --arm mor \
+#                --config eo_terramesh/arm_a_mor --detach
+
+defaults:
+  - terramesh_mor_token
+  - _self_
+
+recursive:
+  enable: true
+mor:
+  enable: true

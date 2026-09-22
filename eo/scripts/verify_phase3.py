@@ -17,7 +17,7 @@ unverified deliverable:
   W5  fp16 matches fp32 within tolerance  [Step 2]
   W6  generated ids land in target slot   [Step 6]  not yet implemented
   W7  decode metrics collapse on shuffle  [Step 7]  not yet implemented
-  W8  arm configs differ only as intended [Step 4]  not yet implemented
+  W8  arm configs differ only as intended [Step 4]
   W9  resume gives a continuous curve     [Step 0]  covered by
                                                     eo.train.preflight_controls
 
@@ -440,6 +440,108 @@ def w5_fp16_equivalence(steps: int = 15, tbs: int = 8) -> bool:
     return bool(ok and fired)
 
 
+#: The ONLY keys the two arms may differ in. Everything else must be identical
+#: or the comparison is confounded before it starts.
+ARM_DIFF_KEYS = {"recursive.enable", "mor.enable"}
+
+#: Keys whose equality across arms is load-bearing, checked by name as well as
+#: by the blanket diff so a failure says WHICH invariant broke.
+ARM_MUST_MATCH = [
+    "multimodal.eval_split", "seed", "num_train_steps", "stop_steps",
+    "total_batch_size", "per_device_train_batch_size", "num_warmup_steps",
+    "lr_scheduler_kwargs.num_decay_steps", "eval_steps", "save_steps",
+    "precision", "mixed_precision", "max_length", "model_config.vocab_size",
+    "learning_rate", "max_grad_norm", "dataloader_num_workers",
+    "multimodal.modality_order", "multimodal.active_modalities",
+]
+
+ARM_A = "eo_terramesh/arm_a_mor"
+ARM_B = "eo_terramesh/arm_b_vanilla"
+
+
+def _compose(name, overrides=None):
+    from hydra import compose, initialize_config_dir
+    with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
+        return compose(config_name=name, overrides=list(overrides or []))
+
+
+def _flat(cfg, prefix=""):
+    """Flatten a config to dotted keys, WITHOUT resolving interpolations.
+
+    ⚠ `resolve=False` is load-bearing. The EO config interpolates
+    `${oc.env:WANDB_ENTITY}`, and merely reading the values resolves it, so
+    this check used to raise `InterpolationResolutionError` in any shell
+    without W&B variables set — it passed only because they happened to be
+    exported. Comparing two configs must not require credentials, and the
+    comparison is over the interpolation EXPRESSIONS anyway: two arms that both
+    say `${oc.env:WANDB_ENTITY}` agree whether or not it is set.
+    """
+    from omegaconf import OmegaConf
+    if OmegaConf.is_config(cfg):
+        cfg = OmegaConf.to_container(cfg, resolve=False)
+    out = {}
+    for k, v in cfg.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            out.update(_flat(v, key))
+        else:
+            out[key] = v
+    return out
+
+
+def _arm_diff(a, b):
+    fa, fb = _flat(a), _flat(b)
+    return {k for k in set(fa) | set(fb) if fa.get(k, "<absent>") != fb.get(k, "<absent>")}
+
+
+def w8_arm_configs() -> bool:
+    """The two arm configs differ in exactly the intended keys.
+
+    ⚠ This is the check that stops the comparison being confounded before it
+    starts. Arms A and B already differ in parameter count and FLOPs per token
+    by construction (that is the experiment); any THIRD difference — a stray
+    learning rate, a different split, a different seed — makes the Plan 1 /
+    Plan 2 call meaningless, and none of those would fail loudly at runtime.
+    Two W&B pages side by side will not reveal it either.
+    """
+    a, b = _compose(ARM_A), _compose(ARM_B)
+
+    diff = _arm_diff(a, b)
+    ok = diff == ARM_DIFF_KEYS
+    print(f"    arms differ in exactly {sorted(ARM_DIFF_KEYS)}")
+    print(f"    measured difference: {sorted(diff)} = {ok}")
+
+    fa, fb = _flat(a), _flat(b)
+    match_ok = True
+    for k in ARM_MUST_MATCH:
+        if k not in fa or k not in fb:
+            print(f"    MISSING key in an arm config: {k}")
+            match_ok = False
+        elif fa[k] != fb[k]:
+            print(f"    MISMATCH {k}: A={fa[k]!r} B={fb[k]!r}")
+            match_ok = False
+    print(f"    all {len(ARM_MUST_MATCH)} load-bearing keys identical  = {match_ok}")
+
+    # CONTROL 1: a stray difference anywhere must be caught.
+    c1 = _arm_diff(a, _compose(ARM_B, ["learning_rate=0.001"])) != ARM_DIFF_KEYS
+    print(f"    control: a stray learning_rate difference is caught = {c1}")
+
+    # CONTROL 2: pointing the arms at DIFFERENT eval splits must be caught.
+    # This is the one that would silently score the arms on different held-out
+    # rows, and nothing downstream could detect it.
+    b_split = _compose(ARM_B, ["multimodal.eval_split=v2"])
+    c2 = _flat(b_split)["multimodal.eval_split"] != fa["multimodal.eval_split"] and \
+        _arm_diff(a, b_split) != ARM_DIFF_KEYS
+    print(f"    control: different eval_split per arm is caught     = {c2}")
+
+    # CONTROL 3: a different seed must be caught -- it is the quietest of the
+    # three, since both runs still look entirely normal.
+    c3 = _arm_diff(a, _compose(ARM_B, ["seed=7"])) != ARM_DIFF_KEYS
+    print(f"    control: a different seed per arm is caught         = {c3}")
+
+    return bool(ok and match_ok and c1 and c2 and c3)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -453,6 +555,7 @@ def main() -> int:
     checks += [
         ("W1   train n eval disjoint at group level [Step 1]", w1_group_disjoint),
         ("W2   eval covers every modality, S1GRD    [Step 1]", w2_eval_covers_modalities),
+        ("W8   arm configs differ only as intended [Step 4]", w8_arm_configs),
     ]
     if not args.skip_forward:
         checks.append(("W3   eval loop runs; untrained ~ ln(V)    [Step 1]", w3_eval_loop))

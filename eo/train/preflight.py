@@ -316,20 +316,84 @@ def check_eval_split(ctx: PreflightContext) -> CheckResult:
 
 
 def _load_config(path: Path, overrides: Optional[Dict[str, object]] = None) -> dict:
-    """The YAML with CLI overrides applied.
+    """The config the RUN will actually see, with CLI overrides applied.
 
     Without the overrides this validates a file nobody actually runs: every
     launch may pass `mor.enable=false`, `deepspeed=...` and so on, and a check
     that reads only the file would pass while the run does something else.
+
+    ⚠ And without Hydra COMPOSITION it validates a file nobody runs either.
+    The Phase 3 arm configs (`arm_a_mor`, `arm_b_vanilla`) are thin overlays --
+    a `defaults:` list plus the two keys that define the arm -- so reading the
+    raw YAML sees no `vocab_size`, no `dataset` and no `precision`, and
+    preflight refused to launch a config that is in fact correct. Found
+    2026-09-22 when the arm configs were introduced. Compose the way
+    `pretrain.py` does, so this checks the run rather than the file.
     """
     import yaml
-    cfg = yaml.safe_load(path.read_text())
+    raw = yaml.safe_load(path.read_text()) or {}
+
+    if "defaults" in raw:
+        cfg = _compose_config(path, overrides)
+        if cfg is not None:
+            return cfg
+        # Composition failed: fall through, but strip `defaults` so the caller
+        # reports the MISSING KEYS rather than silently passing a partial file.
+        raw.pop("defaults", None)
+
     for dotted, value in (overrides or {}).items():
-        node, keys = cfg, dotted.split(".")
+        node, keys = raw, dotted.split(".")
         for k in keys[:-1]:
             node = node.setdefault(k, {})
         node[keys[-1]] = value
-    return cfg
+    return raw
+
+
+def _compose_config(path: Path, overrides: Optional[Dict[str, object]] = None):
+    """Resolve a config through Hydra exactly as pretrain.py will.
+
+    Returns a plain dict, or None if Hydra is unavailable or composition fails
+    (the caller then falls back and reports missing keys rather than passing).
+
+    ⚠ `resolve=False`. The EO config interpolates `${oc.env:WANDB_ENTITY}`, and
+    resolving here would raise in any shell that has not loaded `.env` -- which
+    is precisely the shell preflight exists to diagnose. check_wandb reports
+    that missing variable properly; this must not pre-empt it with a crash.
+    """
+    try:
+        from hydra import compose, initialize_config_dir
+        from omegaconf import OmegaConf
+    except ImportError:
+        return None
+
+    # conf/pretrain_vision/<group>/<name>.yaml -> config_dir is the directory
+    # holding the file, which is also what its `defaults` entries resolve
+    # against.
+    # ⚠ Overrides arrive already parsed into Python values (the CLI runs them
+    # through yaml.safe_load so bools and ints are real). Hydra's grammar wants
+    # the ORIGINAL text back: Python's False renders as "False", which Hydra
+    # reads as a string and then refuses to assign to a bool node. Render them
+    # back to Hydra's spelling rather than str()-ing them.
+    def _hydra_value(v):
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if v is None:
+            return "null"
+        return str(v)
+
+    try:
+        ov = [f"{k}={_hydra_value(v)}" for k, v in (overrides or {}).items()]
+        # ⚠ must be ABSOLUTE; train_eo.sh passes a repo-relative path.
+        with initialize_config_dir(config_dir=str(path.resolve().parent), version_base=None):
+            cfg = compose(config_name=path.stem, overrides=ov)
+        return OmegaConf.to_container(cfg, resolve=False)
+    except Exception as e:
+        # ⚠ Never fail silently here. A silent fallback made this function look
+        # like it worked while check_config reported nonsense about a config
+        # that was actually fine.
+        print(f"  (preflight: Hydra composition of {path.name} failed, falling back to "
+              f"raw YAML -- {type(e).__name__}: {str(e).splitlines()[0][:120]})", file=sys.stderr)
+        return None
 
 
 def _latest_checkpoint(run_dir: Path) -> Optional[Path]:

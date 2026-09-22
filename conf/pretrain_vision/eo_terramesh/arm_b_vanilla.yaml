@@ -1,0 +1,78 @@
+# @package _global_
+#
+# ARM B — recursion OFF (vanilla, 29 unshared layers).  Phase 3 D3.5.
+#
+# ┌── THE DIFF BETWEEN THE ARMS, IN FULL ───────────────────────────────┐
+# │                            arm A (arm_a_mor)   arm B (this)         │
+# │   recursive.enable            true                false             │
+# │   mor.enable                  true                false             │
+# │ Nothing else. Everything below the defaults list is inherited       │
+# │ unchanged from terramesh_mor_token.yaml by BOTH arms.               │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# ⚠ ARM B IS AN UPPER BOUND, NOT A LIKE-FOR-LIKE CONTROL — say this before
+#   anyone asks why its loss is lower. Measured 2026-09-22:
+#
+#     arm A (MoR)      90.04 M total ·  39.61 M non-embedding · 11 unique layers
+#     arm B (vanilla) 153.10 M total · 102.66 M non-embedding · 29 layers
+#
+#   Arm B has 2.6x the non-embedding parameters and applies 29 layers to every
+#   token, against MoR's router-dependent depth. The defensible claim is
+#   therefore "MoR reaches comparable loss with 2.6x fewer non-embedding
+#   parameters", NOT "MoR matches vanilla".
+#
+# ⚠ AND IT IS NOT CHEAPER IN WALL CLOCK EITHER, which cuts the other way and
+#   is easy to get wrong. Measured throughput:
+#
+#                     fp32 B=2   fp32 B=4   fp16 B=4
+#     arm A (MoR)       6.13       OOM       13.37
+#     arm B (vanilla)  10.29      12.84      12.85
+#
+#   At equal layer applications (2 + 9x3 = 29 for MoR against vanilla's 29)
+#   MoR is ~1.7x SLOWER in fp32 — pure routing overhead. fp16 closes the gap
+#   because it helps MoR and does essentially nothing for vanilla.
+#
+# ⚠⚠ DO NOT REPORT `total_flos` AS A COMPUTE MEASUREMENT. Plan Step 4.c says to
+#   compare at equal FLOPs using the Trainer's `total_flos`. Measured
+#   2026-09-22, that metric is EXACTLY
+#
+#        6 x tokens x non_embedding_parameters
+#
+#   — verified numerically to four decimal places against both arms
+#   (arm A 63.76 TF/step, arm B 165.26 TF/step). It is HF's
+#   `PreTrainedModel.floating_point_ops` estimate: a PARAMETER-COUNT PROXY that
+#   cannot see recursion, early exit or routing overhead at all. So
+#   "arm B spends 2.59x the FLOPs" is just "arm B has 2.59x the non-embedding
+#   parameters" restated, and proves nothing about compute.
+#
+#   ⚠ Note also: 1 - 39.61/102.66 = 61.4%, which is exactly the "MoR ~61%
+#   lower FLOPs" figure carried in PROJECT.md from the CLEVR results. That
+#   strongly suggests the CLEVR claim is the same parameter ratio rather than
+#   a compute measurement — worth confirming before it is repeated in the
+#   Phase 3 report. Wall clock contradicts it outright: MoR is SLOWER.
+#
+#   A real comparison needs either wall clock (measured, above) or FLOPs
+#   counted from actual layer applications weighted by the router's depth
+#   distribution — which only becomes available in Step 8, where the depth
+#   telemetry is captured. Deferred there deliberately.
+#
+# WHICH BASELINE THIS IS. Layer-matched, i.e. Gianfranco's original "parameter
+# flip", confirmed by him 2026-09-22. A PARAMETER-matched baseline is
+# explicitly future work and an agenda item for the next meeting — it is not
+# this phase's comparison. (worklog section 4 item 22)
+#
+# ⚠ Arm B saves as `model.safetensors`, arm A as `pytorch_model.bin`:
+#   save_safetensors is keyed on whether the model shares weights. Anything
+#   loading these checkpoints must handle both.
+#
+#   launch:  bash eo/scripts/train_eo.sh --arm vanilla \
+#                --config eo_terramesh/arm_b_vanilla --detach
+
+defaults:
+  - terramesh_mor_token
+  - _self_
+
+recursive:
+  enable: false
+mor:
+  enable: false
