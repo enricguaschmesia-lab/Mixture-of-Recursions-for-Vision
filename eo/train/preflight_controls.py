@@ -123,6 +123,36 @@ def _broken_config(tmp: Path, **overrides) -> Path:
     return out
 
 
+def _mutated_split(tmp: Path, name: str, mutate) -> Path:
+    """The committed split with one field sabotaged, written beside it."""
+    import json
+    from eo.data.eval_split import default_split_path
+    doc = json.loads(default_split_path().read_text())
+    mutate(doc)
+    out = tmp / f"eval_rows_{name}.json"
+    out.write_text(json.dumps(doc))
+    return out
+
+
+def _stale_split(tmp: Path) -> Path:
+    """Built against a different tok_index.parquet. The row indices still
+    resolve, which is exactly why this must be caught by the hash."""
+    return _mutated_split(tmp, "stale",
+                          lambda d: d["inputs"].__setitem__("tok_index.parquet", "0" * 64))
+
+
+def _duplicated_split(tmp: Path) -> Path:
+    def m(d):
+        d["eval_rows"] = d["eval_rows"] + [d["eval_rows"][0]]
+        d["n_eval_rows"] = len(d["eval_rows"])
+    return _mutated_split(tmp, "dup", m)
+
+
+def _miscounted_split(tmp: Path) -> Path:
+    return _mutated_split(tmp, "miscount",
+                          lambda d: d.__setitem__("n_eval_rows", d["n_eval_rows"] + 1))
+
+
 def main(argv=None) -> int:
     tmp = Path(tempfile.mkdtemp())
     occupied = tmp / "occupied"
@@ -161,6 +191,20 @@ def main(argv=None) -> int:
         ("config: wrong dataset",               "config",             dict(env=GOOD_ENV, config=_broken_config(tmp, dataset="clevr_multimodal"))),
         ("config: unsupported precision",       "config",             dict(env=GOOD_ENV, config=_broken_config(tmp, precision="int8"))),
         ("config: missing file",                "config",             dict(env=GOOD_ENV, config=tmp / "nope.yaml")),
+    ]
+
+    # --- the held-out eval split (Step 1). A stale split is the worst of these
+    # to miss: the row indices still resolve, so the run trains on rows it
+    # reports as held out and every eval number is a training number. ---
+    cases += [
+        ("eval split: names a missing file", "eval split",
+         dict(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split="does_not_exist.json"))),
+        ("eval split: stale input hash", "eval split",
+         dict(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split=str(_stale_split(tmp))))),
+        ("eval split: duplicate rows", "eval split",
+         dict(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split=str(_duplicated_split(tmp))))),
+        ("eval split: count disagrees with list", "eval split",
+         dict(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split=str(_miscounted_split(tmp))))),
     ]
 
     # --- resume checkpoint (Step 0.4). Every one of these was measured to be
@@ -223,6 +267,10 @@ def main(argv=None) -> int:
     ] + [
         ("not resuming skips the checkpoint check", "resume checkpoint",
          _results(env=GOOD_ENV, run_dir=ck["mor"], resuming=False, allow_existing=True)),
+        # A null split is legitimate -- it means "no held-out evaluation", the
+        # Phase 2 behaviour. Without this the check could be "always fail".
+        ("eval split: null is allowed (no eval)", "eval split",
+         _results(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split=None))),
     ]
     pos_ok = 0
     for label, target, res in positives:

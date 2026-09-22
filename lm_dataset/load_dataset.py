@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from lm_dataset.multimodal_tokenized_dataset import MultimodalTokenizedDataset
 from paths import PROJECT_ROOT
@@ -32,6 +33,69 @@ MULTIMODAL_DATASETS = {
 
 
 
+def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
+    """Construct the EO dataset, applying the held-out split if one is configured.
+
+    `multimodal.eval_split` names the committed split artifact (a path, or a
+    bare tag resolved to eo/data/eval_rows_<tag>.json). When it is null the
+    dataset is the full 89,088 rows and there is no eval set -- the Phase 2
+    behaviour, kept so the smoke path and the CLEVR-comparison runs are
+    unchanged.
+
+    ⚠ Train is the COMPLEMENT of eval, computed here rather than stored, so the
+    two cannot overlap by construction. A second committed row list would be
+    one more thing that can drift.
+    """
+    from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
+    from eo.data.eval_split import default_split_path, load_eval_rows, train_rows_from_eval
+
+    split_ref = mm_cfg.get("eval_split", None)
+    rows = None
+    if split_ref is not None:
+        path = Path(split_ref)
+        if not path.suffix:                      # a bare tag, e.g. "v1"
+            path = default_split_path(str(split_ref))
+        elif not path.is_absolute():
+            path = Path(PROJECT_ROOT) / path
+        eval_rows = load_eval_rows(path=path, root_dir=root_dir)
+        if want == "eval":
+            rows = eval_rows
+        else:
+            import numpy as np
+
+            n_total = len(np.load(Path(root_dir) / "Coords_tok" / "present.npy", mmap_mode="r"))
+            rows = train_rows_from_eval(eval_rows, n_total)
+    elif want == "eval":
+        return None
+
+    return TerraMeshTokenDataset(
+        root_dir=root_dir,
+        split=mm_cfg.get("split", "val"),
+        active_modalities=mm_cfg.get("active_modalities", None),
+        max_length=cfg.max_length,
+        modality_order=mm_cfg.get("modality_order", "fixed"),
+        seed=cfg.get("seed", 42),
+        shuffle_image_patches=mm_cfg.get("shuffle_image_patches", False),
+        rows=rows,
+    )
+
+
+def load_eval_dataset_from_config(cfg):
+    """The held-out evaluation dataset, or None if this run has no split.
+
+    Separate from load_dataset_from_config rather than returning a pair: the
+    CLEVR path has no eval split and every existing caller expects exactly one
+    dataset back.
+    """
+    dataset_name = [ds.strip() for ds in cfg.dataset.split(',')]
+    if len(dataset_name) != 1 or dataset_name[0] != "terramesh_multimodal":
+        return None
+    mm_cfg = cfg.get("multimodal", {})
+    return _build_terramesh(
+        cfg, mm_cfg, MULTIMODAL_DATASETS["terramesh_multimodal"]["root_dir"], want="eval"
+    )
+
+
 def load_dataset_from_config(cfg):
     dataset_name = [ds.strip() for ds in cfg.dataset.split(',')]
 
@@ -48,17 +112,7 @@ def load_dataset_from_config(cfg):
         # memory-mapped matrix per modality, presence masks, no augmentations,
         # no text), shared sequence assembly.
         if ds_name == "terramesh_multimodal":
-            from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
-
-            return TerraMeshTokenDataset(
-                root_dir=ds_cfg["root_dir"],
-                split=mm_cfg.get("split", "val"),
-                active_modalities=mm_cfg.get("active_modalities", None),
-                max_length=cfg.max_length,
-                modality_order=mm_cfg.get("modality_order", "fixed"),
-                seed=cfg.get("seed", 42),
-                shuffle_image_patches=mm_cfg.get("shuffle_image_patches", False),
-            )
+            return _build_terramesh(cfg, mm_cfg, ds_cfg["root_dir"], want="train")
 
         active_modalities = list(mm_cfg.get("active_modalities", ["tok_rgb@256"]))
         modality_order = mm_cfg.get("modality_order", "fixed")

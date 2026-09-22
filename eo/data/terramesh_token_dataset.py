@@ -113,7 +113,12 @@ def assert_artifact_crop(root_dir, modalities) -> Dict[str, object]:
 
 class TerraMeshTokenDataset(Dataset):
     """One sample per TerraMesh scene: the present modalities, BO/EO-wrapped,
-    concatenated into one sequence over the EO vocabulary (eo_vocab, D2.2)."""
+    concatenated into one sequence over the EO vocabulary (eo_vocab, D2.2).
+
+    Pass `rows=` to restrict it to a subset of the canonical row order -- that
+    is how the Phase 3 train/eval split is applied (eo/data/eval_split.py,
+    D3.1). A scene's emitted sequence does not depend on which subset reached
+    it; see _get_rng."""
 
     def __init__(
         self,
@@ -124,6 +129,7 @@ class TerraMeshTokenDataset(Dataset):
         modality_order: str = "fixed",
         seed: int = 42,
         shuffle_image_patches: bool = False,
+        rows: Optional[Sequence[int]] = None,
     ):
         super().__init__()
         if modality_order not in ("fixed", "random"):
@@ -184,14 +190,44 @@ class TerraMeshTokenDataset(Dataset):
                 f"they would produce an empty sequence."
             )
 
+        # The row subset (Phase 3 Step 1.4, D3.1). `rows` holds ORIGINAL row ids
+        # into the canonical tok_index.parquet order; the dataset is indexed
+        # positionally over it, and every array access and every RNG draw goes
+        # through the original id.
+        #
+        # ⚠ Why an explicit argument rather than torch.utils.data.Subset:
+        # _get_rng seeds on (seed, worker_id, idx). Under a Subset, `idx` is the
+        # POSITION in the subset, so scene 12,345 would draw a different modality
+        # order depending on which split it landed in -- silently breaking
+        # reproducibility against the full-set runs and making train and eval
+        # disagree about the same scene. Here `idx` stays the original row id, so
+        # a scene's RNG stream is a property of the scene.
+        if rows is None:
+            self.rows = np.arange(self.n_rows, dtype=np.int64)
+            self.is_subset = False
+        else:
+            self.rows = np.asarray(rows, dtype=np.int64)
+            self.is_subset = True
+            if self.rows.ndim != 1 or self.rows.size == 0:
+                raise ValueError("rows must be a non-empty 1-D sequence of row ids.")
+            if len(np.unique(self.rows)) != len(self.rows):
+                raise ValueError("rows contains duplicate row ids.")
+            if self.rows.min() < 0 or self.rows.max() >= self.n_rows:
+                raise ValueError(
+                    f"rows fall outside [0, {self.n_rows}); they do not index this artifact. "
+                    f"Got [{self.rows.min()}, {self.rows.max()}]."
+                )
+
         # Exact per-row sequence lengths: only present modalities contribute,
-        # each as [BO, body, EO].
+        # each as [BO, body, EO]. Computed over the SELECTED rows -- a subset
+        # cannot need more room than the full set, but it can need less, and
+        # max_length is validated against what this dataset will actually emit.
         widths = np.array(
             [get_modality(m).tokens_per_sample + 2 for m in self.active_modalities], dtype=np.int64
         )
         presence = np.stack([self._present[m] for m in self.active_modalities], axis=1)
         self._seq_lens = (presence.astype(np.int64) * widths[None, :]).sum(axis=1)
-        self.required_length = int(self._seq_lens.max())
+        self.required_length = int(self._seq_lens[self.rows].max())
 
         if max_length is None:
             self.max_length = self.required_length
@@ -228,33 +264,41 @@ class TerraMeshTokenDataset(Dataset):
 
     @property
     def stems(self) -> List[str]:
-        """Sample stems in canonical row order. Provenance only -- never part of
-        a batch (the output dict is a closed five-key set)."""
+        """Sample stems for the SELECTED rows, in this dataset's positional
+        order. Provenance only -- never part of a batch (the output dict is a
+        closed five-key set). Identical to canonical row order when no subset
+        is in force."""
         if self._stems is None:
             import pandas as pd
 
             idx = pd.read_parquet(self.root_dir / "tok_index.parquet")
             if len(idx) != self.n_rows:
                 raise RuntimeError(f"tok_index.parquet has {len(idx)} rows, arrays have {self.n_rows}")
-            self._stems = idx.sort_values("row")["stem"].tolist()
+            all_stems = idx.sort_values("row")["stem"].tolist()
+            self._stems = [all_stems[r] for r in self.rows]
         return self._stems
 
     def __len__(self) -> int:
-        return self.n_rows
+        return int(len(self.rows))
 
-    def present_modalities(self, idx: int) -> List[str]:
-        return [m for m in self.active_modalities if bool(self._present[m][idx])]
+    def present_modalities(self, row: int) -> List[str]:
+        """Takes an ORIGINAL row id, not a position in this dataset."""
+        return [m for m in self.active_modalities if bool(self._present[m][row])]
 
-    def _get_rng(self, idx: int) -> np.random.Generator:
-        """Per-sample RNG -- deterministic given (seed, idx). Workers don't collide.
-        Same construction as the CLEVR dataset."""
+    def _get_rng(self, row: int) -> np.random.Generator:
+        """Per-sample RNG -- deterministic given (seed, ORIGINAL row id). Workers
+        don't collide. Same construction as the CLEVR dataset.
+
+        ⚠ Keyed on the original row id, never on the position in a subset, so a
+        scene draws the same modality order whether it is reached through the
+        full set, the train split or the eval split."""
         worker_info = torch.utils.data.get_worker_info()
         worker_id = worker_info.id if worker_info is not None else 0
-        return np.random.default_rng(seed=(self.seed, worker_id, idx))
+        return np.random.default_rng(seed=(self.seed, worker_id, row))
 
-    def _load_chunk(self, modality: str, idx: int) -> torch.Tensor:
+    def _load_chunk(self, modality: str, row: int) -> torch.Tensor:
         info = get_modality(modality)
-        raw = self._token_arrays()[modality][idx]
+        raw = self._token_arrays()[modality][row]
         # uint16 -> int64 BEFORE the offset: 87,555 > 65,535, so adding the
         # offset in uint16 would wrap silently.
         body = torch.from_numpy(np.asarray(raw, dtype=np.int64)) + info.codebook_offset
@@ -262,24 +306,27 @@ class TerraMeshTokenDataset(Dataset):
         eo = torch.tensor([info.eo_id], dtype=torch.long)
         return torch.cat([bo, body, eo], dim=0)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        rng = self._get_rng(idx)
+    def __getitem__(self, pos: int) -> Dict[str, torch.Tensor]:
+        # `pos` is a position in this dataset; `row` is the id in the canonical
+        # tok_index.parquet order. They coincide only when no subset is in force.
+        row = int(self.rows[pos])
+        rng = self._get_rng(row)
 
         # Only modalities actually present in this row take a slot. An absent
         # modality is omitted entirely rather than emitted as an empty BO/EO
         # pair or a zero-filled body: 0 is a real token id, and a zero body
         # would train the model on content that does not exist.
-        ordered = self.present_modalities(idx)
+        ordered = self.present_modalities(row)
         if self.modality_order == "random" and len(ordered) > 1:
             perm = rng.permutation(len(ordered))
             ordered = [ordered[i] for i in perm]
 
-        chunks = [self._load_chunk(m, idx) for m in ordered]
+        chunks = [self._load_chunk(m, row) for m in ordered]
 
         total = sum(int(c.shape[0]) for c in chunks)
         if total > self.max_length:
             raise RuntimeError(
-                f"row {idx}: sequence of {total} exceeds max_length={self.max_length}. "
+                f"row {row}: sequence of {total} exceeds max_length={self.max_length}. "
                 f"This should have been caught in __init__."
             )
 

@@ -48,7 +48,7 @@ except ImportError:
 import transformers.modeling_utils
 transformers.modeling_utils.DTensor = DTensor
 
-from lm_dataset.load_dataset import load_dataset_from_config, MULTIMODAL_DATASETS
+from lm_dataset.load_dataset import load_dataset_from_config, load_eval_dataset_from_config, MULTIMODAL_DATASETS
 from lm_dataset.modality_registry import assert_vocab_size
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
@@ -98,6 +98,12 @@ def main(cfg: DictConfig):
 
     print("Loading dataset...")
     train_dataset = load_dataset_from_config(cfg)
+    # Held-out evaluation split (Phase 3 D3.1/D3.2). None unless the EO config
+    # names one via multimodal.eval_split, so the CLEVR path is untouched.
+    eval_dataset = load_eval_dataset_from_config(cfg)
+    if eval_dataset is not None:
+        print(f"Eval split: {len(eval_dataset)} held-out rows "
+              f"(train: {len(train_dataset)})")
     if cfg.resume_from_checkpoint:
         latest_checkpoint = get_latest_checkpoint_path(
             cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None,
@@ -199,6 +205,21 @@ def main(cfg: DictConfig):
         # the first EO smoke run (2026-09-20), where 30 steps trained cleanly and
         # logged no per-modality loss at all. Those numbers feed Phase 5.
         remove_unused_columns=False,
+        # Evaluation on the held-out split. Off unless a split is configured,
+        # which keeps the CLEVR path and the Phase 2 smoke path unchanged.
+        #
+        # ⚠ prediction_loss_only=True is not an optimization, it is required
+        # here: the eval logits are (B, 1048, 87556), and letting HF gather and
+        # concatenate them across the eval set would need hundreds of GB. The
+        # per-modality eval CE is accumulated inside compute_loss instead, so
+        # nothing is lost by discarding them (MoRTrainer.evaluate).
+        eval_strategy="steps" if eval_dataset is not None else "no",
+        eval_steps=cfg.get("eval_steps", 2000) if eval_dataset is not None else None,
+        per_device_eval_batch_size=cfg.get(
+            "per_device_eval_batch_size", cfg.per_device_train_batch_size
+        ),
+        prediction_loss_only=True,
+        eval_on_start=cfg.get("eval_on_start", False),
     )
     
     callbacks = []
@@ -216,9 +237,11 @@ def main(cfg: DictConfig):
         callbacks.append(ScalingLawsSaveCallback(fixed_save_steps,))
         
     if "mor" in cfg and cfg.mor.get("enable"):
-        trainer = MoRTrainer(model=model, args=train_args, train_dataset=train_dataset, callbacks=callbacks, cfg=cfg,)
+        trainer = MoRTrainer(model=model, args=train_args, train_dataset=train_dataset,
+                             eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,)
     else:
-        trainer = Trainer(model=model, args=train_args, train_dataset=train_dataset, callbacks=callbacks,)
+        trainer = Trainer(model=model, args=train_args, train_dataset=train_dataset,
+                          eval_dataset=eval_dataset, callbacks=callbacks,)
     
     train_result = trainer.train(
         resume_from_checkpoint=cfg.resume_from_checkpoint

@@ -44,6 +44,9 @@ from typing import Callable, Dict, List, Optional
 
 from eo.train import gpu as gpu_mod
 
+#: Repo root, for resolving repo-relative paths named in a config.
+REPO = Path(__file__).resolve().parents[2]
+
 #: Refuse to start with less headroom than this on the checkpoint filesystem.
 #: A checkpoint is ~360 MB of weights plus ~1.1 GB of Adam state; a run saving
 #: every 2,000 steps over several days accumulates tens of GB.
@@ -266,6 +269,52 @@ def check_config(ctx: PreflightContext) -> CheckResult:
 
 
 
+def check_eval_split(ctx: PreflightContext) -> CheckResult:
+    """The configured held-out split exists and still describes this data.
+
+    ⚠ Why this is a launch-time check rather than a load-time one. The split is
+    a list of integer row indices into tok_index.parquet's row order. If that
+    file is ever regenerated the indices still resolve, still name real rows,
+    and silently designate DIFFERENT scenes -- so a run would train on rows it
+    reports as held out, and every eval number would be a training number. The
+    artifact records SHA-256 of both parquet inputs; this verifies them before
+    a multi-day run starts rather than after.
+
+    A null eval_split is legitimate (the Phase 2 behaviour: no split, no
+    evaluation) and passes with a note, because silently accepting "no
+    evaluation" is a different failure from failing to find a split.
+    """
+    if ctx.config_path is None:
+        return CheckResult("eval split", True, "skipped (no --config given)")
+    path = ctx.config_path
+    if not path.is_file():
+        return CheckResult("eval split", True, "skipped (config missing; check_config reports it)")
+
+    cfg = _load_config(path, ctx.overrides)
+    ref = (cfg.get("multimodal") or {}).get("eval_split")
+    if ref is None:
+        return CheckResult("eval split", True,
+                           "none configured -- this run has NO held-out evaluation")
+
+    from eo.data.eval_split import default_split_path, load_eval_rows
+
+    split_path = Path(str(ref))
+    if not split_path.suffix:
+        split_path = default_split_path(str(ref))
+    elif not split_path.is_absolute():
+        split_path = REPO / split_path
+
+    root = ctx.env.get("TERRAMESH_TOK_ROOT")
+    try:
+        rows = load_eval_rows(path=split_path, root_dir=root)
+    except FileNotFoundError:
+        return CheckResult("eval split", False, f"{split_path} does not exist")
+    except RuntimeError as e:
+        return CheckResult("eval split", False, str(e).splitlines()[0])
+
+    return CheckResult("eval split", True, f"{split_path.name}: {len(rows)} held-out rows")
+
+
 def _load_config(path: Path, overrides: Optional[Dict[str, object]] = None) -> dict:
     """The YAML with CLI overrides applied.
 
@@ -434,6 +483,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_run_dir,
     check_disk,
     check_config,
+    check_eval_split,
     check_resume_checkpoint,
     check_gpu_identity,      # last: the only one that touches CUDA
 ]

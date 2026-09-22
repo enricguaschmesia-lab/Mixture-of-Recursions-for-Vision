@@ -57,6 +57,25 @@ multimodal:
   # NOTE: sample_from_k_augmentations / text_tokenizer_path / text_max_length are
   # CLEVR-only. The EO dataset has no augmentation dimension and no text branch,
   # and load_dataset.py's EO branch does not pass them. Do not add them here.
+  #
+  # === The held-out evaluation split (Phase 3 D3.1) ===
+  # Names the COMMITTED artifact eo/data/eval_rows_v1.json. Train is its
+  # complement, computed at load. Null here means no split and no evaluation —
+  # the Phase 2 behaviour.
+  #
+  # ⚠ ONE-WAY DOOR. Every number from a run is conditioned on this split;
+  # changing the tag invalidates the comparison against anything trained on the
+  # old one. The artifact carries hashes of tok_index.parquet and
+  # val_metadata.parquet and refuses to load against different ones.
+  #
+  # The group key is GEOGRAPHIC, not the plan's per-corpus sample_id parse:
+  # measured 2026-09-22, 90.7% of ssl4eos12 tiles physically overlap a majortom
+  # tile (closest pair 20 m), so a per-corpus key holds out a location and
+  # leaves the same ground in training. Single-linkage clustering of tile
+  # centroids at 5 km, across both corpora, gives 5,103 groups; 5% of groups
+  # per stratum = 4,416 rows (majortom 4,032 / ssl4eos12 384). Reasoning and
+  # the measurements: eo/data/eval_split.py.
+  eval_split: v1
 weights: null
 
 # === Batching ===
@@ -199,6 +218,18 @@ stop_steps: 34800
 num_warmup_steps: 1740   # 5% of training
 save_interval: null
 save_steps: 5000
+# === Evaluation cadence (D3.2) ===
+# Teacher-forced eval loss on the 4,416 held-out rows, logged per modality on
+# the same axis as the training loss. A full pass is ~2,208 forward batches at
+# eval batch 2, so this is not free — the cadence is a deliberate trade against
+# training throughput and belongs to the Step 3 budget decision, like
+# num_train_steps. 2000 is a placeholder consistent with save_steps.
+eval_steps: 2000
+per_device_eval_batch_size: 2
+# Eval before step 1. The untrained eval loss must land at ln(87,556) = 11.3800
+# — the cheapest possible check that the split, the vocabulary and the eval
+# loop all agree (plan Step 1.6c). Cheap insurance, once per run.
+eval_on_start: true
 fixed_save_steps: null
 save_total_limit: null
 logging_steps: 10

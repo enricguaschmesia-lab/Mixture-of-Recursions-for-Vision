@@ -205,7 +205,12 @@ outputs
 smollm-135m-config
 smollm-135m-config/
 outputs
-data/
+# Anchored: an unanchored `data/` also matches eo/data/, which silently
+# ignored every NEW file in the EO dataloader package (the existing ones
+# were tracked only because they survived the eo/mor_data -> eo/data
+# rename). That would have quietly left the Phase 3 eval split artifact
+# out of version control while `git add` reported nothing.
+/data/
 wandb/
 pretrained_ckpts
 logs
