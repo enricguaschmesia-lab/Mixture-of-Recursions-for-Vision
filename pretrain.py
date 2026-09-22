@@ -49,12 +49,12 @@ import transformers.modeling_utils
 transformers.modeling_utils.DTensor = DTensor
 
 from lm_dataset.load_dataset import load_dataset_from_config, load_eval_dataset_from_config, MULTIMODAL_DATASETS
-from lm_dataset.modality_registry import assert_vocab_size
+from lm_dataset.modality_registry import assert_vocab_size, is_eo
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
 from util.config import preprocess_config
 from util.tokenizer import load_tokenizer_from_config 
-from util.trainer_pt import MoRTrainer
+from util.trainer_pt import MoRTrainer, EOTrainer
 from util.callback import FixedStoppingCallback, ScalingLawsSaveCallback, MultimodalVisionEvalCallback
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
 
@@ -245,7 +245,17 @@ def main(cfg: DictConfig):
     if "mor" in cfg and cfg.mor.get("enable"):
         trainer = MoRTrainer(model=model, args=train_args, train_dataset=train_dataset,
                              eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,)
+    elif is_eo(cfg):
+        # ⚠ The recursion-OFF arm. A stock Trainer logs `loss` and `eval_loss`
+        # and nothing per modality, because per-modality loss lived inside
+        # MoRTrainer and pretrain.py only builds that when mor.enable is true.
+        # The two-arm comparison is read off exactly the quantity arm B would
+        # not have produced. EOTrainer adds the logging and nothing else --
+        # the loss itself is still the stock Trainer's (Phase 3 Step 5, D3.6).
+        trainer = EOTrainer(model=model, args=train_args, train_dataset=train_dataset,
+                            eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,)
     else:
+        # CLEVR and anything else: untouched.
         trainer = Trainer(model=model, args=train_args, train_dataset=train_dataset,
                           eval_dataset=eval_dataset, callbacks=callbacks,)
     

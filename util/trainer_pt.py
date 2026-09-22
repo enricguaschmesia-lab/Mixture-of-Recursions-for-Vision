@@ -68,7 +68,158 @@ TRAINER_STATE_NAME = "trainer_state.json"
 logger = logging.get_logger(__name__)
 
 
-class MoRTrainer(Trainer):
+class PerModalityLossMixin:
+    """Per-modality cross-entropy logging, shared by BOTH arms (Phase 3 Step 5).
+
+    ⚠ WHY THIS EXISTS. Per-modality loss used to live inside MoRTrainer, and
+    `pretrain.py` builds MoRTrainer only when `mor.enable` is true. So the
+    recursion-OFF arm produced no per-modality loss at all -- the exact
+    quantity the two-arm comparison is about. Step 1 then added evaluation to
+    MoRTrainer only, reproducing the same asymmetry on the eval axis, which is
+    the axis the Plan 1 / Plan 2 call is read off. Both halves are fixed by
+    putting the logic here and mixing it into both trainers.
+
+    ⚠ `modality_ids` reaches compute_loss only because
+    `remove_unused_columns=False`. With HF's default the collator strips it and
+    every per-modality number silently disappears -- no warning, no error.
+
+    Train and eval accumulators are kept SEPARATE rather than reset-and-shared:
+    an eval runs in the middle of a logging interval, so folding eval batches
+    into `loss_<modality>` would quietly corrupt the training curve.
+    """
+
+    def init_per_modality(self, cfg):
+        """Call from __init__ AFTER super().__init__ (needs self.args.device).
+
+        The registry is selected from cfg, NOT imported at module scope. It used
+        to be CLEVR's unconditionally, which on an EO run mislabelled every
+        modality (DEM -> 'caption') and dropped LULC and Coords entirely, since
+        CLEVR has only 5 ids. These numbers feed Phase 5.
+        """
+        self.id_to_modality = get_id_to_modality(cfg)
+        dev = self.args.device
+        self.modality_tr_loss = {n: torch.tensor(0.0).to(dev) for n in self.id_to_modality.values()}
+        self.modality_tr_count = {n: torch.tensor(0.0).to(dev) for n in self.id_to_modality.values()}
+        self.modality_ev_loss = {n: torch.tensor(0.0).to(dev) for n in self.id_to_modality.values()}
+        self.modality_ev_count = {n: torch.tensor(0.0).to(dev) for n in self.id_to_modality.values()}
+
+    def _per_modality_ce(self, outputs, labels, modality_ids) -> Dict[str, torch.Tensor]:
+        """Logging-only per-modality CE, attributed via modality_ids."""
+        per_modality_loss: Dict[str, torch.Tensor] = {}
+        if modality_ids is None or labels is None:
+            return per_modality_loss
+        with torch.no_grad():
+            logits = outputs.logits if isinstance(outputs, dict) else outputs[1]
+            # Causal LM shift: predict token t+1 from position t.
+            shift_logits = logits[:, :-1, :]
+            shift_labels = labels[:, 1:]
+            shift_modality_ids = modality_ids[:, 1:]
+            flat_logits = shift_logits.reshape(-1, shift_logits.size(-1))
+            flat_labels = shift_labels.reshape(-1)
+            flat_mids = shift_modality_ids.reshape(-1)
+            flat_valid = flat_labels.ne(-100)
+            for mid, name in self.id_to_modality.items():
+                mask = flat_valid & flat_mids.eq(mid)
+                if mask.any():
+                    per_modality_loss[name] = torch.nn.functional.cross_entropy(
+                        flat_logits[mask], flat_labels[mask], reduction="mean"
+                    )
+        return per_modality_loss
+
+    def _accumulate_per_modality(self, per_modality_loss, *, evaluating: bool):
+        tot = self.modality_ev_loss if evaluating else self.modality_tr_loss
+        cnt = self.modality_ev_count if evaluating else self.modality_tr_count
+        for name, ce in per_modality_loss.items():
+            tot[name] = tot[name] + ce.to(tot[name].device)
+            cnt[name] = cnt[name] + 1
+
+    def log(self, logs, start_time=None):
+        """Drain the TRAIN accumulators into a training log line.
+
+        ⚠ Guarded on a training log. `log` is also called for eval metrics, and
+        draining there would attribute a partial interval's training batches to
+        an eval line and reset the counters mid-interval.
+
+        This replaces the drain that used to sit inline in MoRTrainer's
+        `_maybe_log_save_evaluate`, immediately before its own `self.log(...)`
+        call -- so it runs at exactly the same moment and produces exactly the
+        same values, while now also covering the non-MoR arm.
+        """
+        if isinstance(logs, dict) and "loss" in logs and not any(
+            k.startswith("eval_") for k in logs
+        ):
+            for name in list(self.modality_tr_loss.keys()):
+                tot = self._nested_gather(self.modality_tr_loss[name]).sum().item()
+                cnt = self._nested_gather(self.modality_tr_count[name]).sum().item()
+                self.modality_tr_loss[name] -= self.modality_tr_loss[name]
+                self.modality_tr_count[name] -= self.modality_tr_count[name]
+                if cnt > 0:
+                    logs[f"loss_{name}"] = round(tot / cnt, 4)
+        return super().log(logs, start_time)
+
+    def evaluate(self, *args, **kwargs):
+        """Teacher-forced evaluation, with per-modality eval loss (D3.2/D3.6).
+
+        ⚠ `prediction_loss_only=True` is required on this path -- eval logits
+        are (B, 1048, 87556) and gathering them across the eval set needs
+        hundreds of GB -- so the per-modality CE has to be accumulated inside
+        compute_loss, where the logits still exist, and folded in here.
+        """
+        for name in self.modality_ev_loss:
+            self.modality_ev_loss[name] = self.modality_ev_loss[name] - self.modality_ev_loss[name]
+            self.modality_ev_count[name] = self.modality_ev_count[name] - self.modality_ev_count[name]
+
+        metrics = super().evaluate(*args, **kwargs)
+
+        prefix = kwargs.get("metric_key_prefix", "eval")
+        extra = {}
+        for name in list(self.modality_ev_loss.keys()):
+            tot = self._nested_gather(self.modality_ev_loss[name]).sum().item()
+            cnt = self._nested_gather(self.modality_ev_count[name]).sum().item()
+            if cnt > 0:
+                extra[f"{prefix}_loss_{name}"] = round(tot / cnt, 4)
+        if extra and isinstance(metrics, dict):
+            metrics.update(extra)
+            self.log(extra)
+        return metrics
+
+
+class EOTrainer(PerModalityLossMixin, Trainer):
+    """The NON-MoR arm's trainer: a stock Trainer that also logs per-modality loss.
+
+    ⚠ This class exists so the two arms' logs are indistinguishable except for
+    the routing metrics. Without it arm B logs `loss` and `eval_loss` and
+    nothing per modality, and the comparison the whole phase exists to make is
+    read off quantities only one arm produces.
+
+    It deliberately does NOT reimplement the loss: `super().compute_loss` does
+    exactly what the stock Trainer does, and the per-modality CE is computed
+    from the outputs afterwards, under no_grad. Arm B's training is therefore
+    unchanged by this class -- only its logging.
+    """
+
+    def __init__(self, *args, cfg=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cfg = cfg
+        self.init_per_modality(cfg)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        # ⚠ Pop modality_ids before the forward. The model tolerates it today
+        # only because LlamaForCausalLM.forward takes **kwargs and silently
+        # ignores unknown keys -- which is luck, not a contract.
+        modality_ids = inputs.pop("modality_ids", None)
+        labels = inputs.get("labels", None)
+
+        loss, outputs = super().compute_loss(
+            model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
+        )
+        self._accumulate_per_modality(
+            self._per_modality_ce(outputs, labels, modality_ids), evaluating=return_outputs
+        )
+        return (loss, outputs) if return_outputs else loss
+
+
+class MoRTrainer(PerModalityLossMixin, Trainer):
     def __init__(self, *args, cfg=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.sam_tr_loss = torch.tensor(0.0).to(self.args.device)  # for logging sampling_loss from MoR
@@ -86,24 +237,7 @@ class MoRTrainer(Trainer):
         # modality (DEM -> 'caption') and dropped LULC and Coords entirely, since
         # CLEVR has only 5 ids. These numbers feed Phase 5, so the mislabelling
         # would have been read as a result. See lm_dataset/modality_registry.py.
-        self.id_to_modality = get_id_to_modality(cfg)
-        self.modality_tr_loss = {
-            name: torch.tensor(0.0).to(self.args.device) for name in self.id_to_modality.values()
-        }
-        self.modality_tr_count = {
-            name: torch.tensor(0.0).to(self.args.device) for name in self.id_to_modality.values()
-        }
-        # The same accumulators for EVALUATION (Phase 3 Step 1.5, D3.2). Kept
-        # separate from the training pair rather than reset-and-shared: an eval
-        # runs in the middle of a logging interval, and folding eval batches
-        # into loss_<modality> would silently corrupt the training curve the
-        # two arms are compared on.
-        self.modality_ev_loss = {
-            name: torch.tensor(0.0).to(self.args.device) for name in self.id_to_modality.values()
-        }
-        self.modality_ev_count = {
-            name: torch.tensor(0.0).to(self.args.device) for name in self.id_to_modality.values()
-        }
+        self.init_per_modality(cfg)      # shared with EOTrainer, see the mixin
         self.cfg = cfg
         
     def create_optimizer(self):
@@ -1032,9 +1166,7 @@ class MoRTrainer(Trainer):
         
         self.update_metric(router_z_loss, key="router_z_loss")
 
-        for name, ce in per_modality_loss.items():
-            self.modality_tr_loss[name] = self.modality_tr_loss[name] + ce.to(self.modality_tr_loss[name].device)
-            self.modality_tr_count[name] = self.modality_tr_count[name] + 1
+        self._accumulate_per_modality(per_modality_loss, evaluating=False)
 
         return loss.detach()
     
@@ -1120,67 +1252,11 @@ class MoRTrainer(Trainer):
         if return_outputs:
             # prediction_step discards everything but the loss, so the
             # per-modality CE is accumulated here or it is lost.
-            for name, ce in per_modality_loss.items():
-                self.modality_ev_loss[name] = self.modality_ev_loss[name] + ce.to(self.modality_ev_loss[name].device)
-                self.modality_ev_count[name] = self.modality_ev_count[name] + 1
+            self._accumulate_per_modality(per_modality_loss, evaluating=True)
             return (loss, outputs)
 
         return (loss, sampling_loss, sampling_acc, sampling_topk_acc, uniformity, dead_token_seq, \
             balancing_loss, balancing_ratio, router_z_loss, per_modality_loss)
-
-    def _per_modality_ce(self, outputs, labels, modality_ids) -> Dict[str, torch.Tensor]:
-        """Logging-only per-modality cross-entropy, attributed via modality_ids.
-
-        ⚠ modality_ids reaches this only because remove_unused_columns=False.
-        With the default True, HF's RemoveColumnsCollator strips it and every
-        per-modality number silently disappears.
-        """
-        per_modality_loss: Dict[str, torch.Tensor] = {}
-        if modality_ids is None or labels is None:
-            return per_modality_loss
-        with torch.no_grad():
-            logits = outputs.logits if isinstance(outputs, dict) else outputs[1]
-            # Causal LM shift: predict token t+1 from position t.
-            shift_logits = logits[:, :-1, :]
-            shift_labels = labels[:, 1:]
-            shift_modality_ids = modality_ids[:, 1:]
-            flat_logits = shift_logits.reshape(-1, shift_logits.size(-1))
-            flat_labels = shift_labels.reshape(-1)
-            flat_mids = shift_modality_ids.reshape(-1)
-            flat_valid = flat_labels.ne(-100)
-            for mid, name in self.id_to_modality.items():
-                mask = flat_valid & flat_mids.eq(mid)
-                if mask.any():
-                    per_modality_loss[name] = torch.nn.functional.cross_entropy(
-                        flat_logits[mask], flat_labels[mask], reduction="mean"
-                    )
-        return per_modality_loss
-
-    def evaluate(self, *args, **kwargs):
-        """Teacher-forced evaluation on the held-out split (D3.2).
-
-        Wraps HF's evaluate() to reset the per-modality eval accumulators
-        before the loop and fold them into the returned metrics after, so
-        eval_loss_<modality> lands on the same axis as the training
-        loss_<modality> keys.
-        """
-        for name in self.modality_ev_loss:
-            self.modality_ev_loss[name] = self.modality_ev_loss[name] - self.modality_ev_loss[name]
-            self.modality_ev_count[name] = self.modality_ev_count[name] - self.modality_ev_count[name]
-
-        metrics = super().evaluate(*args, **kwargs)
-
-        prefix = kwargs.get("metric_key_prefix", "eval")
-        extra = {}
-        for name in list(self.modality_ev_loss.keys()):
-            tot = self._nested_gather(self.modality_ev_loss[name]).sum().item()
-            cnt = self._nested_gather(self.modality_ev_count[name]).sum().item()
-            if cnt > 0:
-                extra[f"{prefix}_loss_{name}"] = round(tot / cnt, 4)
-        if extra and isinstance(metrics, dict):
-            metrics.update(extra)
-            self.log(extra)
-        return metrics
 
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
         if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
@@ -1230,13 +1306,10 @@ class MoRTrainer(Trainer):
                 logs["balancing_entropy"] = round(bal_tr_entropy_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
                 logs["router_z_loss"] = round(router_z_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
             
-            for name in list(self.modality_tr_loss.keys()):
-                tot = self._nested_gather(self.modality_tr_loss[name]).sum().item()
-                cnt = self._nested_gather(self.modality_tr_count[name]).sum().item()
-                self.modality_tr_loss[name] -= self.modality_tr_loss[name]
-                self.modality_tr_count[name] -= self.modality_tr_count[name]
-                if cnt > 0:
-                    logs[f"loss_{name}"] = round(tot / cnt, 4)
+            # ⚠ The per-modality drain used to sit here. It now lives in
+            # PerModalityLossMixin.log(), which self.log(logs, start_time)
+            # below reaches -- same moment, same values, and the non-MoR arm
+            # gets it too.
 
             if grad_norm is not None:
                 logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm

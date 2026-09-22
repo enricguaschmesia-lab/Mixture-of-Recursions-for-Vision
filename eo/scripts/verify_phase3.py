@@ -13,7 +13,7 @@ unverified deliverable:
   W1  train n eval empty at GROUP level   [Step 1]
   W2  eval covers every active modality   [Step 1]
   W3  eval loop runs; untrained ~ ln(V)   [Step 1]
-  W4  per-modality loss in BOTH arms      [Step 5]  not yet implemented
+  W4  per-modality loss in BOTH arms      [Step 5]
   W5  fp16 matches fp32 within tolerance  [Step 2]
   W6  generated ids land in target slot   [Step 6]  not yet implemented
   W7  decode metrics collapse on shuffle  [Step 7]  not yet implemented
@@ -440,6 +440,145 @@ def w5_fp16_equivalence(steps: int = 15, tbs: int = 8) -> bool:
     return bool(ok and fired)
 
 
+#: Routing metrics are legitimately absent from the non-MoR arm. NOTHING else
+#: may differ between the two arms' logged keys.
+ROUTING_ONLY_KEYS = {"balancing_loss", "balancing_entropy", "router_z_loss",
+                     "bal_tr_ratio", "sam_tr_loss", "sam_tr_acc", "sam_tr_topk_acc"}
+
+EO_MODALITIES = ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC", "Coords"]
+
+#: Bookkeeping HF emits that says nothing about either arm.
+_IGNORED_LOG_KEYS = {
+    "epoch", "step", "total_flos", "train_runtime", "train_samples_per_second",
+    "train_steps_per_second", "train_loss", "grad_norm", "learning_rate",
+    "eval_runtime", "eval_samples_per_second", "eval_steps_per_second",
+}
+
+
+def _logged_keys(arm_mor: bool, steps: int = 2, tbs: int = 8,
+                 n_train: int = 64, n_eval: int = 16,
+                 remove_unused_columns: bool = False):
+    """Train a couple of steps, evaluate once, and return the logged key sets."""
+    import torch
+    from omegaconf import OmegaConf, open_dict
+    from transformers import TrainingArguments
+
+    from eo.data.eval_split import load_eval_rows, load_row_table, train_rows_from_eval
+    from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
+    from model.util import load_model_from_config
+    from model.sharing_strategy import SHARING_STRATEGY
+    from util.config import preprocess_config
+    from util.seeding import set_global_seed
+    from util.trainer_pt import EOTrainer, MoRTrainer
+
+    cfg = OmegaConf.load(EO_CONFIG)
+    with open_dict(cfg):
+        cfg.wandb = False
+        cfg.tensorboard = False
+        cfg.recursive.enable = arm_mor
+        cfg.mor.enable = arm_mor
+        cfg.total_batch_size = tbs
+        cfg.per_device_train_batch_size = 2
+        cfg.num_train_steps = steps
+        cfg.stop_steps = steps
+        cfg.num_warmup_steps = 1
+        cfg.seed = 42
+    cfg = preprocess_config(cfg)
+    set_global_seed(42, deterministic_cuda=False)
+
+    all_eval = load_eval_rows(root_dir=ROOT)
+    corpus = load_row_table(ROOT).corpus.values
+    # ⚠ stratified: eval rows are sorted majortom-first, and majortom carries
+    # S1RTC but never S1GRD, so an unstratified head would make S1GRD look
+    # absent from BOTH arms and the check would pass vacuously.
+    half = max(2, n_eval // 2)
+    ev = np.array(sorted([r for r in all_eval if corpus[r] == "majortom"][:half]
+                         + [r for r in all_eval if corpus[r] == "ssl4eos12"][:half]))
+    # ⚠ ...and the TRAIN subsample needs stratifying for the same reason. The
+    # first version of this check took `train_rows[:64]`, which is 100%
+    # majortom, so no batch contained an S1GRD scene and `loss_S1GRD` was
+    # absent from BOTH arms -- 6/7, reported as a failure of the code rather
+    # than of the sampling. The trap is the same one 6.7/7.7/8.7 warn about;
+    # it bites the training side too.
+    all_train = train_rows_from_eval(all_eval, 89088)
+    h = max(2, n_train // 2)
+    tr = np.array(sorted([r for r in all_train if corpus[r] == "majortom"][:h]
+                         + [r for r in all_train if corpus[r] == "ssl4eos12"][:h]))
+
+    ds_tr = TerraMeshTokenDataset(root_dir=ROOT, max_length=1048, modality_order="random", rows=tr)
+    ds_ev = TerraMeshTokenDataset(root_dir=ROOT, max_length=1048, modality_order="random", rows=ev)
+
+    model = load_model_from_config(cfg)
+    if cfg.recursive.enable:
+        model, _ = SHARING_STRATEGY[cfg.model](cfg, model)
+        model.transform_layer_to_mor_token(cfg)
+
+    args = TrainingArguments(
+        output_dir="/tmp/verify_phase3_w4",
+        per_device_train_batch_size=cfg.per_device_train_batch_size,
+        gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+        per_device_eval_batch_size=2, prediction_loss_only=True,
+        max_steps=steps, warmup_steps=1, logging_steps=1,
+        save_strategy="no", eval_strategy="no", report_to=[],
+        remove_unused_columns=remove_unused_columns,
+        fp16=(cfg.precision == "fp16"), learning_rate=cfg.learning_rate,
+        max_grad_norm=cfg.max_grad_norm, dataloader_num_workers=0,
+        seed=42, data_seed=42,
+    )
+    cls = MoRTrainer if arm_mor else EOTrainer
+    trainer = cls(model=model, args=args, train_dataset=ds_tr, eval_dataset=ds_ev, cfg=cfg)
+    trainer.train()
+    trainer.evaluate()
+
+    train_keys, eval_keys = set(), set()
+    for entry in trainer.state.log_history:
+        for k in entry:
+            if k in _IGNORED_LOG_KEYS:
+                continue
+            (eval_keys if k.startswith("eval_") else train_keys).add(k)
+    _release(model, trainer)
+    return train_keys, eval_keys
+
+
+def w4_symmetric_logging() -> bool:
+    """Both arms log per-modality loss, on the TRAIN and EVAL axes (D3.6).
+
+    ⚠ The asymmetry this guards was structural and silent. `pretrain.py` builds
+    MoRTrainer only when `mor.enable` is true, and per-modality loss lived
+    inside it -- so the recursion-OFF arm logged none of the quantity the
+    comparison is about. Step 1 then added evaluation to MoRTrainer alone,
+    reproducing the identical hole on the eval axis, which is the axis the
+    Plan 1 / Plan 2 call is read off. Neither failed loudly; both look like a
+    normal W&B page with fewer lines.
+    """
+    tr_a, ev_a = _logged_keys(arm_mor=True)
+    tr_b, ev_b = _logged_keys(arm_mor=False)
+
+    want_tr = {f"loss_{m}" for m in EO_MODALITIES}
+    want_ev = {f"eval_loss_{m}" for m in EO_MODALITIES}
+
+    ok = True
+    for name, tr, ev in (("arm A (MoR)   ", tr_a, ev_a), ("arm B (vanilla)", tr_b, ev_b)):
+        t_ok, e_ok = want_tr <= tr, want_ev <= ev
+        ok &= t_ok and e_ok
+        print(f"    {name} train per-modality {len(want_tr & tr)}/7 = {t_ok}   "
+              f"eval per-modality {len(want_ev & ev)}/7 = {e_ok}")
+
+    diff = (tr_a ^ tr_b) | (ev_a ^ ev_b)
+    diff_ok = bool(diff) and diff <= ROUTING_ONLY_KEYS
+    print(f"    key-set difference between arms: {sorted(diff)}")
+    print(f"    ...and it is exactly routing keys = {diff_ok}")
+
+    # CONTROL: remove_unused_columns=True makes HF's RemoveColumnsCollator strip
+    # `modality_ids`, and every per-modality key must then VANISH -- silently,
+    # which is precisely why this is load-bearing rather than cosmetic.
+    tr_c, ev_c = _logged_keys(arm_mor=False, remove_unused_columns=True)
+    c1 = not (want_tr & tr_c) and not (want_ev & ev_c)
+    print(f"    control: remove_unused_columns=True drops all per-modality keys = {c1}")
+
+    return bool(ok and diff_ok and c1)
+
+
 #: The ONLY keys the two arms may differ in. Everything else must be identical
 #: or the comparison is confounded before it starts.
 ARM_DIFF_KEYS = {"recursive.enable", "mor.enable"}
@@ -559,6 +698,7 @@ def main() -> int:
     ]
     if not args.skip_forward:
         checks.append(("W3   eval loop runs; untrained ~ ln(V)    [Step 1]", w3_eval_loop))
+        checks.append(("W4   per-modality loss in BOTH arms       [Step 5]", w4_symmetric_logging))
         checks.append(("W5   fp16 matches fp32; scaler control    [Step 2]", w5_fp16_equivalence))
 
     results = []
