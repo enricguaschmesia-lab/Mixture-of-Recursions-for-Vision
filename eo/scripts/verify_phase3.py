@@ -15,7 +15,7 @@ unverified deliverable:
   W3  eval loop runs; untrained ~ ln(V)   [Step 1]
   W4  per-modality loss in BOTH arms      [Step 5]
   W5  fp16 matches fp32 within tolerance  [Step 2]
-  W6  generated ids land in target slot   [Step 6]  not yet implemented
+  W6  generated ids land in target slot   [Step 6]
   W7  decode metrics collapse on shuffle  [Step 7]  not yet implemented
   W8  arm configs differ only as intended [Step 4]
   W9  resume gives a continuous curve     [Step 0]  covered by
@@ -598,6 +598,62 @@ ARM_A = "eo_terramesh/arm_a_mor"
 ARM_B = "eo_terramesh/arm_b_vanilla"
 
 
+def w6_generation_slots(target: str = "LULC", n_scenes: int = 2,
+                        max_new_tokens: int = 24) -> bool:
+    """Generated ids land in the target slot, and BO/EO are well formed (D3.7).
+
+    ⚠ Runs on an UNTRAINED model on purpose. Off-slot rate has a known
+    chance level -- `1 - slot/87,556`, i.e. 95.0% for LULC -- so an untrained
+    model gives both a control and the baseline any trained arm must beat. It
+    also means this check needs no checkpoint and can run before either arm
+    finishes.
+    """
+    from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
+    from eo.data.eval_split import load_eval_rows
+    from eo.generate import conditional as C
+
+    ds = TerraMeshTokenDataset(root_dir=ROOT, max_length=1048, modality_order="fixed")
+    rows = [int(r) for r in load_eval_rows(root_dir=ROOT)
+            if target in ds.present_modalities(int(r))][:n_scenes]
+    model, _ = C.build_model("eo_terramesh/arm_a_mor", None, device="cuda")
+    built = [C.build_prompt(ds, r, target) for r in rows]
+    prompts = [b["prompt"] for b in built]
+    truths = [b["truth"] for b in built]
+
+    masked = C.generate(model, prompts, target, max_new_tokens=max_new_tokens,
+                        slot_masked=True, seed=42)
+    free = C.generate(model, prompts, target, max_new_tokens=max_new_tokens,
+                      slot_masked=False, seed=42)
+    s_masked = C.score(masked, truths, target)
+    s_free = C.score(free, truths, target)
+
+    in_slot = s_masked["off_slot_rate"] == 0.0
+    print(f"    slot-masked generation is 100% in-slot        = {in_slot}")
+    no_junk = s_masked["emitted_pad"] == 0 and s_masked["emitted_foreign_bo_eo"] == 0
+    print(f"    ...and emits no PAD and no foreign BO/EO      = {no_junk}")
+
+    # CONTROL 1: unconstrained, an UNTRAINED model must sit at chance. If it
+    # did not, the off-slot metric would be measuring the mask rather than the
+    # model.
+    chance = s_free["off_slot_chance"]
+    c1 = abs(s_free["off_slot_rate"] - chance) < 0.05
+    print(f"    control: untrained off-slot {s_free['off_slot_rate']:.4f} vs chance "
+          f"{chance:.4f} = {c1}")
+
+    # CONTROL 2: score the SAME ids against a different modality's slot. It must
+    # collapse to ~100% off-slot, proving the check is modality-specific rather
+    # than a constant -- the generation counterpart of pointing the run at the
+    # wrong registry.
+    other = "S2L2A" if target != "S2L2A" else "DEM"
+    s_wrong = C.score(masked, truths, other)
+    c2 = s_wrong["off_slot_rate"] > 0.95
+    print(f"    control: same ids scored as {other} -> off-slot "
+          f"{s_wrong['off_slot_rate']:.4f} = {c2}")
+
+    _release(model, None)
+    return bool(in_slot and no_junk and c1 and c2)
+
+
 def _compose(name, overrides=None):
     from hydra import compose, initialize_config_dir
     with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
@@ -699,6 +755,7 @@ def main() -> int:
     if not args.skip_forward:
         checks.append(("W3   eval loop runs; untrained ~ ln(V)    [Step 1]", w3_eval_loop))
         checks.append(("W4   per-modality loss in BOTH arms       [Step 5]", w4_symmetric_logging))
+        checks.append(("W6   generated ids land in target slot    [Step 6]", w6_generation_slots))
         checks.append(("W5   fp16 matches fp32; scaler control    [Step 2]", w5_fp16_equivalence))
 
     results = []
