@@ -14,7 +14,7 @@ unverified deliverable:
   W2  eval covers every active modality   [Step 1]
   W3  eval loop runs; untrained ~ ln(V)   [Step 1]
   W4  per-modality loss in BOTH arms      [Step 5]  not yet implemented
-  W5  fp16 matches fp32 within tolerance  [Step 2]  not yet implemented
+  W5  fp16 matches fp32 within tolerance  [Step 2]
   W6  generated ids land in target slot   [Step 6]  not yet implemented
   W7  decode metrics collapse on shuffle  [Step 7]  not yet implemented
   W8  arm configs differ only as intended [Step 4]  not yet implemented
@@ -25,7 +25,10 @@ Runs in the repo .venv, NOT the `mor` env.
 
     HF_HOME=/data/enric/hf ./.venv/bin/python eo/scripts/verify_phase3.py
     ./.venv/bin/python eo/scripts/verify_phase3.py --skip-forward   # no GPU
-    ./.venv/bin/python eo/scripts/verify_phase3.py --skip-phase2    # W1-W3 only
+    ./.venv/bin/python eo/scripts/verify_phase3.py --skip-phase2    # skip W0
+
+⚠ W3 and W5 build six models in one process. Releasing a model needs
+accelerate's Accelerator.free_memory(), not just `del` -- see _release().
 """
 from __future__ import annotations
 
@@ -35,6 +38,11 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+# ⚠ This gate builds six models across W3 and W5 in one process. pretrain.py
+# sets this at module scope but the gate never imports it, so without it the
+# later checks OOM on fragmentation left by the earlier ones -- a gate that
+# fails on its own memory bookkeeping is worse than no gate.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
@@ -44,6 +52,32 @@ import numpy as np  # noqa: E402
 EO_CONFIG = REPO / "conf/pretrain_vision/eo_terramesh/terramesh_mor_token.yaml"
 ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
 LN_V = float(np.log(87556))
+
+
+def _release(model=None, trainer=None):
+    """Give a model's GPU memory back before the next check builds another.
+
+    ⚠ `del` + `empty_cache()` is NOT enough, and neither is adding a
+    `gc.collect()`. Measured: with both, W5 still died with 11.13 GiB still
+    *allocated* (not merely reserved) on models W3 had finished with. accelerate's
+    `Accelerator` keeps its own references to every model and optimizer it has
+    prepared, so nothing the caller drops actually frees them. `free_memory()`
+    is the documented way to clear those lists; without it this gate fails on
+    its own bookkeeping rather than on anything it is testing.
+    """
+    import gc
+    import torch
+    if trainer is not None:
+        acc = getattr(trainer, "accelerator", None)
+        if acc is not None and hasattr(acc, "free_memory"):
+            acc.free_memory()
+        for attr in ("model_wrapped", "model", "optimizer", "lr_scheduler"):
+            if hasattr(trainer, attr):
+                setattr(trainer, attr, None)
+    del model, trainer
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
 
 
 def _split_table():
@@ -239,8 +273,7 @@ def w3_eval_loop(n_eval_rows: int = 24) -> bool:
         else:
             tr = Trainer(model=model, args=args, eval_dataset=ds)
         m = tr.evaluate()
-        del model, tr
-        torch.cuda.empty_cache()
+        _release(model, tr)
         return m
 
     ok = True
@@ -275,6 +308,138 @@ def w3_eval_loop(n_eval_rows: int = 24) -> bool:
     return ok and c1
 
 
+def _short_train(precision: str, mixed: bool, steps: int, tbs: int,
+                 break_scaler: bool = False, n_rows: int = 512):
+    """Train a few steps in-process and return the per-step loss curve.
+
+    Small and self-contained so the gate can run three variants in ~2 min. The
+    *measurement* that justified adopting fp16 was done at the shipped settings
+    through train_eo.sh and lives in the worklog; this proves the mechanism and,
+    more importantly, that the comparison can fail.
+    """
+    import torch
+    from omegaconf import OmegaConf, open_dict
+    from transformers import TrainingArguments
+
+    from eo.data.eval_split import load_eval_rows, train_rows_from_eval
+    from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
+    from model.util import load_model_from_config
+    from model.sharing_strategy import SHARING_STRATEGY
+    from util.config import preprocess_config
+    from util.seeding import set_global_seed
+    from util.trainer_pt import MoRTrainer
+
+    cfg = OmegaConf.load(EO_CONFIG)
+    with open_dict(cfg):
+        cfg.wandb = False
+        cfg.tensorboard = False
+        cfg.precision = precision
+        cfg.mixed_precision = mixed
+        cfg.total_batch_size = tbs
+        # ⚠ Pin the micro-batch rather than inheriting the shipped value. This
+        # check runs several models in one process, and inheriting meant that
+        # raising per_device_train_batch_size to 4 for throughput made W5 OOM
+        # on its own -- a gate whose result depends on an unrelated tuning knob
+        # is not measuring what it claims to.
+        cfg.per_device_train_batch_size = 2
+        cfg.num_train_steps = steps
+        cfg.stop_steps = steps
+        cfg.num_warmup_steps = 2
+        cfg.seed = 42
+    cfg = preprocess_config(cfg)
+
+    set_global_seed(42, deterministic_cuda=False)
+
+    eval_rows = load_eval_rows(root_dir=ROOT)
+    rows = train_rows_from_eval(eval_rows, 89088)[:n_rows]
+    ds = TerraMeshTokenDataset(root_dir=ROOT, max_length=1048,
+                               modality_order="random", rows=rows)
+
+    model = load_model_from_config(cfg)
+    model, _ = SHARING_STRATEGY[cfg.model](cfg, model)
+    model.transform_layer_to_mor_token(cfg)
+
+    args = TrainingArguments(
+        output_dir="/tmp/verify_phase3_w5",
+        per_device_train_batch_size=cfg.per_device_train_batch_size,
+        gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+        max_steps=steps, warmup_steps=2, logging_steps=1,
+        save_strategy="no", report_to=[], remove_unused_columns=False,
+        fp16=(precision == "fp16"), bf16=(precision == "bf16"),
+        learning_rate=cfg.learning_rate, max_grad_norm=cfg.max_grad_norm,
+        dataloader_num_workers=0, seed=42, data_seed=42,
+    )
+    trainer = MoRTrainer(model=model, args=args, train_dataset=ds, cfg=cfg)
+
+    if break_scaler:
+        # ⚠ THE CONTROL. Disable loss scaling while keeping fp16 autocast. This
+        # is precisely what the GradScaler exists to prevent: unscaled fp16
+        # gradients underflow to zero, so the updates differ and the curve must
+        # visibly leave the fp32 one. If it does not, the equivalence check
+        # above has no power and "fp16 matches fp32" means nothing.
+        trainer.accelerator.scaler._enabled = False
+
+    trainer.train()
+    curve = [e["loss"] for e in trainer.state.log_history if "loss" in e]
+    _release(model, trainer)
+    return np.array(curve)
+
+
+def w5_fp16_equivalence(steps: int = 15, tbs: int = 8) -> bool:
+    """fp16-via-autocast computes the same thing as fp32, and the check can fail.
+
+    ⚠ Two latent bugs had to be fixed before fp16 ran at all, and both were
+    invisible to fp32 and bf16 (Phase 3 Step 2):
+      1. `precision` set the PARAMETER dtype as well as TrainingArguments'
+         autocast flag, so fp16 weights met a GradScaler that requires fp32
+         masters -> "Attempting to unscale FP16 gradients" at the first
+         optimizer step.
+      2. `MoRTrainer._inner_training_loop` clips gradients in two groups and
+         called `accelerator.clip_grad_norm_` twice, which unscales twice ->
+         "unscale_() has already been called". No scaler, no symptom.
+    """
+    # ⚠ Compare MEAN |Δ|, not max, and the reason is architectural rather than
+    # statistical. Token-choice routing makes a DISCRETE top-k decision per
+    # token, so a numeric difference far below any tolerance can flip a token's
+    # depth at a near-tie and move that one step's loss by ~0.08. Measured, the
+    # same spikes occur between two identical fp32 runs (max |Δ| 0.0826 at
+    # tbs=8), so they are not an fp16 artifact -- per-step max simply is not a
+    # stable quantity for this model.
+    #
+    # ⚠ And the floor itself is order-dependent: two back-to-back fp32 runs came
+    # out identical (0.0000) while the same pair with an fp16 run between them
+    # differed by 0.0826, presumably via allocator state changing cuBLAS kernel
+    # selection. So a floor measured in-run cannot be the tolerance either. An
+    # earlier version of this check tried both and reported a problem with fp16
+    # that did not exist.
+    #
+    # What IS stable across invocations is the mean, and the ratio between the
+    # candidate and the deliberately-broken control:
+    #     fp32 vs fp16    mean 0.0078, 0.0079   (two invocations)
+    #     fp32 vs broken  mean 0.2205, 0.2205
+    # The control is ~28x worse. That is the discriminator.
+    ABS_TOL = 0.05        # 0.5% of a loss of ~10; fp16 measures 0.008
+    MIN_RATIO = 5.0       # the control must be decisively worse, measured ~28x
+
+    fp32 = _short_train("fp32", False, steps, tbs)
+    fp16 = _short_train("fp16", True, steps, tbs)
+    n = min(len(fp32), len(fp16))
+    d = float(np.abs(fp32[:n] - fp16[:n]).mean())
+    ok = d < ABS_TOL
+    print(f"    fp32 vs fp16              mean |Δ| {d:.4f}  (tol {ABS_TOL}) = {ok}")
+
+    broken = _short_train("fp16", True, steps, tbs, break_scaler=True)
+    nb = min(len(fp32), len(broken))
+    db = float(np.abs(fp32[:nb] - broken[:nb]).mean())
+    ratio = db / d if d > 0 else float("inf")
+    fired = db > ABS_TOL and ratio > MIN_RATIO
+    print(f"    control: scaler disabled  mean |Δ| {db:.4f}  ({ratio:.1f}x worse) = {fired}")
+    if not fired:
+        print("      ⚠ the control did NOT diverge -- the equivalence check has no power")
+
+    return bool(ok and fired)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -291,6 +456,7 @@ def main() -> int:
     ]
     if not args.skip_forward:
         checks.append(("W3   eval loop runs; untrained ~ ln(V)    [Step 1]", w3_eval_loop))
+        checks.append(("W5   fp16 matches fp32; scaler control    [Step 2]", w5_fp16_equivalence))
 
     results = []
     for title, fn in checks:

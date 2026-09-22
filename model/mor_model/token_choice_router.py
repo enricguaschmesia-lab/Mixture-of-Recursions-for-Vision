@@ -11,7 +11,7 @@ from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 
 from model.kv_caches.cache_utils import Cache, StaticCache, DynamicCache
 from model.mor_model.util import ROUTER_TYPES, MoRLayerOutputWithPast
-from util.misc import get_torch_dtype
+from util.misc import get_param_dtype
 
 
 class MoRLlamaDecoderLayer(nn.Module):
@@ -47,7 +47,7 @@ class MoRLlamaDecoderLayer(nn.Module):
         self.num_recursion = cfg.recursive.num_recursion
         assert len(block_list) == self.num_recursion, "Number of recursion should be equal to number of blocks"
         
-        torch_dtype = get_torch_dtype(cfg)
+        torch_dtype = get_param_dtype(cfg)
         
         if not cfg.mor.rand_router:
             self.mor_router = ROUTER_TYPES[cfg.mor.router_type](config, out_dim=self.num_recursion).to(torch_dtype)

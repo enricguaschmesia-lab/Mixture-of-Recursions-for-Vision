@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from util.misc import get_torch_dtype
+from util.misc import get_param_dtype
 
 
 @torch.no_grad()
@@ -18,7 +18,7 @@ def average_initialize(cfg, model):
     """
     sharing_strategy = cfg.recursive.sharing
     init_strategy = cfg.recursive.initialization
-    torch_dtype = get_torch_dtype(cfg)
+    torch_dtype = get_param_dtype(cfg)
     
     if cfg.recursive.num_recursion == 1:
         base_depth = cfg.recursive.base_depth
@@ -110,7 +110,7 @@ def selection_initialize(cfg, model):
     """
     sharing_strategy = cfg.recursive.sharing
     init_strategy = cfg.recursive.initialization
-    torch_dtype = get_torch_dtype(cfg)
+    torch_dtype = get_param_dtype(cfg)
     
     if cfg.recursive.num_recursion == 1:
         base_depth = cfg.recursive.base_depth

@@ -32,6 +32,13 @@ else:
 
 
 def get_torch_dtype(cfg: DictConfig):
+    """The COMPUTE dtype named by `precision`.
+
+    ⚠ Duplicated from util.misc.get_torch_dtype (both predate this change).
+    Kept so existing importers of this symbol are unaffected, but the model's
+    parameters are built from get_param_dtype below -- under mixed precision
+    the two differ.
+    """
     if cfg.precision == "bf16":
         return torch.bfloat16
     elif cfg.precision == "fp16":
@@ -51,7 +58,11 @@ def load_model_from_config(cfg: DictConfig):
         model_cls = MODEL_CLS[cfg.model]
         
     attn_implementation = cfg.get("attn_implementation", "flash_attention_2")
-    torch_dtype = get_torch_dtype(cfg)
+    # ⚠ PARAMETER dtype, not the compute dtype. Under `mixed_precision: true`
+    # the weights stay fp32 and autocast handles the casting; without it this
+    # is identical to get_torch_dtype. See util.misc.get_param_dtype.
+    from util.misc import get_param_dtype
+    torch_dtype = get_param_dtype(cfg)
     
     if cfg.use_pretrained_weights:
         print("Loading model from pretrained weights...")

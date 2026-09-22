@@ -14,8 +14,21 @@ def preprocess_config(cfg: DictConfig):
     
     if cfg.precision not in ["fp32", "fp16", "bf16"]:
         raise NotImplementedError(f"Precision {cfg.precision} is not implemented yet")
-    elif cfg.precision == "fp16":
-        warnings.warn("Are you sure you want to use fp16? We use bf16 by default.")
+    elif cfg.precision == "fp16" and not cfg.get("mixed_precision", False):
+        # ⚠ Not a style warning -- this configuration cannot train. fp16
+        # parameters plus the GradScaler that TrainingArguments(fp16=True)
+        # enables raises "Attempting to unscale FP16 gradients" at the FIRST
+        # optimizer step. Refuse it rather than warn: the old warning said
+        # "we use bf16 by default", which reads as a preference and is how the
+        # dead path survived unnoticed until Phase 3 Step 2.
+        raise ValueError(
+            "precision: fp16 requires mixed_precision: true.\n"
+            "  fp16 parameters cannot be used with the GradScaler that fp16 enables -- "
+            "training dies at the first optimizer step with 'Attempting to unscale FP16 "
+            "gradients'.\n"
+            "  Set `mixed_precision: true` to keep the weights in fp32 and let autocast "
+            "do the casting, which is what fp16 training means."
+        )
         
     # Automatically determine batch size and gradient accumulation steps
     n_gpus = torch.cuda.device_count()

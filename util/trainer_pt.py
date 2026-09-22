@@ -722,14 +722,30 @@ class MoRTrainer(Trainer):
                                     args.max_grad_norm,
                                 )
                             else:
+                                # MoR clips in TWO groups -- the router separately from
+                                # everything else.
+                                #
+                                # ⚠ One unscale, not two. accelerator.clip_grad_norm_
+                                # calls unscale_gradients() internally, so two of them
+                                # raise "unscale_() has already been called on this
+                                # optimizer since the last update()" the moment a
+                                # GradScaler exists -- which is to say, the moment fp16
+                                # works. fp32 and bf16 never hit it because neither uses
+                                # a scaler, so this sat here undetected until Phase 3
+                                # Step 2. Unscale once, then clip each group directly.
+                                # Without a scaler unscale_gradients() is a no-op and
+                                # clip_grad_norm_ is what accelerator's wrapper would
+                                # have called anyway, so fp32/bf16 are unchanged.
+                                self.accelerator.unscale_gradients()
+
                                 param_dict = {n : p for n, p in model.named_parameters() if 'mlp_router' not in n}
-                                _grad_norm = self.accelerator.clip_grad_norm_(
+                                _grad_norm = nn.utils.clip_grad_norm_(
                                     get_iterator(param_dict),
                                     args.max_grad_norm,
                                 )
-                                
+
                                 param_dict = {n : p for n, p in model.named_parameters() if 'mlp_router' in n}
-                                _ = self.accelerator.clip_grad_norm_(
+                                _ = nn.utils.clip_grad_norm_(
                                     get_iterator(param_dict),
                                     args.max_grad_norm,
                                 )

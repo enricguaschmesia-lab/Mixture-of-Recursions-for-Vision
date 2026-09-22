@@ -13,7 +13,7 @@ from transformers.utils import logging
 from model.kv_caches.cache_utils import Cache, StaticCache, DynamicCache, RecursiveDynamicCache
 from model.mor_model.util import ROUTER_TYPES, MoRLayerOutputWithPast
 from model.base_model.modeling_llama import apply_rotary_pos_emb, eager_attention_forward, LlamaAttention
-from util.misc import get_torch_dtype
+from util.misc import get_param_dtype
 
 logger = logging.get_logger(__name__)
 
@@ -91,7 +91,7 @@ class MoRLlamaDecoderLayer(nn.Module):
         self.capacity_factor = capacity_factor
         self.cap_warmup_step = cap_warmup_step  # warm_up step for capacity_factor
         
-        torch_dtype = get_torch_dtype(cfg)
+        torch_dtype = get_param_dtype(cfg)
         for blk in self.block:
             blk.self_attn = MoRLlamaAttention(config, blk.self_attn.layer_idx).to(torch_dtype)
 
@@ -101,7 +101,7 @@ class MoRLlamaDecoderLayer(nn.Module):
         self.alpha = cfg.mor.expert.alpha
         self.sampling = cfg.mor.expert.sampling
         
-        torch_dtype = get_torch_dtype(cfg)
+        torch_dtype = get_param_dtype(cfg)
         
         if not cfg.mor.rand_router:
             self.mor_router = ROUTER_TYPES[cfg.mor.router_type](config).to(torch_dtype)

@@ -124,6 +124,11 @@ def print_trainable_parameters(model):
     
     
 def get_torch_dtype(cfg):
+    """The COMPUTE dtype named by `precision`.
+
+    ⚠ This is not necessarily the dtype the parameters are stored in. For that,
+    use get_param_dtype() -- see its docstring for why the two came apart.
+    """
     if cfg.precision == "bf16":
         return torch.bfloat16
     elif cfg.precision == "fp16":
@@ -132,6 +137,34 @@ def get_torch_dtype(cfg):
         return torch.float32
     else:
         raise ValueError(f"Invalid precision: {cfg.precision}")
+
+
+def get_param_dtype(cfg):
+    """The dtype PARAMETERS are created in. Every site that allocates a weight
+    must use this, not get_torch_dtype.
+
+    ⚠ Why the two are different (Phase 3 Step 2). `precision` used to set both
+    the parameter dtype AND `TrainingArguments(fp16=...)`, which enables a
+    `GradScaler`. A scaler requires fp32 master weights, so `precision: fp16`
+    made the parameters fp16 and then died at the FIRST optimizer step with
+    "Attempting to unscale FP16 gradients" -- the fp16 path had therefore never
+    run in this codebase. bf16 escaped it only because bf16 needs no scaler.
+
+    Mixed precision means fp32 weights with autocast casting the *compute*. So
+    under `mixed_precision: true` the parameters stay fp32 and `precision` is
+    read as the AUTOCAST dtype only.
+
+    ⚠ Opt-in, and deliberately so. Absent the key this returns exactly what
+    get_torch_dtype returns, so every CLEVR config -- all of which say
+    `precision: bf16` and none of which set this -- keeps pure-bf16 parameters
+    and is bit-for-bit unaffected. Phases 3-4 compare EO routing against those
+    CLEVR results; silently changing the reference path's training regime to
+    mixed precision would confound that comparison, which is a far worse
+    outcome than carrying one extra config key.
+    """
+    if cfg.get("mixed_precision", False):
+        return torch.float32
+    return get_torch_dtype(cfg)
 
 
 def get_latest_checkpoint_path(cfg, resume_step=None):

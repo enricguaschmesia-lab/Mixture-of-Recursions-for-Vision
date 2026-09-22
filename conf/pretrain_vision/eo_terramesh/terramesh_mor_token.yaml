@@ -79,19 +79,34 @@ multimodal:
 weights: null
 
 # === Batching ===
-# MEASURED on the TITAN V (11.77 GiB usable), fp32, max_length 1048, V=87,556
-# — D2.7 step 7.2, 2026-09-20:
-#     B=2   6,883 MiB peak   4.36 samples/s
-#     B=3   9,739 MiB peak   5.26 samples/s   <- ceiling, ~82% of the card
-#     B=4   OUT OF MEMORY (died in backward after 11 steps)
-# ~2,856 MiB per unit of batch, dominated by the (B, L, V) logits: at B=4 that
-# tensor alone is 1.47 GiB and needs a second copy in backward.
+# ⚠ SUPERSEDED 2026-09-22 by Phase 3 Step 2. The fp32 numbers below are Phase
+#   2's (D2.7, 2026-09-20) and the run is no longer fp32 — see the precision
+#   block for the fp16 sweep that sets the shipped value. Kept because the
+#   per-unit-batch cost and the reason for it still explain the shape of the
+#   fp16 numbers:
+#     fp32  B=2   6,883 MiB peak   4.36 samples/s
+#     fp32  B=3   9,739 MiB peak   5.26 samples/s
+#     fp32  B=4   OUT OF MEMORY (died in backward after 11 steps)
+#   ~2,856 MiB per unit of batch, dominated by the (B, L, V) logits: at B=4 that
+#   tensor alone is 1.47 GiB and needs a second copy in backward.
+#   Phase 2 shipped B=2 over B=3 on headroom grounds; under fp16 that trade
+#   changes and the shipped value is now 4. Reasoning at per_device_train_batch_size.
 #
-# 2 is the shipped value, not 3: 3 leaves under 2 GiB of headroom, and a long
-# run that fragments will OOM hours in. Raise to 3 only with
-# PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True and an eye on it.
+# ⚠ total_batch_size is NOMINAL. preprocess_config computes
+#   gradient_accumulation_steps = round(total_batch_size / per_device), so a
+#   total that does not divide by per_device silently trains at a different
+#   actual batch size -- 256 with per_device 3 gives 85 x 3 = 255. It prints the
+#   actual, but nothing fails. Keep total_batch_size divisible by per_device.
+#   (256 and the Step 3 lean of 64 both divide by 4.)
 total_batch_size: 256
-per_device_train_batch_size: 2
+# 4 under fp16, measured 13.92 samples/s at 10,110 MiB peak (84% of the card).
+# ⚠ This is more aggressive on headroom than Phase 2's fp32 choice, which took
+#   B=2 over B=3 to stay under ~80%. Reversed deliberately: the prize is larger
+#   here (1.37x for B=4 over B=2, against 1.06x there),
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is set unconditionally in
+#   pretrain.py, and eval adds its own peak on top during a run. Watch the first
+#   hours of arm A; fall back to 3 (7,887 MiB) or 2 (5,664 MiB) if it fragments.
+per_device_train_batch_size: 4
 gradient_accumulation_steps: null   # auto-computed by preprocess_config
 batch_size_rampup_steps: null
 
@@ -191,21 +206,55 @@ weight_decay: 0.1
 #   regardless -- it reports emulation, not tensor-core support -- so this cannot
 #   be probed at runtime and has to be chosen deliberately.
 #
-#   fp16 is by far the fastest but DOES NOT RUN in this codebase today.
-#   `precision` sets the model's torch_dtype (model/util.py get_torch_dtype) AND
-#   TrainingArguments(fp16=True). That makes the PARAMETERS fp16, while the
-#   GradScaler that fp16=True enables requires fp32 master weights, so training
-#   dies at the first optimizer step with "Attempting to unscale FP16
-#   gradients." bf16 escapes this only because bf16 needs no GradScaler. So the
-#   fp16 path has never worked; nothing had exercised it before this run.
+#   fp16 is the fastest and, as of Phase 3 Step 2 (2026-09-22), IT NOW WORKS.
+#   It previously did not: `precision` set the model's torch_dtype AND
+#   TrainingArguments(fp16=True), so the PARAMETERS went fp16 while the
+#   GradScaler that fp16=True enables requires fp32 master weights -- training
+#   died at the first optimizer step with "Attempting to unscale FP16
+#   gradients." bf16 escaped this only because bf16 needs no GradScaler.
 #
-# fp32 is therefore the correct default here: it is right, and on this hardware
-# it is also faster than the alternative that works. Making fp16 work is a real
-# ~7x throughput opportunity for the pretraining milestone -- it needs the model
-# left in fp32 and autocast doing the casting, rather than the weights
-# themselves being fp16 -- but that is a change to shared model-loading code and
-# is out of Phase 2's scope.
-precision: fp32
+#   TWO bugs had to be fixed, and the second was invisible until the first was:
+#     1. parameter dtype decoupled from autocast dtype -- see mixed_precision
+#        below and util.misc.get_param_dtype.
+#     2. MoRTrainer clips gradients in TWO groups (router vs the rest) and
+#        called accelerator.clip_grad_norm_ twice, which unscales twice ->
+#        "unscale_() has already been called on this optimizer". No scaler, no
+#        symptom, so fp32 and bf16 never saw it.
+#
+# MEASURED end-to-end on the TITAN V, 14 steps, grad_accum=1, this model and
+# sequence length -- NOT the 4096^3 matmul figures above:
+#
+#     precision  B    samples/s   peak MiB   GPU util
+#     fp32       2      6.25        6,418      93%
+#     fp32       3      6.63        9,197      97%
+#     fp32       4      OOM
+#     fp16       2     10.13        5,664      81%
+#     fp16       3     12.18        7,887      87%
+#     fp16       4     13.92       10,110      92%     <- shipped
+#     fp16       6      OOM
+#
+# ⚠ The speedup is 2.2x, NOT the 7x the matmul benchmark suggests. That ratio
+#   is peak tensor-core throughput on a large square matmul; real training here
+#   is small-batch and spends much of its time in bandwidth-bound work --
+#   layernorm, softmax, and the (B, L, 87556) logits and cross-entropy -- which
+#   gains little or nothing from tensor cores. Do not quote 7x anywhere.
+#
+# ⚠ GPU utilization is 81-97%, so the DATALOADER IS NOT THE BOTTLENECK at these
+#   rates (plan Step 2.4 predicted it might become one). Untested above ~14
+#   samples/s; re-check if anything makes the model faster.
+#
+# fp16 also raises the batch ceiling from 3 to 4, as 2.3 predicted. Peak memory
+# does NOT halve (5,664 vs 6,418 MiB at B=2, only -12%) because the master
+# weights, gradients and Adam moments all stay fp32; only activations shrink.
+precision: fp16
+# ⚠ Keeps PARAMETERS in fp32 while `precision` above selects the AUTOCAST dtype.
+# This is what fp16 training actually means, and without it the GradScaler
+# cannot work. Opt-in on purpose: absent this key the old behaviour is exact, so
+# every CLEVR config -- all `precision: bf16`, none setting this -- keeps
+# pure-bf16 parameters and is bit-for-bit unaffected. Phases 3-4 compare EO
+# routing against those CLEVR results, so silently switching the reference path
+# to mixed precision would confound the comparison. See util.misc.get_param_dtype.
+mixed_precision: true
 max_grad_norm: 1.0
 # ⚠ PLACEHOLDER — the training budget belongs to the pretraining milestone
 # (worklog §1), not to Phase 2. Derivation for whoever sets it:
@@ -225,7 +274,13 @@ save_steps: 5000
 # training throughput and belongs to the Step 3 budget decision, like
 # num_train_steps. 2000 is a placeholder consistent with save_steps.
 eval_steps: 2000
-per_device_eval_batch_size: 2
+# 4: measured 34.28 samples/s under fp16, a full 4,416-row pass in 2.1 min
+# (against 20.0 samples/s / 3.7 min at fp32 B=2). Eval throughput saturates by
+# B=4-8, so larger buys nothing: B=8 is 36.62 samples/s for 73% more memory.
+# ⚠ The 4,502 MiB measured for eval is standalone. During training the
+#   optimizer state and gradients are still resident, so the true coexisting
+#   peak is higher -- another reason not to push this to 8.
+per_device_eval_batch_size: 4
 # Eval before step 1. The untrained eval loss must land at ln(87,556) = 11.3800
 # — the cheapest possible check that the split, the vocabulary and the eval
 # loop all agree (plan Step 1.6c). Cheap insurance, once per run.
