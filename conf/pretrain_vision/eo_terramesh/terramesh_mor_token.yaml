@@ -9,9 +9,10 @@
 # gratuitous difference is one more thing that would have to be controlled for.
 # Every field that does differ says why below.
 #
-# Phase 2 delivers this config and proves the loop runs (D2.7 smoke run).
-# It does NOT set the training budget — num_train_steps and the batch schedule
-# belong to the pretraining milestone (worklog §1), not to this phase.
+# Phase 2 delivered this config and proved the loop runs (D2.7 smoke run).
+# Phase 3 then set the held-out split (Step 1), the precision (Step 2) and the
+# TRAINING BUDGET (Step 3) — the 34,800-step placeholder is gone; see the
+# derivation at num_train_steps.
 #
 #   smoke run:   python pretrain.py --config-path conf/pretrain_vision/eo_terramesh \
 #                    --config-name terramesh_mor_token stop_steps=30 wandb=false
@@ -97,9 +98,13 @@ weights: null
 #   total that does not divide by per_device silently trains at a different
 #   actual batch size -- 256 with per_device 3 gives 85 x 3 = 255. It prints the
 #   actual, but nothing fails. Keep total_batch_size divisible by per_device.
-#   (256 and the Step 3 lean of 64 both divide by 4.)
+#   256 / 4 = 64 exactly. ⚠ Step 3 chose 256 over the plan's lean of 64: fp16
+#   dissolved the objection (a 7-day arm is ~31k optimizer steps, not the ~10k
+#   the plan computed at fp32 B=2), and 256 matches the CLEVR reference this
+#   project compares against. See num_train_steps.
 total_batch_size: 256
-# 4 under fp16, measured 13.92 samples/s at 10,110 MiB peak (84% of the card).
+# 4 under fp16. Measured 13.37-13.92 samples/s across two sweeps (use ~13.4
+# for planning) at 10,110 MiB peak, 84% of the card.
 # ⚠ This is more aggressive on headroom than Phase 2's fp32 choice, which took
 #   B=2 over B=3 to stay under ~80%. Reversed deliberately: the prize is larger
 #   here (1.37x for B=4 over B=2, against 1.06x there),
@@ -119,6 +124,12 @@ batch_size_rampup_steps: null
 # unchanged: 995 fits it, and matching CLEVR removes one difference from the
 # Phase 3/4 comparison. The 53 tokens of slack are pure padding on every row.
 max_length: 1048
+
+# ⚠ DECLARED so `seed=123` works as an ordinary Hydra override. Undeclared, it
+# fell through to cfg.get("seed", 42) and `seed=42` on the CLI was REJECTED,
+# needing `+seed=42` -- which is the kind of trap that gets worked around on one
+# arm and not the other. 42 is the value that was already in effect.
+seed: 42
 
 add_bos_token: false
 global_shuffling: false
@@ -190,7 +201,10 @@ mor:
 
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
-  num_decay_steps: 2000
+  # 10% of 28,000. The CLEVR reference used 2,000 of 19,500 = 10.3%, so this
+  # matches its PROPORTION rather than its absolute value -- the anneal length
+  # is meaningful relative to the run, not in absolute steps.
+  num_decay_steps: 2800
   decay_type: linear
 learning_rate: 0.003
 adam_beta1: 0.9
@@ -262,18 +276,58 @@ max_grad_norm: 1.0
 # The value below is 348 x 100 epochs, matching the CLEVR reference's 100
 # epochs, and is a placeholder for arithmetic only — it has not been chosen on
 # any convergence grounds. The D2.7 smoke run overrides it with stop_steps=30.
-num_train_steps: 34800
-stop_steps: 34800
-num_warmup_steps: 1740   # 5% of training
+# === THE TRAINING BUDGET (D3.4, Phase 3 Step 3, decided 2026-09-22) ===
+# The 34,800 placeholder is gone. Derivation, from measurements not guesses:
+#
+#   THROUGHPUT   fp16, per_device 4, measured end-to-end (Step 2):
+#                  arm A (MoR)     13.37 samples/s
+#                  arm B (vanilla) 12.85 samples/s   <- binding, 4% slower
+#                A full eval pass over the 4,416 held-out rows: 126 s.
+#   EPOCH        84,672 rows (89,088 minus the 4,416 held out). NOT 89,088.
+#   CALENDAR     Runs occupy Oct 2 -> Oct 19, 17 days, both arms SEQUENTIALLY
+#                on the TITAN V (plan section 4.6; parallel is slower overall
+#                AND confounds the comparison across unequal cards).
+#
+#   28,000 steps x 256 = 7,168,000 samples = 84.7 epochs
+#     arm A  28000 x 256/13.37 + 57 x 126  =  6.27 days
+#     arm B  28000 x 256/12.85 + 57 x 126  =  6.54 days
+#     both                                 = 12.83 days, 4.2 days slack (24.5%)
+#
+# ⚠ Why not 30,000 or 32,000, which also fit? `warmup_stable_decay` schedules
+#   the anneal at the END of the run, so a run stopped early leaves the model
+#   un-annealed and is not a shorter version of the same experiment -- it is a
+#   worse one. That makes slack worth more here than it would be under cosine.
+#   24.5% buffer absorbs one restart per arm.
+#
+# ⚠ BOTH ARMS GET THIS IDENTICAL BUDGET IN SAMPLES, this schedule, this seed,
+#   this split and this eval cadence. Arm B is 4% slower, so it takes 4% longer
+#   in wall clock; matching on wall clock instead would mean unequal tokens seen
+#   and would make the comparison meaningless.
+num_train_steps: 28000
+stop_steps: 28000
+num_warmup_steps: 1400   # 5% of training, matching the CLEVR reference's 5%
 save_interval: null
-save_steps: 5000
+# 14 checkpoints per arm. ~1.1 GB (arm A) / ~1.9 GB (arm B) each with optimizer
+# state, so ~42 GB for both arms against 3.4 TB free -- keep all of them
+# (section 4.9). Phase 5 may want intermediate checkpoints to see WHEN depth
+# differentiation emerges, and that cannot be recovered later.
+# ⚠ A multiple of eval_steps, so every checkpoint has an eval point beside it.
+save_steps: 2000
 # === Evaluation cadence (D3.2) ===
 # Teacher-forced eval loss on the 4,416 held-out rows, logged per modality on
-# the same axis as the training loss. A full pass is ~2,208 forward batches at
-# eval batch 2, so this is not free — the cadence is a deliberate trade against
-# training throughput and belongs to the Step 3 budget decision, like
-# num_train_steps. 2000 is a placeholder consistent with save_steps.
-eval_steps: 2000
+# the same axis as the training loss.
+#
+# DECIDED (section 4.10, 2026-09-22). Measured cost of a full pass: 126 s.
+#   eval_steps  250: 113 passes, 2.49% of arm B, one every 1.4 h
+#   eval_steps  500:  57 passes, 1.27% of arm B, one every 2.7 h   <- shipped
+#   eval_steps 1000:  29 passes, 0.65% of arm B, one every 5.3 h
+#   eval_steps 2000:  15 passes, 0.34% of arm B, one every 10.3 h
+#
+# 500, buying 57 eval points per arm for 1.3% of wall clock. The thing this
+# cadence has to support is noticing a plateau BETWEEN Thursday meetings; 15
+# points over a week does not, and the marginal cost of going from 15 to 57 is
+# under an hour and a half per arm.
+eval_steps: 500
 # 4: measured 34.28 samples/s under fp16, a full 4,416-row pass in 2.1 min
 # (against 20.0 samples/s / 3.7 min at fp32 B=2). Eval throughput saturates by
 # B=4-8, so larger buys nothing: B=8 is 36.62 samples/s for 73% more memory.
