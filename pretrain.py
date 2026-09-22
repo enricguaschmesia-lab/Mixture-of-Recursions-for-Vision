@@ -213,13 +213,19 @@ def main(cfg: DictConfig):
         # concatenate them across the eval set would need hundreds of GB. The
         # per-modality eval CE is accumulated inside compute_loss instead, so
         # nothing is lost by discarding them (MoRTrainer.evaluate).
+        # ⚠ Every one of these is gated on eval_dataset, eval_on_start
+        # included. A null multimodal.eval_split is legitimate -- it means "no
+        # held-out evaluation", the Phase 2 behaviour, and preflight passes it
+        # -- but eval_on_start=true against no eval_dataset raises
+        # "Trainer: evaluation requires an eval_dataset" at step 0, after
+        # preflight has already said the run is good to go.
         eval_strategy="steps" if eval_dataset is not None else "no",
         eval_steps=cfg.get("eval_steps", 2000) if eval_dataset is not None else None,
         per_device_eval_batch_size=cfg.get(
             "per_device_eval_batch_size", cfg.per_device_train_batch_size
         ),
         prediction_loss_only=True,
-        eval_on_start=cfg.get("eval_on_start", False),
+        eval_on_start=bool(cfg.get("eval_on_start", False)) and eval_dataset is not None,
     )
     
     callbacks = []
