@@ -52,6 +52,14 @@ REPO = Path(__file__).resolve().parents[2]
 #: every 2,000 steps over several days accumulates tens of GB.
 MIN_FREE_GIB = 50
 
+#: Refuse to start if the selected GPU has less free memory than this. Arm A
+#: peaks at 10,110 MiB (fp16, per_device 4, measured 2026-09-22), so this leaves
+#: a small margin on a 12,288 MiB card.
+#: ⚠ The workstation is NOT exclusively this project's. On 2026-09-23 an
+#: unrelated job held 9.58 GiB of the TITAN V and a launch OOM'd at step 1.
+#: Over a 6-day run that is the difference between a restart and a lost week.
+MIN_FREE_GPU_MIB = 11000
+
 #: Large outputs belong on /data (CLAUDE.md). This is the load-bearing
 #: guardrail now that the data is local rather than reachable only over SSH.
 LARGE_OUTPUT_PREFIX = "/data"
@@ -76,6 +84,7 @@ class PreflightContext:
     overrides: Dict[str, object] = field(default_factory=dict)
     env: dict = field(default_factory=lambda: dict(os.environ))
     check_torch: bool = True              # off in tests that must not init CUDA
+    min_free_gpu_mib: Optional[int] = None   # None -> MIN_FREE_GPU_MIB
 
 
 # --------------------------------------------------------------------------
@@ -119,6 +128,58 @@ def check_gpu_identity(ctx: PreflightContext) -> CheckResult:
     return CheckResult("gpu identity", True,
                        f"cuda:0 is {info.name} ({cc}, {info.memory_total_mib} MiB) "
                        f"= alias {ctx.gpu_alias!r}")
+
+
+def check_gpu_free_memory(ctx: PreflightContext) -> CheckResult:
+    """The selected GPU must be idle enough to hold the run.
+
+    ⚠ THIS WORKSTATION IS NOT EXCLUSIVELY THIS PROJECT'S. Measured 2026-09-23:
+    an unrelated job (`deepreefmap_fp32.py`) held 9.58 GiB of the TITAN V, and
+    a launch into the remaining 2.2 GiB died with a CUDA OOM at the first step.
+    Nothing else in preflight would have caught it -- `check_gpu_identity`
+    reports the card's TOTAL memory and never its free memory.
+
+    The consequence scales with the run: a 6-day arm that OOMs at step 1 costs
+    a restart, but one that starts while a competing job is between allocations
+    can die hours in, which is how a week disappears.
+
+    Uses nvidia-smi rather than torch, so it runs before CUDA is initialised and
+    can also name the processes that are in the way.
+    """
+    if not ctx.check_torch:
+        return CheckResult("gpu free memory", True, "skipped (check_torch=False)")
+
+    import subprocess
+    want = ctx.min_free_gpu_mib if ctx.min_free_gpu_mib is not None else MIN_FREE_GPU_MIB
+    try:
+        idx = gpu_mod.resolve(ctx.gpu_alias).index
+        q = subprocess.run(
+            ["nvidia-smi", f"--id={idx}", "--query-gpu=memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10, check=True)
+        used, total = (int(x) for x in q.stdout.strip().split(","))
+    except Exception as exc:                       # noqa: BLE001
+        return CheckResult("gpu free memory", False, f"could not query nvidia-smi: {exc}")
+
+    free = total - used
+    if free >= want:
+        return CheckResult("gpu free memory", True, f"{free} MiB free of {total} (need {want})")
+
+    who = ""
+    try:
+        procs = subprocess.run(
+            ["nvidia-smi", f"--id={idx}", "--query-compute-apps=pid,used_memory",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        if procs:
+            who = " In use by: " + "; ".join(procs.splitlines())
+    except Exception:                              # noqa: BLE001
+        pass
+    return CheckResult(
+        "gpu free memory", False,
+        f"only {free} MiB free of {total} on {ctx.gpu_alias} (need {want})",
+        f"Another process is using this card.{who} "
+        f"Wait for it, or launch on the other GPU with --gpu.")
 
 
 def check_save_dir(ctx: PreflightContext) -> CheckResult:
@@ -548,6 +609,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_disk,
     check_config,
     check_eval_split,
+    check_gpu_free_memory,
     check_resume_checkpoint,
     check_gpu_identity,      # last: the only one that touches CUDA
 ]

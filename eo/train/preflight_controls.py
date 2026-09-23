@@ -94,7 +94,8 @@ def _fake_checkpoint(parent: Path, arm: str, *, drop: Tuple[str, ...] = (),
 
 def _results(env, *, run_dir: Optional[Path] = None, config: Optional[Path] = None,
              allow_existing: bool = False, resuming: bool = False,
-             overrides: Optional[dict] = None) -> Dict[str, bool]:
+             overrides: Optional[dict] = None, check_torch: bool = False,
+             min_free_gpu_mib: Optional[int] = None) -> Dict[str, bool]:
     ctx = PreflightContext(
         gpu_alias="titanv",
         run_dir=run_dir or (Path(tempfile.mkdtemp()) / "fresh"),
@@ -103,7 +104,8 @@ def _results(env, *, run_dir: Optional[Path] = None, config: Optional[Path] = No
         resuming=resuming,
         overrides=overrides or {},
         env=env,
-        check_torch=False,
+        check_torch=check_torch,
+        min_free_gpu_mib=min_free_gpu_mib,
     )
     return {r.name: r.ok for r in run_checks(ctx)}
 
@@ -205,6 +207,13 @@ def main(argv=None) -> int:
          dict(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split=str(_duplicated_split(tmp))))),
         ("eval split: count disagrees with list", "eval split",
          dict(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split=str(_miscounted_split(tmp))))),
+        # ⚠ The workstation is shared with other projects. On 2026-09-23 an
+        # unrelated job held 9.58 GiB of the TITAN V and a launch OOM'd at
+        # step 1; nothing else in preflight would have caught it. Demanding
+        # more memory than any card has proves the check can fail. Uses
+        # nvidia-smi only, so it needs no CUDA context.
+        ("gpu free memory: demand more than exists", "gpu free memory",
+         dict(env=GOOD_ENV, check_torch=True, min_free_gpu_mib=10**7)),
     ]
 
     # --- resume checkpoint (Step 0.4). Every one of these was measured to be
