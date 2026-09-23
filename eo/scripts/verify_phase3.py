@@ -33,6 +33,9 @@ accelerate's Accelerator.free_memory(), not just `del` -- see _release().
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -51,6 +54,10 @@ import numpy as np  # noqa: E402
 
 EO_CONFIG = REPO / "conf/pretrain_vision/eo_terramesh/terramesh_mor_token.yaml"
 ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
+
+# The contract is pure constants and imports in EITHER env, which is what lets
+# W7 check that decode_eo.py (which runs in `mor`) decoded at this crop.
+from eo.terramesh_tok.contract import CROP as TOK_CROP  # noqa: E402
 LN_V = float(np.log(87556))
 
 
@@ -654,6 +661,136 @@ def w6_generation_slots(target: str = "LULC", n_scenes: int = 2,
     return bool(in_slot and no_junk and c1 and c2)
 
 
+# ---------------------------------------------------------------------------
+# W7 -- decode metrics collapse on shuffled tokens (Step 7)
+# ---------------------------------------------------------------------------
+#: How far apart the ceiling and the shuffled control must be before the metric
+#: counts as measuring spatial structure. 1.25 is deliberately loose: the point
+#: is to catch a metric that is BLIND to arrangement, not to grade the decoder.
+W7_MARGIN = 1.25
+
+#: Where decode_eo.py writes its metrics artifacts.
+STEP7_ROOT = Path(os.environ.get("STEP7_REPORT_ROOT", "/data/enric/reports/phase3_step7"))
+
+
+def _sha256(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for b in iter(lambda: fh.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def _w7_judge(doc: dict) -> tuple:
+    """Pure verdict on one metrics document. Returns (ok, [reasons]).
+
+    Factored out so the controls below can run it against a DOCTORED document
+    and prove the check can fail -- CLAUDE.md rule 2. A gate whose controls
+    call a different code path than the check is not a gate.
+    """
+    reasons = []
+    # ⚠ Gate on the COLLAPSE metric, which is not the headline metric. For LULC
+    # the headline is pixel accuracy and the collapse metric is mIoU: shuffling
+    # a class-dominated land-cover scene leaves pixel accuracy at ~0.82 against
+    # a 0.99 ceiling, so a margin test on it is unfalsifiable. Measured
+    # 2026-09-23; the reasoning is written out in decode_eo.py.
+    key = doc.get("collapse_metric") or doc.get("metric")
+    summary = doc.get("summary", {})
+    for name in ("ceiling", "generated", "shuffled"):
+        if name not in summary:
+            reasons.append(f"no '{name}' row in the summary")
+    if reasons:
+        return False, reasons
+
+    # Freshness. The artifact is produced in the other conda env, so this check
+    # can only ever read it second-hand; without the hash a months-old file
+    # would pass silently after the grids it describes were regenerated.
+    prov = doc.get("provenance", {})
+    grids = Path(prov.get("decode_dir", "")) / f"decode_grids_{doc.get('target')}.npy"
+    if not grids.exists():
+        reasons.append(f"the grids it was computed from are gone: {grids}")
+    elif _sha256(grids) != prov.get("grids_sha256"):
+        reasons.append(f"stale: {grids.name} has changed since these metrics were written")
+
+    if prov.get("crop") != TOK_CROP:
+        reasons.append(f"decoded at crop {prov.get('crop')}, contract is {TOK_CROP}")
+
+    c, sh = summary["ceiling"].get(key), summary["shuffled"].get(key)
+    if c is None or sh is None:
+        reasons.append(f"no '{key}' on the ceiling or shuffled row")
+        return False, reasons
+
+    higher_is_better = doc.get("collapse_higher_is_better")
+    if higher_is_better is None:
+        higher_is_better = key in ("pixel_acc", "miou")
+    ok = (c >= sh * W7_MARGIN) if higher_is_better else (sh >= c * W7_MARGIN)
+    if not ok:
+        reasons.append(
+            f"shuffled {key} does not collapse: {sh} against a ceiling of {c} "
+            f"(needs a {W7_MARGIN}x margin)")
+    return (not reasons), reasons
+
+
+def w7_decode_collapse(metrics_path=None) -> bool:
+    """Decoded metrics collapse on a shuffled token grid (D3.8, plan 7.5).
+
+    ⚠ THIS CHECK CANNOT DECODE. The DiVAE decoders need terratorch, which
+    cannot be imported into this env -- that is the whole reason Step 7 is two
+    scripts. So W7 verifies the ARTIFACT `decode_eo.py` wrote, and guards
+    against the one failure that makes a second-hand check worthless: a stale
+    file. The grids' sha256 is recorded at decode time and re-checked here.
+
+    What it asserts: decoding the ground-truth tokens (the 7.4 ceiling) beats
+    decoding the SAME tokens spatially permuted, by a margin. If it does not,
+    the metric is not measuring spatial arrangement and no other number in
+    Step 7 means anything.
+    """
+    if metrics_path is None:
+        hits = sorted(STEP7_ROOT.glob("*/metrics_*.json"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        if not hits:
+            print(f"    no metrics artifact under {STEP7_ROOT}")
+            print(f"    run: python eo/scripts/prepare_decode.py --gen-dir <gen>/slot_masked")
+            print(f"    then (in the `mor` env): python eo/scripts/decode_eo.py --decode-dir <gen>/slot_masked")
+            return False
+        metrics_path = hits[0]
+    doc = json.loads(Path(metrics_path).read_text())
+    print(f"    artifact: {metrics_path}")
+
+    ok, reasons = _w7_judge(doc)
+    summ = doc["summary"]
+    key = doc.get("collapse_metric") or doc["metric"]
+    head = doc["metric"]
+    print(f"    {doc['target']}: ceiling {key} {summ['ceiling'].get(key)} | "
+          f"generated {summ['generated'].get(key)} | shuffled {summ['shuffled'].get(key)}")
+    if head != key:
+        print(f"    (headline {head}: ceiling {summ['ceiling'].get(head)} | "
+              f"generated {summ['generated'].get(head)} | shuffled {summ['shuffled'].get(head)}"
+              f" -- reported, not gated on)")
+    rep = doc.get("provenance", {}).get("manifest", {}).get("repair", {})
+    if rep:
+        print(f"    (generated grid was {100 * rep.get('repaired_fraction', 0):.2f}% repaired)")
+    for r in reasons:
+        print(f"    REASON: {r}")
+    print(f"    shuffled collapses against the ceiling       = {ok}")
+
+    # CONTROL 1: a document in which the control did NOT collapse must be
+    # rejected. This is the failure the check exists to catch.
+    doctored = copy.deepcopy(doc)
+    doctored["summary"]["shuffled"][key] = doctored["summary"]["ceiling"][key]
+    c1 = not _w7_judge(doctored)[0]
+    print(f"    control: shuffled == ceiling is rejected     = {c1}")
+
+    # CONTROL 2: a stale artifact must be rejected. Without this the check
+    # would keep passing on a file describing grids that no longer exist.
+    stale = copy.deepcopy(doc)
+    stale["provenance"]["grids_sha256"] = "0" * 64
+    c2 = not _w7_judge(stale)[0]
+    print(f"    control: a stale grids hash is rejected      = {c2}")
+
+    return bool(ok and c1 and c2)
+
+
 def _compose(name, overrides=None):
     from hydra import compose, initialize_config_dir
     with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
@@ -751,6 +888,7 @@ def main() -> int:
         ("W1   train n eval disjoint at group level [Step 1]", w1_group_disjoint),
         ("W2   eval covers every modality, S1GRD    [Step 1]", w2_eval_covers_modalities),
         ("W8   arm configs differ only as intended [Step 4]", w8_arm_configs),
+        ("W7   decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
     ]
     if not args.skip_forward:
         checks.append(("W3   eval loop runs; untrained ~ ln(V)    [Step 1]", w3_eval_loop))
@@ -773,7 +911,7 @@ def main() -> int:
     print("=" * 70)
     if all(ok for _, ok in results):
         print("PHASE 3 GATE PASSED -- all implemented checks pass and all controls fire")
-        print("  (W4-W8 land with Steps 2, 4, 5, 6, 7; W9 is eo.train.preflight_controls)")
+        print("  (W9 is eo.train.preflight_controls; W7 reads the artifact decode_eo.py writes)")
         return 0
     print("PHASE 3 GATE FAILED")
     return 1
