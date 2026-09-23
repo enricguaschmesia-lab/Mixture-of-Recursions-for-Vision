@@ -201,10 +201,10 @@ mor:
 
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
-  # 10% of 28,000. The CLEVR reference used 2,000 of 19,500 = 10.3%, so this
+  # 10% of 16,500. The CLEVR reference used 2,000 of 19,500 = 10.3%, so this
   # matches its PROPORTION rather than its absolute value -- the anneal length
   # is meaningful relative to the run, not in absolute steps.
-  num_decay_steps: 2800
+  num_decay_steps: 1650
   decay_type: linear
 learning_rate: 0.003
 adam_beta1: 0.9
@@ -276,7 +276,7 @@ max_grad_norm: 1.0
 # The value below is 348 x 100 epochs, matching the CLEVR reference's 100
 # epochs, and is a placeholder for arithmetic only — it has not been chosen on
 # any convergence grounds. The D2.7 smoke run overrides it with stop_steps=30.
-# === THE TRAINING BUDGET (D3.4, Phase 3 Step 3, decided 2026-09-22) ===
+# === THE TRAINING BUDGET (D3.4, Phase 3 Step 3; REVISED 2026-09-23) ===
 # The 34,800 placeholder is gone. Derivation, from measurements not guesses:
 #
 #   THROUGHPUT   fp16, per_device 4, measured end-to-end (Step 2):
@@ -288,26 +288,40 @@ max_grad_norm: 1.0
 #                on the TITAN V (plan section 4.6; parallel is slower overall
 #                AND confounds the comparison across unequal cards).
 #
-#   28,000 steps x 256 = 7,168,000 samples = 84.7 epochs
-#     arm A  28000 x 256/13.37 + 57 x 126  =  6.27 days
-#     arm B  28000 x 256/12.85 + 57 x 126  =  6.54 days
-#     both                                 = 12.83 days, 4.2 days slack (24.5%)
+#   16,500 steps x 256 = 4,224,000 samples = 49.9 epochs
+#     arm A  16500 x 256/13.37 + 34 x 126  =  3.71 days
+#     arm B  16500 x 256/12.85 + 34 x 126  =  3.85 days
+#     both                                 =  7.56 days, 9.4 days slack (55%)
 #
-# ⚠ Why not 30,000 or 32,000, which also fit? `warmup_stable_decay` schedules
-#   the anneal at the END of the run, so a run stopped early leaves the model
-#   un-annealed and is not a shorter version of the same experiment -- it is a
-#   worse one. That makes slack worth more here than it would be under cosine.
-#   24.5% buffer absorbs one restart per arm.
+# ⚠ REVISED DOWN from 28,000 steps / 84.7 epochs on 2026-09-23. The original
+#   number was derived from the CALENDAR -- "how many epochs fit in seven
+#   days" -- and never from how much training the data supports. Two figures
+#   argue it was too long:
+#     * the split holds 84.2 M UNIQUE tokens, so 84.7 epochs repeats them ~85
+#       times, far into the regime where repeated data adds little;
+#     * 84.7 epochs is 180 tokens per non-embedding parameter for arm A, ~9x
+#       Chinchilla-optimal, while 49.9 epochs is ~106 and still well past it.
+#   PROJECT.md also reports the CLEVR multimodal result at 5,000 steps = 18
+#   epochs, so 49.9 remains generous against the reference this project
+#   compares to.
+#
+# ⚠ THE RIGHT N IS STILL NOT KNOWN, and 16,500 is a ceiling rather than a
+#   finding. `warmup_stable_decay` anneals only at the END, which is what makes
+#   a run un-shortenable mid-flight -- but it is also what makes the stable
+#   phase horizon-free, so the honest way to pick N is to watch held-out loss
+#   during the stable phase and anneal from a checkpoint once it stops
+#   improving. Not implemented (it needs an anneal-from-checkpoint mode). Until
+#   it is, read the eval curve as it comes in.
 #
 # ⚠ BOTH ARMS GET THIS IDENTICAL BUDGET IN SAMPLES, this schedule, this seed,
 #   this split and this eval cadence. Arm B is 4% slower, so it takes 4% longer
 #   in wall clock; matching on wall clock instead would mean unequal tokens seen
 #   and would make the comparison meaningless.
-num_train_steps: 28000
-stop_steps: 28000
-num_warmup_steps: 1400   # 5% of training, matching the CLEVR reference's 5%
+num_train_steps: 16500
+stop_steps: 16500
+num_warmup_steps: 825   # 5% of training, matching the CLEVR reference's 5%
 save_interval: null
-# 14 checkpoints per arm. ~1.1 GB (arm A) / ~1.9 GB (arm B) each with optimizer
+# 8 checkpoints per arm at 16,500 steps. ~1.1 GB (arm A) / ~1.9 GB (arm B) each with optimizer
 # state, so ~42 GB for both arms against 3.4 TB free -- keep all of them
 # (section 4.9). Phase 5 may want intermediate checkpoints to see WHEN depth
 # differentiation emerges, and that cannot be recovered later.
