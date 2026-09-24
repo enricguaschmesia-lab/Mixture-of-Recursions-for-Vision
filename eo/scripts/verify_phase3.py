@@ -39,6 +39,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 # ⚠ This gate builds six models across W3 and W5 in one process. pretrain.py
@@ -791,6 +792,134 @@ def w7_decode_collapse(metrics_path=None) -> bool:
     return bool(ok and c1 and c2)
 
 
+# ---------------------------------------------------------------------------
+# W10 -- recursion depth is driven by content, not by position (Step 8)
+# ---------------------------------------------------------------------------
+#: Minimum share of depth variance the trained router must explain by modality.
+#: Deliberately far below the measured 0.95: this gate asks "is the router
+#: reading the input at all", not "is the effect as large as it was in
+#: September".
+W10_MIN_BY_MODALITY = 0.10
+#: What a router that ignores its input looks like. The random-router control
+#: measured 0.0000 and the untrained model 0.0011.
+W10_MAX_CONTROL = 0.02
+
+STEP8_ROOT = Path(os.environ.get("STEP8_REPORT_ROOT", "/data/enric/reports/phase3_step8"))
+
+
+def _w10_judge(trained: dict, control: Optional[dict]) -> tuple:
+    """Pure verdict, so the controls below can run it on doctored documents."""
+    reasons = []
+    v = trained.get("variance_explained", {})
+    by_mod, by_pos = v.get("by_modality"), v.get("by_position")
+    if by_mod is None or by_pos is None:
+        return False, ["no variance decomposition in the trained artifact"]
+
+    if by_mod < W10_MIN_BY_MODALITY:
+        reasons.append(f"modality explains only {by_mod} of depth variance "
+                       f"(needs >= {W10_MIN_BY_MODALITY}); the router may be "
+                       f"ignoring content")
+    if by_mod <= by_pos:
+        reasons.append(f"position ({by_pos}) explains at least as much as modality "
+                       f"({by_mod}) -- this is the CLEVR expert-choice failure mode")
+
+    # ⚠ Plan 8.7's trap, promoted to a gate condition. An unstratified sample is
+    # all majortom, which carries no S1GRD -- and a modality missing from a
+    # routing figure reads as "the router ignores it", not as "we did not
+    # sample it". That misreading is the most likely false finding in this step.
+    dbm = trained.get("depth_by_modality", {})
+    if dbm.get("S1GRD", {}).get("n_tokens", 0) <= 0:
+        reasons.append("no S1GRD tokens: the sample was not corpus-stratified, so "
+                       "every depth figure silently omits S1GRD")
+    if not trained.get("rows"):
+        reasons.append("the artifact does not record which rows it used")
+
+    if control is None:
+        reasons.append("no random-router control artifact found")
+    else:
+        c = control.get("variance_explained", {}).get("by_modality")
+        if control.get("geometry", {}).get("learned_router") is not False:
+            reasons.append("the 'control' was not run with --rand-router")
+        elif c is None or c > W10_MAX_CONTROL:
+            reasons.append(f"the random-router control explains {c} by modality "
+                           f"(needs <= {W10_MAX_CONTROL}); the decomposition is "
+                           f"reporting structure that is not there")
+    return (not reasons), reasons
+
+
+def _w10_load():
+    docs = {}
+    for p in STEP8_ROOT.glob("*/routing_metrics.json"):
+        try:
+            docs[p.parent.name] = json.loads(p.read_text())
+        except Exception:                             # noqa: BLE001
+            continue
+    control = next((d for d in docs.values() if d.get("rand_router")), None)
+    trained = [d for d in docs.values()
+               if not d.get("rand_router") and d.get("checkpoint")]
+    trained.sort(key=lambda d: str(d.get("checkpoint")))
+    return (trained[-1] if trained else None), control
+
+
+def w10_routing_is_content_driven() -> bool:
+    """Depth tracks what the token IS, not where it sits (D3.9, plan 8.2/8.7).
+
+    ⚠ WHY THIS CHECK EXISTS AT ALL. `balancing_entropy`, the only routing
+    number the training run logs, CANNOT distinguish these two cases: a router
+    keyed purely on sequence position produces exactly the same entropy curve
+    as one keyed on content. Expert-choice routing collapsed that way on CLEVR.
+    So the phase needs a check that looks at the conditional distribution, not
+    the marginal.
+
+    ⚠ It reads artifacts written by `eo/scripts/routing_telemetry.py` rather
+    than capturing depth itself: capture needs a checkpoint and a GPU pass, and
+    the gate must stay runnable without either.
+    """
+    trained, control = _w10_load()
+    if trained is None:
+        print(f"    no trained routing artifact under {STEP8_ROOT}")
+        print(f"    run: python eo/scripts/routing_telemetry.py --checkpoint <dir>")
+        print(f"    and: python eo/scripts/routing_telemetry.py --checkpoint <dir> --rand-router")
+        return False
+
+    ok, reasons = _w10_judge(trained, control)
+    v = trained["variance_explained"]
+    print(f"    checkpoint: {trained.get('checkpoint')}")
+    print(f"    depth variance explained -- modality {v['by_modality']} | "
+          f"position {v['by_position']}")
+    if control:
+        print(f"    random-router control     -- modality "
+              f"{control['variance_explained']['by_modality']}")
+    comp = trained.get("compute", {})
+    if comp:
+        print(f"    compute: {comp.get('layers_per_token_mor')} layers/token vs "
+              f"vanilla {comp.get('layers_per_token_vanilla')} "
+              f"({100 * comp.get('compute_saving', 0):.1f}% fewer)")
+    for r in reasons:
+        print(f"    REASON: {r}")
+    print(f"    depth is content-driven, not positional        = {ok}")
+
+    # CONTROL 1: a router that ignores content must be rejected. This is the
+    # finding the check exists to be able to NOT make.
+    flat = copy.deepcopy(trained)
+    flat["variance_explained"]["by_modality"] = 0.001
+    c1 = not _w10_judge(flat, control)[0]
+    print(f"    control: a content-blind router is rejected    = {c1}")
+
+    # CONTROL 2: plan 8.7's trap. A sample with no S1GRD must be rejected
+    # rather than quietly reported as "the router ignores S1GRD".
+    nogrd = copy.deepcopy(trained)
+    nogrd["depth_by_modality"].pop("S1GRD", None)
+    c2 = not _w10_judge(nogrd, control)[0]
+    print(f"    control: an unstratified sample is rejected    = {c2}")
+
+    # CONTROL 3: the random-router control must itself be unable to pass.
+    c3 = not _w10_judge(control, control)[0] if control else False
+    print(f"    control: the random router cannot pass as real = {c3}")
+
+    return bool(ok and c1 and c2 and c3)
+
+
 def _compose(name, overrides=None):
     from hydra import compose, initialize_config_dir
     with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
@@ -889,6 +1018,7 @@ def main() -> int:
         ("W2   eval covers every modality, S1GRD    [Step 1]", w2_eval_covers_modalities),
         ("W8   arm configs differ only as intended [Step 4]", w8_arm_configs),
         ("W7   decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
+        ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]
     if not args.skip_forward:
         checks.append(("W3   eval loop runs; untrained ~ ln(V)    [Step 1]", w3_eval_loop))

@@ -55,7 +55,8 @@ from eo.data.eo_vocab import MODALITIES, PAD_ID, TOTAL_VOCAB_SIZE, get_modality
 FIXED_ORDER: List[str] = list(MODALITIES)
 
 
-def build_model(config_name: str, checkpoint: Optional[str], device: str = "cuda"):
+def build_model(config_name: str, checkpoint: Optional[str], device: str = "cuda",
+                overrides: Optional[Sequence[str]] = None):
     """Build an EO model and load a checkpoint, in the order `infer.py` uses.
 
     ⚠ The order matters: build -> sharing_strategy -> MoR transform ->
@@ -71,6 +72,11 @@ def build_model(config_name: str, checkpoint: Optional[str], device: str = "cuda
     ⚠ `checkpoint=None` is legitimate and useful: it gives an UNTRAINED model,
     whose off-slot rate is the chance-level control described in the module
     docstring.
+
+    `overrides` are Hydra overrides applied at compose time, e.g.
+    `["mor.rand_router=true"]` for Step 8's random-router control. They go
+    through Hydra rather than being set on the composed config so that any
+    value they depend on is recomputed, not left stale.
     """
     from hydra import compose, initialize_config_dir
     from omegaconf import open_dict
@@ -81,7 +87,7 @@ def build_model(config_name: str, checkpoint: Optional[str], device: str = "cuda
 
     repo = Path(__file__).resolve().parents[2]
     with initialize_config_dir(config_dir=str(repo / "conf/pretrain_vision"), version_base=None):
-        cfg = compose(config_name=config_name)
+        cfg = compose(config_name=config_name, overrides=list(overrides or []))
     with open_dict(cfg):
         cfg.wandb = False
         cfg.tensorboard = False
