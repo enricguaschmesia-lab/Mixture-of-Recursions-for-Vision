@@ -251,6 +251,7 @@ def main() -> int:
     var = T.variance_explained(cap)
     flops = T.compute_accounting(cap)
     maps = T.spatial_maps(cap)
+    within = T.within_modality_decomposition(cap)
 
     print(f"{'modality':9}{'tokens':>9}{'mean depth':>12}   share at depth 1 / 2 / 3")
     for m in sorted(by_mod, key=lambda m: by_mod[m]["mean_depth"]):
@@ -259,6 +260,12 @@ def main() -> int:
               + " / ".join(f"{x:.3f}" for x in s["share"]))
     print(f"\nvariance in depth explained by MODALITY {var['by_modality']:.4f}"
           f"   by POSITION {var['by_position']:.4f}")
+    print(f"\nwithin each modality -- is depth following the scene, or the layout?")
+    print(f"{'modality':9}{'depth sd':>10}{'by SCENE':>10}{'by PATCH POS':>14}{'map S/N':>9}")
+    for m in sorted(within, key=lambda m: -within[m]["by_scene"]):
+        w = within[m]
+        print(f"{m:9}{w['depth_sd']:10.4f}{w['by_scene']:10.4f}"
+              f"{w['by_patch_position']:14.4f}{w['spatial_signal_to_noise'] or 0:9.2f}")
     print(f"\ncompute: {flops['layers_per_token_mor']} layer applications per token "
           f"vs vanilla's {flops['layers_per_token_vanilla']}"
           f"  ->  {100 * flops['compute_saving']:.1f}% fewer")
@@ -285,6 +292,7 @@ def main() -> int:
                       "alpha": float(tokcfg.alpha)},
         "depth_by_modality": by_mod, "depth_by_position": by_pos,
         "variance_explained": var, "compute": flops,
+        "within_modality": within,
         "spatial_mean_depth": {k: [[round(float(x), 4) for x in r] for r in v]
                                for k, v in maps.items()},
     }, indent=2) + "\n", encoding="utf-8")

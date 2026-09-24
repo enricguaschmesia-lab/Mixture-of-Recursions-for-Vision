@@ -286,3 +286,81 @@ def compute_accounting(cap: Capture) -> Dict:
         "note": ("layer applications per body token; excludes embeddings, lm_head "
                  "and attention's quadratic term, which favours MoR"),
     }
+
+def _eta_sq(vals: np.ndarray, groups: np.ndarray) -> float:
+    """Share of `vals` variance lying between groups rather than within them."""
+    total = vals.var()
+    if total == 0:
+        return 0.0
+    mean = vals.mean()
+    num = 0.0
+    for g in np.unique(groups):
+        sel = vals[groups == g]
+        num += sel.size * (sel.mean() - mean) ** 2
+    return float(num / (vals.size * total))
+
+
+def within_modality_decomposition(cap: Capture) -> Dict[str, Dict]:
+    """Inside ONE modality, does depth follow the scene or the patch position?
+
+    ⚠ THIS IS THE QUESTION `depth_by_modality` CANNOT ANSWER. Learning that the
+    router sends every S1RTC token deep tells us it reads the modality tag; it
+    says nothing about whether it reads the image. Splitting the remaining
+    variance two ways does:
+
+      SCENE    -> depth differs between held-out scenes: the router is
+                  responding to what is in the picture.
+      POSITION -> depth differs by where the patch sits in the 14x14 grid,
+                  the same way in every scene: layout, not content. This is
+                  the CLEVR expert-choice failure mode, scoped to one modality.
+
+    ⚠ A non-flat 14x14 mean map is NOT by itself evidence of content. Averaging
+    over scenes turns genuine per-scene variation into position-wise means that
+    only LOOK positional, which is why position is measured against scene here
+    rather than eyeballed off the heatmap.
+
+    ⚠ Scene-level attribution is coarser than "depth tracks patch complexity".
+    It shows some scenes are routed deeper than others; whatever within-scene
+    patch-to-patch variation remains is the residual and is not attributed here.
+
+    ⚠⚠ `by_scene` MUST BE READ AGAINST THE UNTRAINED MODEL, NEVER AGAINST ZERO.
+    A randomly-initialised router applied to real hidden states already scores
+    **0.19-0.31** here, because any function of the input varies with the input.
+    The near-zero reference is `mor.rand_router=true` (~0.005), which draws
+    depth from `torch.rand` and cannot see the input at all -- a different
+    control answering a different question. Measured 2026-09-24 at
+    checkpoint-4000: only LULC (0.42 vs 0.22 untrained) and weakly DEM
+    (0.37 vs 0.31) beat the untrained baseline; S2L2A, S1GRD, S1RTC and NDVI
+    all score BELOW it, because a near-deterministic per-modality policy
+    removes within-modality variation by construction. Read against zero, the
+    same numbers say the opposite. This was misread once before it was caught.
+    """
+    n_tok = C.TOKENS_PER_SAMPLE
+    out: Dict[str, Dict] = {}
+    for name, mid in MODALITY_TO_ID.items():
+        bodies, scenes = [], []
+        for r in range(cap.depth.shape[0]):
+            w = np.flatnonzero(cap.modality_ids[r] == mid)
+            if w.size == n_tok:
+                bodies.append(cap.depth[r][w])
+                scenes.append(np.full(n_tok, r))
+        if len(bodies) < 5:
+            continue
+        v = np.concatenate(bodies).astype(np.float64)
+        scene = np.concatenate(scenes)
+        pos = np.tile(np.arange(n_tok), len(bodies))
+
+        # Does the mean 14x14 map hold more spread than sampling noise allows?
+        stack = np.stack(bodies).astype(np.float64)
+        floor = stack.std() / np.sqrt(len(bodies))
+        map_sd = stack.mean(0).std()
+        out[name] = {
+            "n_scenes": len(bodies),
+            "depth_sd": round(float(v.std()), 4),
+            "by_scene": round(_eta_sq(v, scene), 4),
+            "by_patch_position": round(_eta_sq(v, pos), 4),
+            "spatial_map_sd": round(float(map_sd), 4),
+            "spatial_noise_floor": round(float(floor), 4),
+            "spatial_signal_to_noise": round(float(map_sd / floor), 2) if floor else None,
+        }
+    return out
