@@ -12,6 +12,11 @@ live in eo/generate/conditional.py -- read that first.
 rate must land at chance (82.5% image / 95.0% LULC / 92.7% Coords) -- the
 control that proves the metric measures anything at all.
 
+⚠ --identity builds no model at all: it writes the GROUND-TRUTH target bodies
+in the generation format, as if a model had produced them. Step 7's decode
+path must then return ceiling == generated EXACTLY; anything else is a wiring
+bug between here and the decoder. Build every new decode path against it.
+
 ⚠ Scenes are drawn corpus-STRATIFIED from the held-out split. The eval rows are
 sorted majortom-first and majortom never carries S1GRD, so an unstratified head
 would silently contain no S1GRD scene at all.
@@ -28,6 +33,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
+from eo.data.eo_vocab import get_modality  # noqa: E402
 from eo.data.eval_split import load_eval_rows, load_row_table  # noqa: E402
 from eo.data.terramesh_token_dataset import TerraMeshTokenDataset  # noqa: E402
 from eo.generate import conditional as C  # noqa: E402
@@ -49,6 +55,28 @@ def stratified_rows(n, target, dataset):
     return sorted(int(r) for r in picked)
 
 
+def write_identity(args, ds, rows) -> int:
+    """The identity control: ground-truth bodies saved as the generation.
+
+    Saved under slot_masked/ because that is the mode the decode path reads,
+    and the rows are the same stratified_rows() the real generations use, so
+    its ceiling is the ceiling of every run over the same --n-scenes.
+    """
+    if args.checkpoint:
+        print("ERROR: --identity uses no model; drop --checkpoint", file=sys.stderr)
+        return 1
+    # Terminated with <EO_target> like a well-behaved generation, so the
+    # control also exercises prepare_decode's EO stripping.
+    eo = torch.tensor([get_modality(args.target).eo_id], dtype=torch.long)
+    truths = [torch.cat([C.build_prompt(ds, r, args.target)["truth"].long(), eo]) for r in rows]
+    out = Path(args.out or f"/data/enric/generations/identity_control_{args.target}") / "slot_masked"
+    C.save(out, args.target, rows, truths,
+           {"note": f"identity control: ground-truth {args.target} tokens fed back in as if generated"},
+           {"synthetic": True, "checkpoint": None, "n_scenes": len(rows)})
+    print(f"identity      : {len(truths)} ground-truth bodies\n  -> {out}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -65,12 +93,16 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--use-cache", action="store_true", help="KV cache (S3.c, unvalidated)")
     ap.add_argument("--slot-masked-only", action="store_true")
+    ap.add_argument("--identity", action="store_true",
+                    help="write ground truth as if generated; no model, no GPU")
     args = ap.parse_args()
 
     ds = TerraMeshTokenDataset(root_dir=ROOT, max_length=1048, modality_order="fixed")
     rows = stratified_rows(args.n_scenes, args.target, ds)
     print(f"target        : {args.target}")
     print(f"scenes        : {len(rows)} held-out rows (corpus-stratified)")
+    if args.identity:
+        return write_identity(args, ds, rows)
     print(f"checkpoint    : {args.checkpoint or 'NONE -- untrained control'}")
 
     model, cfg = C.build_model(args.arm_config, args.checkpoint, device=args.device)

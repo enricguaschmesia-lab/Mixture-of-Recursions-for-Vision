@@ -16,7 +16,7 @@ unverified deliverable:
   W4  per-modality loss in BOTH arms      [Step 5]
   W5  fp16 matches fp32 within tolerance  [Step 2]
   W6  generated ids land in target slot   [Step 6]
-  W7  decode metrics collapse on shuffle  [Step 7]  not yet implemented
+  W7  decode metrics collapse on shuffle  [Step 7]  every artifact under STEP7_ROOT
   W8  arm configs differ only as intended [Step 4]
   W9  resume gives a continuous curve     [Step 0]  covered by
                                                     eo.train.preflight_controls
@@ -746,15 +746,25 @@ def w7_decode_collapse(metrics_path=None) -> bool:
     the metric is not measuring spatial arrangement and no other number in
     Step 7 means anything.
     """
+    # ⚠ EVERY artifact, not the newest. This used to judge only the most
+    # recently written file, so which modality the gate covered depended on
+    # the order the decodes happened to finish in -- and five of six were
+    # never checked. A collapse on LULC says nothing about S1GRD's decoder.
     if metrics_path is None:
-        hits = sorted(STEP7_ROOT.glob("*/metrics_*.json"),
-                      key=lambda p: p.stat().st_mtime, reverse=True)
+        hits = sorted(STEP7_ROOT.glob("*/metrics_*.json"))
         if not hits:
             print(f"    no metrics artifact under {STEP7_ROOT}")
             print(f"    run: python eo/scripts/prepare_decode.py --gen-dir <gen>/slot_masked")
             print(f"    then (in the `mor` env): python eo/scripts/decode_eo.py --decode-dir <gen>/slot_masked")
             return False
-        metrics_path = hits[0]
+        results = [_w7_one(h) for h in hits]
+        print(f"    {sum(results)}/{len(results)} artifacts pass")
+        return all(results)
+    return _w7_one(metrics_path)
+
+
+def _w7_one(metrics_path) -> bool:
+    """W7 and both of its controls on one metrics artifact."""
     doc = json.loads(Path(metrics_path).read_text())
     print(f"    artifact: {metrics_path}")
 
@@ -768,6 +778,10 @@ def w7_decode_collapse(metrics_path=None) -> bool:
         print(f"    (headline {head}: ceiling {summ['ceiling'].get(head)} | "
               f"generated {summ['generated'].get(head)} | shuffled {summ['shuffled'].get(head)}"
               f" -- reported, not gated on)")
+    pr = doc.get("w7_paired")
+    if pr:
+        print(f"    (paired over {pr['n']} in-range scenes: shuffle worse on "
+              f"{pr['win']} of them, d {pr['d']} -- reported, not gated on)")
     rep = doc.get("provenance", {}).get("manifest", {}).get("repair", {})
     if rep:
         print(f"    (generated grid was {100 * rep.get('repaired_fraction', 0):.2f}% repaired)")

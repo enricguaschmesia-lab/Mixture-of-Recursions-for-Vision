@@ -70,10 +70,18 @@ import torch  # noqa: E402
 import matplotlib  # noqa: E402
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from scipy.ndimage import uniform_filter  # noqa: E402
 
 from terramesh_tok import contract as C, io as tio, preprocess as P, tokenizers as T  # noqa: E402
 
 VAL = pathlib.Path(os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val"))
+
+#: Multilook window, in pixels, for the continuous headline metric `rmse_z_ml7`.
+#: FIXED 2026-09-24, before any arm-B number existed. Chosen on the identity
+#: controls (eo/experiments/s1_metric_test.py, 64 scenes/modality), so it is
+#: not blind: 5 and 7 are the conventional SAR multilook sizes and 7 sat near
+#: the best of those tried. Do not retune it once arm B has produced numbers.
+ML_WINDOW = 7
 SOURCES = ("ceiling", "generated", "shuffled")
 
 
@@ -188,13 +196,47 @@ def lulc_metrics(pred_cls: np.ndarray, true_cls: np.ndarray) -> dict:
             "n_classes_true": int(len(np.unique(true_cls)))}
 
 
-def continuous_metrics(recon_phys: np.ndarray, ref: np.ndarray) -> dict:
-    """RMSE in physical units on channel 0, matching verify_step5."""
+def continuous_metrics(recon_std: np.ndarray, recon_phys: np.ndarray,
+                       ref: np.ndarray, mod: str) -> dict:
+    """Three RMSEs: channel-0 physical, all-channel standardized, and multilooked.
+
+    `rmse` (channel 0, physical) matches verify_step5 and is what W7 and the
+    Step 7 tables were built on. It is kept, but it is a poor headline for the
+    multi-band modalities: S2L2A's channel 0 is B01, the 60 m coastal-aerosol
+    band -- upsampled, smooth, and the band least able to show spatial error --
+    and S1's is VV alone. `rmse_z` scores every channel in the standardized
+    space the tokenizer sees (V1_TOK_MEAN/STD), so one number covers all bands
+    with equal weight and the five modalities land on a common scale.
+
+    `rmse_z_ml7` is `rmse_z` after a ML_WINDOW x ML_WINDOW box filter on both
+    images -- the standard SAR multilook -- and it is the continuous HEADLINE
+    and W7 metric. ⚠ Measured 2026-09-24: on unfiltered pixels S1RTC's
+    shuffle control collapses only 1.20x (1.15x on channel-0 `rmse`), failing
+    W7, because per-pixel error against raw SAR is dominated by speckle that no
+    token arrangement can reproduce. Multilooked it collapses 1.46x, S1GRD
+    1.85x, and DEM is unchanged (6.8x -> 7.0x). The model chooses one token per
+    16 px patch; detail finer than that is the decoder's, so smoothing below
+    the token scale removes decoder noise and speckle, not model signal.
+    NaN pixels are filled with the mean (0 in z, = contract.NAN_POLICY) so the
+    filter can run, then excluded from the error.
+    """
+    out = {}
     r0, c0 = ref[0], recon_phys[0]
     valid = ~np.isnan(r0)
-    if not valid.any():
-        return {"rmse": None}
-    return {"rmse": round(float(np.sqrt(np.mean((r0[valid] - c0[valid]) ** 2))), 4)}
+    out["rmse"] = (round(float(np.sqrt(np.mean((r0[valid] - c0[valid]) ** 2))), 4)
+                   if valid.any() else None)
+    mean = np.array(C.V1_TOK_MEAN[mod], dtype=np.float32)[:, None, None]
+    std = np.array(C.V1_TOK_STD[mod], dtype=np.float32)[:, None, None]
+    ref_z = (ref - mean) / std
+    ok = ~np.isnan(ref_z)
+    out["rmse_z"] = (round(float(np.sqrt(np.mean((ref_z[ok] - recon_std[ok]) ** 2))), 4)
+                     if ok.any() else None)
+    win = (1, ML_WINDOW, ML_WINDOW)
+    ref_ml = uniform_filter(np.where(ok, ref_z, 0.0), size=win)
+    rec_ml = uniform_filter(recon_std, size=win)
+    out["rmse_z_ml7"] = (round(float(np.sqrt(np.mean((ref_ml[ok] - rec_ml[ok]) ** 2))), 4)
+                         if ok.any() else None)
+    return out
 
 
 # ---------------------------------------------------------------- main
@@ -279,7 +321,8 @@ def main() -> int:
                 m = lulc_metrics(out[i].argmax(0).numpy(), ref[0].astype(np.int64))
             else:
                 m = continuous_metrics(
-                    P.destandardize(out[i], target).numpy(), ref.astype(np.float32))
+                    out[i].numpy(), P.destandardize(out[i], target).numpy(),
+                    ref.astype(np.float32), target)
             m.update(row=int(rows[i]), z=zs[i], in_range=bool(in_range[i]),
                      valid_fraction=round(float(valid[i].mean()), 4))
             per_scene[name].append(m)
@@ -289,7 +332,7 @@ def main() -> int:
         rs = per_scene[name]
         keep = [r for r in rs if r["in_range"]]
         out = {"n_scenes": len(rs), "n_in_range": len(keep)}
-        for key in ("pixel_acc", "miou", "rmse"):
+        for key in ("pixel_acc", "miou", "rmse", "rmse_z", "rmse_z_ml7"):
             vals = [r[key] for r in keep if r.get(key) is not None]
             allv = [r[key] for r in rs if r.get(key) is not None]
             if allv:
@@ -298,7 +341,7 @@ def main() -> int:
         return out
 
     summary = {s: agg(s) for s in SOURCES}
-    key = "pixel_acc" if target == "LULC" else "rmse"
+    key = "pixel_acc" if target == "LULC" else "rmse_z_ml7"
 
     # ⚠ THE HEADLINE METRIC AND THE CONTROL METRIC ARE NOT THE SAME ONE, and
     # this is a measurement, not a preference. Measured on the identity control
@@ -313,7 +356,7 @@ def main() -> int:
     # glance) but mIoU is what W7 gates on. Gating on pixel accuracy would
     # have made the control unfalsifiable: a metric with a 0.82 floor and a
     # 1.0 ceiling cannot collapse by any meaningful margin.
-    collapse_key = "miou" if target == "LULC" else "rmse"
+    collapse_key = "miou" if target == "LULC" else "rmse_z_ml7"
     better = max if collapse_key in ("pixel_acc", "miou") else min
 
     print()
@@ -322,16 +365,33 @@ def main() -> int:
         v = summary[s].get(key)
         print(f"{s:11s} {summary[s]['n_scenes']:4d} {summary[s]['n_in_range']:9d}  "
               f"{v if v is not None else 'n/a'}"
-              + (f"   miou {summary[s].get('miou')}" if target == "LULC" else ""))
+              + (f"   miou {summary[s].get('miou')}" if target == "LULC"
+                 else f"   rmse_z {summary[s].get('rmse_z')}   rmse(ch0) {summary[s].get('rmse')}"))
 
     # W7: the control has to collapse, or the metric is not measuring structure
     c, sh = summary["ceiling"].get(collapse_key), summary["shuffled"].get(collapse_key)
     collapsed = (c is not None and sh is not None and better(c, sh) == c and c != sh)
     ratio = (c / sh if better is max else sh / c) if (c and sh) else None
+
+    # The ratio alone under-reads a modality with a high irreducible floor:
+    # S1RTC's shuffle is worse on EVERY scene yet the mean ratio is small. So
+    # the paired per-scene view is recorded beside it -- win = share of
+    # in-range scenes where the shuffle scores worse, d = mean gap / its SD.
+    pairs = [(a[collapse_key], b[collapse_key])
+             for a, b in zip(per_scene["ceiling"], per_scene["shuffled"])
+             if a["in_range"] and a.get(collapse_key) is not None
+             and b.get(collapse_key) is not None]
+    gaps = np.array([(a - b) if better is max else (b - a) for a, b in pairs])
+    paired = {"n": len(gaps),
+              "win": round(float((gaps > 0).mean()), 4) if len(gaps) else None,
+              "d": (round(float(gaps.mean() / gaps.std(ddof=1)), 3)
+                    if len(gaps) > 1 and gaps.std(ddof=1) > 0 else None)}
     print()
     print(f"W7 control: shuffled {collapse_key} "
           f"{'COLLAPSES' if collapsed else 'DOES NOT COLLAPSE'} against the ceiling "
           f"({sh} vs {c}" + (f", {ratio:.2f}x)" if ratio else ")"))
+    print(f"            paired over {paired['n']} in-range scenes: "
+          f"win {paired['win']}  d {paired['d']}")
     if target == "LULC":
         print(f"            (pixel_acc moves only "
               f"{summary['shuffled'].get('pixel_acc')} -> {summary['ceiling'].get('pixel_acc')}; "
@@ -384,6 +444,8 @@ def main() -> int:
         "collapse_higher_is_better": better is max,
         "summary": summary,
         "w7_shuffled_collapses": bool(collapsed),
+        "w7_paired": paired,
+        "ml_window": ML_WINDOW,
         "z_threshold": args.z_threshold,
         "per_scene": per_scene,
         "figure": str(fig_path),
