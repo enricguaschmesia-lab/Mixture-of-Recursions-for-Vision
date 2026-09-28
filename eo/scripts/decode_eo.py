@@ -414,8 +414,14 @@ def main() -> int:
         else:
             panels = [ref[0].astype(np.float32)] + [
                 P.destandardize(decoded[s][i], target).numpy()[0] for s in SOURCES]
-            vmax = float(np.nanpercentile(np.abs(panels[0]), 98))
-            kw = dict(cmap="viridis", vmin=None, vmax=vmax)
+            # Every panel on the REFERENCE's scale, both ends fixed. vmin used to
+            # be left to autoscale per panel, so a generation far outside the
+            # reference's range (DEM hundreds of metres off, first seen on arm
+            # A's checkpoint-16500) gave vmin > vmax, matplotlib raised, and the
+            # metrics artifact -- written after the figure -- was lost.
+            vmin = float(np.nanpercentile(panels[0], 2))
+            vmax = max(float(np.nanpercentile(panels[0], 98)), vmin + 1e-6)
+            kw = dict(cmap="viridis", vmin=vmin, vmax=vmax)
         for j, (im, title) in enumerate(zip(panels, cols)):
             ax = axes[i][j]
             ax.imshow(im, **kw)
