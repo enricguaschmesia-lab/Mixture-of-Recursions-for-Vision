@@ -18,8 +18,12 @@ unverified deliverable:
   W6  generated ids land in target slot   [Step 6]
   W7  decode metrics collapse on shuffle  [Step 7]  every artifact under STEP7_ROOT
   W8  arm configs differ only as intended [Step 4]
+  W8' ...and the same for A10 / B10       [Step 11]
   W9  resume gives a continuous curve     [Step 0]  covered by
                                                     eo.train.preflight_controls
+  W10 depth is content-driven             [Step 8]  reads the Step 8 artifact
+  W11 10-epoch arms change only budget    [Step 11] plus the LR schedule,
+                                                    anchored on arm A's run
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -605,6 +609,25 @@ ARM_MUST_MATCH = [
 ARM_A = "eo_terramesh/arm_a_mor"
 ARM_B = "eo_terramesh/arm_b_vanilla"
 
+#: The 10-epoch arms (Step 11, Meeting 4): thin overlays on the two above.
+ARM_A10 = "eo_terramesh/arm_a10_mor"
+ARM_B10 = "eo_terramesh/arm_b10_vanilla"
+
+#: The ONLY keys a 10-epoch arm may differ from its 50-epoch parent in. A10
+#: against arm A at the same step is read as "what the schedule alone does"
+#: (plan Step 11.4), which holds only if nothing but budget and cadence moved.
+BUDGET_DIFF_KEYS = {
+    "num_train_steps", "stop_steps", "num_warmup_steps",
+    "lr_scheduler_kwargs.num_decay_steps", "save_steps", "eval_steps",
+}
+
+#: The plan's A10/B10 schedule (Step 11.1), in optimizer steps.
+A10_TOTAL, A10_WARMUP_END, A10_DECAY_START = 3300, 165, 2970
+
+#: Arm A's finished 50-epoch run. Its logged learning rates anchor W11's
+#: schedule computation to what the trainer actually applied.
+ARM_A_RUN = Path("/data/enric/runs/pretrain/phase3/mor_20260923_140238")
+
 
 def w6_generation_slots(target: str = "LULC", n_scenes: int = 2,
                         max_new_tokens: int = 24) -> bool:
@@ -969,7 +992,7 @@ def _arm_diff(a, b):
     return {k for k in set(fa) | set(fb) if fa.get(k, "<absent>") != fb.get(k, "<absent>")}
 
 
-def w8_arm_configs() -> bool:
+def w8_arm_configs(arm_a: str = ARM_A, arm_b: str = ARM_B) -> bool:
     """The two arm configs differ in exactly the intended keys.
 
     ⚠ This is the check that stops the comparison being confounded before it
@@ -979,7 +1002,8 @@ def w8_arm_configs() -> bool:
     Plan 2 call meaningless, and none of those would fail loudly at runtime.
     Two W&B pages side by side will not reveal it either.
     """
-    a, b = _compose(ARM_A), _compose(ARM_B)
+    a, b = _compose(arm_a), _compose(arm_b)
+    print(f"    {arm_a}  vs  {arm_b}")
 
     diff = _arm_diff(a, b)
     ok = diff == ARM_DIFF_KEYS
@@ -998,23 +1022,171 @@ def w8_arm_configs() -> bool:
     print(f"    all {len(ARM_MUST_MATCH)} load-bearing keys identical  = {match_ok}")
 
     # CONTROL 1: a stray difference anywhere must be caught.
-    c1 = _arm_diff(a, _compose(ARM_B, ["learning_rate=0.001"])) != ARM_DIFF_KEYS
+    c1 = _arm_diff(a, _compose(arm_b, ["learning_rate=0.001"])) != ARM_DIFF_KEYS
     print(f"    control: a stray learning_rate difference is caught = {c1}")
 
     # CONTROL 2: pointing the arms at DIFFERENT eval splits must be caught.
     # This is the one that would silently score the arms on different held-out
     # rows, and nothing downstream could detect it.
-    b_split = _compose(ARM_B, ["multimodal.eval_split=v2"])
+    b_split = _compose(arm_b, ["multimodal.eval_split=v2"])
     c2 = _flat(b_split)["multimodal.eval_split"] != fa["multimodal.eval_split"] and \
         _arm_diff(a, b_split) != ARM_DIFF_KEYS
     print(f"    control: different eval_split per arm is caught     = {c2}")
 
     # CONTROL 3: a different seed must be caught -- it is the quietest of the
     # three, since both runs still look entirely normal.
-    c3 = _arm_diff(a, _compose(ARM_B, ["seed=7"])) != ARM_DIFF_KEYS
+    c3 = _arm_diff(a, _compose(arm_b, ["seed=7"])) != ARM_DIFF_KEYS
     print(f"    control: a different seed per arm is caught         = {c3}")
 
     return bool(ok and match_ok and c1 and c2 and c3)
+
+
+def w8p_arm10_configs() -> bool:
+    """W8 for the 10-epoch pair: A10 and B10 differ in exactly the arm keys."""
+    return w8_arm_configs(ARM_A10, ARM_B10)
+
+
+def _lr_schedule(cfg, steps):
+    """The learning rate after `s` scheduler steps, for each `s` in `steps`.
+
+    Built the way HF's `Trainer.create_scheduler` builds it -- `get_scheduler`
+    with the config's type, warmup, `max_steps` and `lr_scheduler_kwargs` --
+    so this is the schedule the run will use, not one re-derived by hand.
+    """
+    import torch
+    from transformers import get_scheduler
+
+    f = _flat(cfg)
+    base = float(f["learning_rate"])
+    opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=base)
+    kwargs = {k.split(".", 1)[1]: v for k, v in f.items()
+              if k.startswith("lr_scheduler_kwargs.")}
+    sched = get_scheduler(f["lr_scheduler_type"], opt,
+                          num_warmup_steps=int(f["num_warmup_steps"]),
+                          num_training_steps=int(f["num_train_steps"]),
+                          scheduler_specific_kwargs=kwargs)
+    lam = sched.lr_lambdas[0]
+    return {int(s): base * lam(int(s)) for s in steps}
+
+
+def _reproduces_logged_lr(cfg, log, max_lag: int = 20):
+    """Does `cfg`'s schedule reproduce a run's logged learning rates?
+
+    `MoRTrainer` logs `get_last_lr()` after stepping, so at global step g it
+    logs lr(g - k), where k counts the optimizer steps fp16's GradScaler has
+    SKIPPED so far: HF steps the scheduler only when the optimizer ran. k is
+    small and never decreases. Returns (ok, largest lag seen).
+    """
+    sched = _lr_schedule(cfg, range(0, max(g for g, _ in log) + 1))
+    worst, prev = 0, 0
+    for g, logged in log:
+        lags = [k for k in range(prev, max_lag + 1)
+                if g - k >= 0 and abs(sched[g - k] - logged) <= 1e-12 + 1e-9 * logged]
+        if not lags:
+            return False, None
+        # In the stable phase every lag matches; keep the smallest consistent one.
+        prev = lags[0]
+        worst = max(worst, prev)
+    return True, worst
+
+
+def _a10_schedule_ok(cfg) -> bool:
+    """The resolved schedule is the plan's: warmup to 165, flat to 2,970,
+    linear anneal to zero at 3,300 (plan Step 11.1)."""
+    f = _flat(cfg)
+    peak = float(f["learning_rate"])
+    lr = _lr_schedule(cfg, range(0, A10_TOTAL + 1))
+    tol = 1e-12
+    checks = {
+        "lr(0) = 0": abs(lr[0]) <= tol,
+        f"lr({A10_WARMUP_END}) = peak": abs(lr[A10_WARMUP_END] - peak) <= tol,
+        f"lr({A10_WARMUP_END - 1}) < peak": lr[A10_WARMUP_END - 1] < peak - tol,
+        f"lr({A10_DECAY_START}) = peak": abs(lr[A10_DECAY_START] - peak) <= tol,
+        f"lr({A10_DECAY_START + 1}) < peak": lr[A10_DECAY_START + 1] < peak - tol,
+        "anneal midpoint = peak/2": abs(lr[(A10_DECAY_START + A10_TOTAL) // 2] - peak / 2) <= tol,
+        f"lr({A10_TOTAL}) = 0": abs(lr[A10_TOTAL]) <= tol,
+        "flat between warmup and anneal": all(abs(lr[s] - peak) <= tol for s in
+                                              range(A10_WARMUP_END, A10_DECAY_START + 1)),
+    }
+    for name, ok in checks.items():
+        if not ok:
+            print(f"      schedule: {name} FAILS")
+    return all(checks.values())
+
+
+def w11_budget_only() -> bool:
+    """Each 10-epoch arm differs from its 50-epoch parent in exactly the budget
+    and cadence keys, and the schedule they resolve to is the plan's (Step 11).
+
+    ⚠ Why both halves. The key diff proves the overlays changed nothing BUT
+    the budget -- a stray LR or seed would be invisible in W&B and would turn
+    "the same recipe, shorter" into a comparison of two recipes. It cannot
+    prove the budget itself is right: that is the schedule check, and the
+    schedule check is anchored on arm A's real logged learning rates so that
+    it computes what the trainer applies rather than what we think it applies.
+    """
+    import json
+    from eo.data.eval_split import load_eval_rows
+
+    ok = True
+    for parent, child in ((ARM_A, ARM_A10), (ARM_B, ARM_B10)):
+        diff = _arm_diff(_compose(parent), _compose(child))
+        pair_ok = diff == BUDGET_DIFF_KEYS
+        print(f"    {child} vs {parent}: differs in exactly the budget keys = {pair_ok}")
+        if not pair_ok:
+            print(f"      measured: {sorted(diff)}")
+        ok &= pair_ok
+
+    a10, b10 = _compose(ARM_A10), _compose(ARM_B10)
+    f = _flat(a10)
+    train_rows = 89088 - len(load_eval_rows(root_dir=ROOT, verify_inputs=False))
+    epochs = f["num_train_steps"] * f["total_batch_size"] / train_rows
+    cadence = {
+        "stop_steps == num_train_steps": f["stop_steps"] == f["num_train_steps"],
+        "save_steps is a multiple of eval_steps": f["save_steps"] % f["eval_steps"] == 0,
+        "num_train_steps is a multiple of save_steps": f["num_train_steps"] % f["save_steps"] == 0,
+        "the anneal starts on a checkpoint":
+            (f["num_train_steps"] - f["lr_scheduler_kwargs.num_decay_steps"]) % f["save_steps"] == 0,
+        f"budget is ~10 epochs ({epochs:.3f})": 9.9 <= epochs <= 10.1,
+    }
+    for name, c in cadence.items():
+        print(f"    {name} = {c}")
+    ok &= all(cadence.values())
+
+    # The schedule computation must first reproduce a REAL run, or it is only
+    # checking HF against itself.
+    state = json.loads((ARM_A_RUN / "trainer_state.json").read_text())
+    log = [(h["step"], h["learning_rate"]) for h in state["log_history"]
+           if "learning_rate" in h]
+    anchor, lag = _reproduces_logged_lr(_compose(ARM_A), log)
+    print(f"    schedule computation reproduces arm A's {len(log)} logged LRs = {anchor}"
+          f"  (scheduler lag from skipped fp16 steps: {lag})")
+    ok &= anchor
+
+    s_a = _a10_schedule_ok(a10)
+    print(f"    A10 schedule: 0 -> peak at {A10_WARMUP_END}, flat to {A10_DECAY_START}, "
+          f"0 at {A10_TOTAL} = {s_a}")
+    steps = range(0, A10_TOTAL + 1)
+    same = _lr_schedule(a10, steps) == _lr_schedule(b10, steps)
+    print(f"    B10 schedule identical to A10 at every step = {same}")
+    ok &= s_a and same
+
+    # CONTROL 1: an LR change in an overlay must be caught.
+    c1 = _arm_diff(_compose(ARM_A), _compose(ARM_A10, ["learning_rate=0.001"])) != BUDGET_DIFF_KEYS
+    print(f"    control: a stray learning_rate in the overlay is caught = {c1}")
+    # CONTROL 2: an overlay that silently kept a 50-epoch value must be caught.
+    c2 = _arm_diff(_compose(ARM_A), _compose(ARM_A10, ["eval_steps=500"])) != BUDGET_DIFF_KEYS
+    print(f"    control: an overlay that kept a 50-epoch key is caught  = {c2}")
+    # CONTROL 3: the anchor must reject a schedule the run did not use.
+    wrong, _ = _reproduces_logged_lr(
+        _compose(ARM_A, ["lr_scheduler_kwargs.num_decay_steps=1600"]), log)
+    c3 = not wrong
+    print(f"    control: a wrong decay length does not reproduce arm A  = {c3}")
+    # CONTROL 4: the schedule check must reject an anneal of the wrong length.
+    c4 = not _a10_schedule_ok(_compose(ARM_A10, ["lr_scheduler_kwargs.num_decay_steps=165"]))
+    print(f"    control: a 165-step anneal fails the schedule check     = {c4}")
+
+    return bool(ok and c1 and c2 and c3 and c4)
 
 
 def main() -> int:
@@ -1031,6 +1203,8 @@ def main() -> int:
         ("W1   train n eval disjoint at group level [Step 1]", w1_group_disjoint),
         ("W2   eval covers every modality, S1GRD    [Step 1]", w2_eval_covers_modalities),
         ("W8   arm configs differ only as intended [Step 4]", w8_arm_configs),
+        ("W8'  A10/B10 configs differ only as intended [Step 11]", w8p_arm10_configs),
+        ("W11  10-epoch arms change only the budget [Step 11]", w11_budget_only),
         ("W7   decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]

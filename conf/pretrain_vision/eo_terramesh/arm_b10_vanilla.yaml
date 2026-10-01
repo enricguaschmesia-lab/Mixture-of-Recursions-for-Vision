@@ -1,0 +1,35 @@
+# @package _global_
+#
+# ARM B10 — arm B (vanilla) retrained at 10 epochs.  Phase 3 Step 11, D3.12.
+#
+# The 10-epoch counterpart of arm_b_vanilla, exactly as arm_a10_mor is of
+# arm_a_mor. The budget and cadence below are restated rather than shared
+# through a common file so that `diff arm_a10_mor.yaml arm_b10_vanilla.yaml`
+# stays the complete answer to "how do the 10-epoch arms differ" -- the
+# parent named in `defaults`, nothing else. Reasoning, arithmetic and cadence:
+# arm_a10_mor.yaml.
+#
+# ┌── THE DIFF FROM ARM B (arm_b_vanilla), IN FULL ─────────────────────┐
+# │                            arm B (50 ep)   B10 (this)               │
+# │   num_train_steps             16500           3300                  │
+# │   stop_steps                  16500           3300                  │
+# │   num_warmup_steps              825            165   (5%)           │
+# │   num_decay_steps              1650            330   (10%)          │
+# │   save_steps                   2000            330   (~1 epoch)     │
+# │   eval_steps                    500            165   (2 per epoch)  │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+#   launch:  bash eo/scripts/train_eo.sh --arm vanilla10 \
+#                --config eo_terramesh/arm_b10_vanilla --detach
+
+defaults:
+  - arm_b_vanilla
+  - _self_
+
+num_train_steps: 3300
+stop_steps: 3300
+num_warmup_steps: 165
+lr_scheduler_kwargs:
+  num_decay_steps: 330
+save_steps: 330
+eval_steps: 165

@@ -1,0 +1,50 @@
+# @package _global_
+#
+# ARM A10 — arm A (MoR) retrained at 10 epochs.  Phase 3 Step 11, D3.12.
+#
+# ┌── THE DIFF FROM ARM A (arm_a_mor), IN FULL ─────────────────────────┐
+# │                            arm A (50 ep)   A10 (this)               │
+# │   num_train_steps             16500           3300                  │
+# │   stop_steps                  16500           3300                  │
+# │   num_warmup_steps              825            165   (5%)           │
+# │   num_decay_steps              1650            330   (10%)          │
+# │   save_steps                   2000            330   (~1 epoch)     │
+# │   eval_steps                    500            165   (2 per epoch)  │
+# │ Nothing else. W11 in eo/scripts/verify_phase3.py asserts the        │
+# │ RESOLVED configs differ in exactly these keys, and W8' that A10 and │
+# │ B10 differ in exactly recursive.enable / mor.enable.                │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# WHY (Meeting 4, 2026-09-30). Both 50-epoch arms reached their held-out
+# optimum at epoch 7.6 and memorized for the remaining 42; arm A's anneal
+# RAISED held-out loss by 0.35. No checkpoint exists near the optimum
+# (save_steps 2000 put checkpoint-2000 at epoch 6.05), and neither existing
+# checkpoint is annealed there. So: the same recipe, shorter.
+#
+#   3,300 x 256 = 844,800 samples = 9.98 epochs of the 84,672 training rows
+#   warmup 0 -> 165, stable to 2,970 (epoch 9.0), linear anneal 2,970 -> 3,300
+#
+# CADENCE. 330 steps is 0.998 of an epoch (84,672 / 256 = 330.75), so the
+# ten checkpoints sit at almost the same epoch phase, drifting 7.5 steps over
+# the whole run. checkpoint-2970 is the last stable-phase point and
+# checkpoint-3300 the annealed one: the pair measures what the anneal does.
+# eval_steps 165 is two passes per epoch (~4% of wall clock), so the +-0.07
+# epoch-phase swing in held-out loss shows up inside the run.
+#
+# ⚠ Do NOT express this budget as CLI overrides (plan Step 4.d): the config
+#   that produced a checkpoint has to be readable six weeks later.
+#
+#   launch:  bash eo/scripts/train_eo.sh --arm mor10 \
+#                --config eo_terramesh/arm_a10_mor --detach
+
+defaults:
+  - arm_a_mor
+  - _self_
+
+num_train_steps: 3300
+stop_steps: 3300
+num_warmup_steps: 165
+lr_scheduler_kwargs:
+  num_decay_steps: 330
+save_steps: 330
+eval_steps: 165

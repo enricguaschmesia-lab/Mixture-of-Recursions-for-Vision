@@ -67,12 +67,15 @@ if [[ $RESUME -eq 1 && -z "$RUN_ID" ]]; then
 fi
 
 # --- 1. .env, without overriding anything already exported -------------------
+# Every key named here is handed to a detached run explicitly (step 5).
+ENV_KEYS=(MOR_SAVE_DIR TERRAMESH_TOK_ROOT HF_HOME WANDB_ENTITY WANDB_PROJECT WANDB_MODE WANDB_DIR)
 if [[ -f "$REPO/.env" ]]; then
   while IFS= read -r line; do
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
     [[ "$line" =~ ^[[:space:]]*$ ]] && continue
     [[ "$line" != *"="* ]] && continue
     key="${line%%=*}"; key="${key// /}"
+    ENV_KEYS+=("$key")
     [[ -n "${!key:-}" ]] && continue          # shell wins over .env
     export "${key}=${line#*=}"
   done < "$REPO/.env"
@@ -143,9 +146,22 @@ if [[ $DETACH -eq 1 ]]; then
   # Doing it here means nobody has to remember it.
   mkdir -p "$LOG_DIR"
   command -v tmux >/dev/null || { echo "ERROR: tmux not installed." >&2; exit 2; }
-  tmux has-session -t "$RUN_ID" 2>/dev/null && {
+  # `=` matches the name exactly; a bare -t matches by PREFIX.
+  tmux has-session -t "=$RUN_ID" 2>/dev/null && {
     echo "ERROR: tmux session '$RUN_ID' already exists." >&2; exit 2; }
-  tmux new -d -s "$RUN_ID" \
+  # ⚠ Hand the environment over EXPLICITLY. A detached session gets the tmux
+  #   SERVER's environment, not this shell's, so when a server is already
+  #   running (any other session open) the CUDA_VISIBLE_DEVICES resolved above
+  #   and every .env value are silently replaced by whatever that server was
+  #   started with: preflight validates one GPU and the run lands on another.
+  #   Measured 2026-10-01 -- a variable exported before `tmux new -d` read back
+  #   unset inside the session; arms A and B were right only because each
+  #   launch happened to start a fresh server.
+  TMUX_ENV=(-e "CUDA_DEVICE_ORDER=$CUDA_DEVICE_ORDER" -e "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES")
+  for key in $(printf '%s\n' "${ENV_KEYS[@]}" | sort -u); do
+    [[ -n "${!key+set}" ]] && TMUX_ENV+=(-e "$key=${!key}")
+  done
+  tmux new -d -s "$RUN_ID" "${TMUX_ENV[@]}" \
     "cd '$REPO' && $(printf '%q ' "${CMD[@]}") 2>&1 | tee '$LOG_FILE'"
   echo "detached into tmux session '$RUN_ID'"
   echo "  follow : tail -f $LOG_FILE"
