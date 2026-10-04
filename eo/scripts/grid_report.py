@@ -36,10 +36,15 @@ independent and make the band too narrow.
 BUILT-IN CHECKS (12.1, paired), every arm, headline checkpoint. They test the
 wiring, not a hypothesis: if one fails, debug before reading anything else.
   1. S2L2A -> NDVI has the most negative mean gain among NDVI's one-to-one cells.
-  2. No one-to-one cell's gain CI lies entirely above 0.
-     ⚠ That is 34 tests at 95%: a source that truly does not help still has a 2.5%
-     chance per cell of a CI above 0. A Bonferroni reading (alpha 0.05/34) is
-     printed beside the verdict and reported only; the verdict is the plan's rule.
+  2. No one-to-one cell is worse than ∅ by more than δ = 0.01 nats/token: no cell's
+     gain CI has its lower bound above δ (amended 2026-10-04 23:06, Enric, before
+     any A10/B10 grid number existed). The significance-only rule (CI above 0)
+     already failed on the 32-row test grid on Coords -> S1GRD at +0.0025, and at
+     the full row lists, over 34 cells per arm, it would fire on effects that
+     cannot matter. That reading, and its Bonferroni variant (alpha 0.05/34), are
+     still printed: reported only, and a cell above 0 is a finding, not a bug.
+     δ's control is eo/experiments/s12_wrong_scene.py: what a wrong-scene source
+     (a real wiring bug) costs against ∅.
 Exit status 1 if a check fails (after every output is written).
 
 Runs in `.venv`.
@@ -286,7 +291,8 @@ def fig_grid(R, names, out):
     XD = _matrix(ROWS, lambda k: float(R["paired"][k]["excludes_0"]) if k in R["paired"] else None) == 1
     gr = ROWS[:-1]
     MG = {n: _matrix(gr, lambda k, n=n: ce[n].get(k, {}).get("gain", {}).get("mean")) for n in names}
-    XG = {n: _matrix(gr, lambda k, n=n: float(ce[n][k]["gain"]["lo"] > 0)
+    dl = R["checks"][A]["check2"]["margin"]
+    XG = {n: _matrix(gr, lambda k, n=n: float(ce[n][k]["gain"]["lo"] > dl)
                      if "gain" in ce[n].get(k, {}) else None) == 1 for n in names}
 
     fig, axs = plt.subplots(2, 3, figsize=(18, 11), layout="constrained")
@@ -321,7 +327,7 @@ def fig_grid(R, names, out):
              "¹ S1GRD cells: ssl4eos12 rows only.  ² S1RTC: majortom only.",
              "  Within a column, read the gain panels, not raw CE.",
              "Hatched: diagonal, or no row carries both S1GRD and S1RTC.",
-             "Dashed outline: gain CI entirely above 0 (check 2 fails).",
+             f"Dashed outline: gain CI entirely above δ = {dl} (check 2 fails).",
              "",
              "⚠ S1GRD is on 9.8% of rows and overfits first; Coords",
              "  is 3 tokens per scene and memorizes.",
@@ -336,8 +342,8 @@ def fig_grid(R, names, out):
         lines.append(f"  {n}: 1 {'PASS' if c['check1']['pass'] else 'FAIL'}"
                      f"  (best NDVI source: {c['check1']['best']})")
         lines.append(f"  {n}: 2 {'PASS' if c['check2']['pass'] else 'FAIL'}"
-                     f"  ({len(c['check2']['worse'])} of 34 above 0; "
-                     f"Bonferroni: {len(c['check2']['worse_bonf'])})")
+                     f"  ({len(c['check2']['worse'])} of 34 above δ; "
+                     f"{len(c['check2']['above_0'])} above 0, reported only)")
     ax.text(0, 1, "\n".join(lines), va="top", ha="left", fontsize=8.5, color=INK_2,
             family="DejaVu Sans", transform=ax.transAxes)
     _title(fig, f"D3.13 — Any-to-any: teacher-forced CE of the target given one source ({ck})",
@@ -560,6 +566,8 @@ def main() -> int:
     ap.add_argument("--eval-root", default="/data/enric/reports/arm_eval")
     ap.add_argument("--n-boot", type=int, default=10_000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--check2-margin", type=float, default=0.01,
+                    help="δ, nats/token (plan 12.1, fixed 2026-10-04 23:06 before any grid number)")
     args = ap.parse_args()
     if len(args.arm) != 2:
         ap.error("exactly two --arm, A then B")
@@ -621,11 +629,13 @@ def main() -> int:
         cells = R["arms"][n]["cells"]
         ndvi = {k: cells[k]["gain"]["mean"] for k in ONE_TO_ONE if k.endswith("->NDVI")}
         best = min(ndvi, key=ndvi.get)
-        worse = [k for k in ONE_TO_ONE if cells[k]["gain"]["lo"] > 0]
-        worse_b = [k for k in ONE_TO_ONE if cells[k]["gain"]["lo_bonf"] > 0]
+        worse = [k for k in ONE_TO_ONE if cells[k]["gain"]["lo"] > args.check2_margin]
+        above0 = [k for k in ONE_TO_ONE if cells[k]["gain"]["lo"] > 0]
+        above0_b = [k for k in ONE_TO_ONE if cells[k]["gain"]["lo_bonf"] > 0]
         R["checks"][n] = {"check1": {"pass": best == "S2L2A->NDVI", "best": best,
                                      "gains_ndvi": dict(sorted(ndvi.items(), key=lambda kv: kv[1]))},
-                          "check2": {"pass": not worse, "worse": worse, "worse_bonf": worse_b}}
+                          "check2": {"pass": not worse, "margin": args.check2_margin, "worse": worse,
+                                     "above_0": above0, "above_0_bonf": above0_b}}
         ok &= best == "S2L2A->NDVI" and not worse
 
     # --- the curve: every checkpoint with a grid in both arms (or one, then no diff)
@@ -696,12 +706,14 @@ def main() -> int:
         say(f"  1. S2L2A->NDVI has the largest gain in the NDVI column: "
             f"{'PASS' if c['check1']['pass'] else 'FAIL'}  "
             + ", ".join(f"{k.split('->')[0]} {v:+.3f}" for k, v in c["check1"]["gains_ndvi"].items()))
-        say(f"  2. no one-to-one cell significantly worse than ∅: "
-            f"{'PASS' if c['check2']['pass'] else 'FAIL'}  worse: {c['check2']['worse'] or 'none'}"
-            f"  (Bonferroni, reported only: {c['check2']['worse_bonf'] or 'none'})")
-        for k in c["check2"]["worse"]:
+        say(f"  2. no one-to-one cell worse than ∅ by more than δ = {c['check2']['margin']}: "
+            f"{'PASS' if c['check2']['pass'] else 'FAIL'}  worse: {c['check2']['worse'] or 'none'}")
+        say(f"     reported only -- CI above 0: {c['check2']['above_0'] or 'none'};"
+            f" Bonferroni, above 0: {c['check2']['above_0_bonf'] or 'none'}")
+        for k in c["check2"]["above_0"]:
             gn = R["arms"][n]["cells"][k]["gain"]
-            say(f"     {k}: gain {gn['mean']:+.4f} [{gn['lo']:+.4f}, {gn['hi']:+.4f}], n {gn['n']}")
+            say(f"     {k}: gain {gn['mean']:+.4f} [{gn['lo']:+.4f}, {gn['hi']:+.4f}], n {gn['n']}"
+                + ("  > δ" if k in c["check2"]["worse"] else ""))
     say(f"\ncurve: pooled mean CE over the 34 one-to-one cells; {A} − {B} [95% CI, scenes resampled]")
     for p in curve:
         d = p.get("diff", {}).get("pooled")
