@@ -276,17 +276,22 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
             valid = lab.ne(-100) & lmod.gt(0)
             safe = lab.clamp_min(0)
             ce = F.cross_entropy(lg.transpose(1, 2), safe, reduction="none")
-            top5 = lg.topk(5, dim=-1).indices
-            c1 = top5[..., 0].eq(safe)
-            c5 = top5.eq(safe.unsqueeze(-1)).any(-1)
+            # ⚠ Rank, NOT torch.topk (2026-10-04). topk over the 87,556-way vocabulary
+            #   DEADLOCKS on the TITAN V: deterministically on random logits, and
+            #   intermittently on model logits (four eval_checkpoint runs hung with the
+            #   card at idle power), while the GTX Titan X runs the same call in 0.06 s.
+            #   Every evaluation hang of 2026-10-04 traced here. A label is top-k iff
+            #   fewer than k logits are STRICTLY above its own -- the same as topk's
+            #   membership except for exact ties at the k-th place (measured in the
+            #   worklog, 2026-10-04).
+            n_above = (lg > lg.gather(-1, safe.unsqueeze(-1))).sum(-1)
+            c1 = n_above.eq(0)
+            c5 = n_above.lt(5)
             lse = torch.logsumexp(lg, -1)
-            # ⚠ Masked arithmetic, NOT boolean-mask indexing (2026-10-04). The
-            #   indexed form (`lg[..., lo:hi][m]`, `slot[m] = ...`, `ce[m]`) launches
-            #   nonzero and index_put kernels and synced the host ~35 times per
-            #   batch; on the TITAN V three evaluation processes hung inside this
-            #   block (host spinning on a sync, card at idle power), while a
-            #   repro of the same pass completed. Same quantities, one sync per
-            #   batch; checked against the indexed form (worklog 2026-10-04).
+            # Masked arithmetic rather than boolean-mask indexing, so the host syncs
+            # once per batch instead of ~35 times (2026-10-04; checked against the
+            # indexed form to <= 3e-8 relative). The evaluation hangs that first
+            # surfaced at a sync in this block were the topk above.
             slot = torch.zeros_like(ce)
             for mid, (lo, hi) in bounds.items():
                 part = torch.exp(torch.logsumexp(lg[..., lo:hi], -1) - lse)
