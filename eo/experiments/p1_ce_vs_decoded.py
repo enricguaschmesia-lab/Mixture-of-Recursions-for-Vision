@@ -295,6 +295,18 @@ def stage_analyze(args):
             p1b = "disagree"
         else:
             p1b = "uninformative"
+        # Reported, never deciding (added after the first run, 2026-10-04): a proper
+        # permutation null for P1b, 1,000 within-scene permutations of CE across the
+        # points. The pre-specified control above is ONE such permutation, so on its
+        # own it excludes 0 by chance ~5% of the time per target (~26% over six); the
+        # null's mean shows whether the statistic is actually biased.
+        prng = np.random.default_rng(7)
+        null = np.empty(1000)
+        for k in range(1000):
+            ce_p = np.stack([col[prng.permutation(len(points))] for col in ce.T], 1)
+            null[k] = float((spearman(ce_p.T, gen.T) * SIGN[T]).mean())
+        perm = {"null_mean": float(null.mean()), "null_sd": float(null.std()),
+                "p_two_sided": float((np.abs(null) >= abs(stat)).mean())}
         # Reported, never deciding: the cross-sectional readouts (biased under strong
         # confounding by scene difficulty; see the docstring).
         xs_partial = float(partial_spearman(ce, gen, ceil).mean()) * SIGN[T]
@@ -308,6 +320,7 @@ def stage_analyze(args):
                     "rho_signed": rho, "null_p95": p95, "verdict": p1a},
             "p1b": {"within_scene_rho_signed": stat, "ci95": [float(lo), float(hi)], "verdict": p1b,
                     "frac_scenes_positive": float((per_scene > 0).mean()),
+                    "permutation_null_reported_only": perm,
                     "shuffle_control": {"stat": sh_stat, "ci95": [float(sh_lo), float(sh_hi)],
                                         "includes_0": control_ok},
                     "reported_only": {"cross_sectional_partial_signed": xs_partial,
@@ -331,7 +344,12 @@ def stage_analyze(args):
           f"{v.count('uninformative')}  | shuffle controls include 0: {controls}")
     print("P1:", "CE STANDS" if result["ce_stands"] else "FALLBACK (>= 3 targets disagree)")
     if not controls:
-        print("⚠ a shuffle control excluded 0: the P1b statistic is biased; do not read its verdicts")
+        print("⚠ a pre-specified shuffle control excluded 0. It is a single permutation, so "
+              "read permutation_null_reported_only: a null mean near 0 means chance, not bias.")
+    for T, t in result["targets"].items():
+        q = t["p1b"]["permutation_null_reported_only"]
+        print(f"  {T:6s} permutation null mean {q['null_mean']:+.4f} sd {q['null_sd']:.3f}  "
+              f"p(two-sided) {q['p_two_sided']:.3f}")
 
 
 def main():
