@@ -280,21 +280,31 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
             c1 = top5[..., 0].eq(safe)
             c5 = top5.eq(safe.unsqueeze(-1)).any(-1)
             lse = torch.logsumexp(lg, -1)
+            # ⚠ Masked arithmetic, NOT boolean-mask indexing (2026-10-04). The
+            #   indexed form (`lg[..., lo:hi][m]`, `slot[m] = ...`, `ce[m]`) launches
+            #   nonzero and index_put kernels and synced the host ~35 times per
+            #   batch; on the TITAN V three evaluation processes hung inside this
+            #   block (host spinning on a sync, card at idle power), while a
+            #   repro of the same pass completed. Same quantities, one sync per
+            #   batch; checked against the indexed form (worklog 2026-10-04).
             slot = torch.zeros_like(ce)
             for mid, (lo, hi) in bounds.items():
-                m = valid & lmod.eq(mid)
-                if m.any():
-                    slot[m] = torch.exp(torch.logsumexp(lg[..., lo:hi][m], -1) - lse[m])
-            for mid, n in names.items():
-                m = valid & lmod.eq(mid)
-                k = int(m.sum())
+                part = torch.exp(torch.logsumexp(lg[..., lo:hi], -1) - lse)
+                slot = torch.where(valid & lmod.eq(mid), part, slot)
+            mid_t = torch.tensor(list(names), device=lmod.device).view(-1, 1, 1)
+            M = (valid.unsqueeze(0) & lmod.unsqueeze(0).eq(mid_t)).double()      # (K, B, L)
+            per = torch.stack([M.sum((1, 2)), (M * ce.double()).sum((1, 2)),
+                               (M * c1.double()).sum((1, 2)), (M * c5.double()).sum((1, 2)),
+                               (M * slot.double()).sum((1, 2))], 1).cpu().numpy()
+            for j, n in enumerate(names.values()):
+                k = int(per[j, 0])
                 if not k:
                     continue
                 a = acc[n]
                 a["n"] += k
-                a["ce"] += float(ce[m].sum()); a["top1"] += int(c1[m].sum())
-                a["top5"] += int(c5[m].sum()); a["slot"] += float(slot[m].sum())
-                a["bm_sum"] += float(ce[m].mean()); a["bm_n"] += 1
+                a["ce"] += float(per[j, 1]); a["top1"] += int(round(per[j, 2]))
+                a["top5"] += int(round(per[j, 3])); a["slot"] += float(per[j, 4])
+                a["bm_sum"] += float(per[j, 1]) / k; a["bm_n"] += 1
             if tid is not None:
                 m = valid & lmod.eq(tid)
                 rows["n"].append(m.sum(1).cpu())
