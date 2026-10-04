@@ -73,10 +73,24 @@ def eval_loader(cfg, num_workers: int = 4, batch_size: int = 4):
 
 
 class TargetLast(torch.utils.data.Dataset):
-    """Rows re-assembled with every other present modality first, `target` last."""
+    """Rows re-assembled with every other present modality first, `target` last.
 
-    def __init__(self, base, rows: Sequence[int], target: str):
+    `sources` (Step 12.0) restricts the context:
+      None   every present non-target modality -- today's target-last pass and
+             D3.11's prompt layout, unchanged (gate W12 holds it token-identical);
+      [S..]  only those, each only if the row carries it, still in registry order;
+      []     the target alone: the grid's unconditional row. In distribution,
+             because training puts a random modality first in every sequence.
+    """
+
+    def __init__(self, base, rows: Sequence[int], target: str,
+                 sources: Optional[Sequence[str]] = None):
         self.base, self.rows, self.target = base, [int(r) for r in rows], target
+        if sources is not None:
+            bad = [s for s in sources if s not in MODALITY_TO_ID or s == target]
+            if bad:
+                raise ValueError(f"sources {bad}: not a modality, or the target itself")
+        self.sources = None if sources is None else set(sources)
 
     def __len__(self):
         return len(self.rows)
@@ -86,13 +100,29 @@ class TargetLast(torch.utils.data.Dataset):
         from lm_dataset.sequence_assembly import assemble_sequence
         row = self.rows[i]
         present = self.base.present_modalities(row)
-        order = [m for m in MODALITIES if m in present and m != self.target] + [self.target]
+        order = [m for m in MODALITIES if m in present and m != self.target
+                 and (self.sources is None or m in self.sources)] + [self.target]
         return assemble_sequence(
             chunks=[self.base._load_chunk(m, row) for m in order],
             chunk_modality_ids=[MODALITY_TO_ID[m] for m in order],
             chunk_shufflable=[m in IMAGE_MODALITIES for m in order],
             max_length=self.base.max_length, pad_id=PAD_ID,
             rng=np.random.default_rng(0), shuffle_image_patches=False)
+
+
+def trim_collate(items):
+    """Stack TargetLast items, then cut the batch to its longest real sequence.
+
+    `assemble_sequence` right-pads every row to `max_length` (1,048), so a
+    one-source grid prompt (~400 tokens) would pay for 1,048. Attention is
+    causal and the padding is trailing, so cutting it changes no real token's
+    logits (up to fp16 kernel selection). Used for the grid's subset cells only;
+    the `sources=None` cell keeps the default collate, so it reproduces the
+    target-last pass exactly.
+    """
+    batch = torch.utils.data.default_collate(items)
+    keep = int(batch["attention_mask"].sum(1).max())
+    return {k: v[:, :keep] for k, v in batch.items()}
 
 
 def stratified_target_rows(base, eval_rows, corpus, target: str, n: int) -> List[int]:
@@ -190,12 +220,20 @@ def _slot_bounds():
 
 @torch.no_grad()
 def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOverride] = None,
-             keep_tokens: bool = True) -> Dict:
+             keep_tokens: bool = True, per_row_target: Optional[str] = None) -> Dict:
     """One teacher-forced pass. Returns per-modality aggregates (+ per-token arrays).
 
     Aggregates are token-weighted. `ce_batch_mean` is the trainer's definition
     (mean over batches of the per-batch mean), reported so the logged
     `eval_loss_<mod>` can be reproduced.
+
+    `per_row_target` (Step 12.0) adds `out["rows"]`, reduced per row inside the
+    loop, so it works with `trim_collate`'s varying lengths, where
+    `keep_tokens` cannot: per row, the number of `per_row_target` tokens
+    predicted, their summed CE and top-1 hits, and (MoR) the depth counts
+    1/2/3 at the positions PREDICTING target tokens (`d_pred`, the frame of
+    `mean_depth_target`), ON target tokens (`d_tgt`) and on every other
+    modality's tokens (`d_src`).
     """
     model.eval()
     mor = [m for m in find_mor_layers(model)]
@@ -218,6 +256,8 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     names = dict(ID_TO_MODALITY)
     acc = {n: dict(n=0, ce=0.0, top1=0, top5=0, slot=0.0, bm_sum=0.0, bm_n=0) for n in names.values()}
     toks = {k: [] for k in ("ce", "correct", "rank_ok5", "label_mod", "input_mod", "depth", "gate", "label")}
+    rows = {k: [] for k in ("n", "ce_sum", "top1", "d_pred", "d_tgt", "d_src")}
+    tid = MODALITY_TO_ID[per_row_target] if per_row_target is not None else None
     try:
         for batch in loader:
             batch = dict(batch)                    # never mutate the caller's batch
@@ -255,6 +295,17 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
                 a["ce"] += float(ce[m].sum()); a["top1"] += int(c1[m].sum())
                 a["top5"] += int(c5[m].sum()); a["slot"] += float(slot[m].sum())
                 a["bm_sum"] += float(ce[m].mean()); a["bm_n"] += 1
+            if tid is not None:
+                m = valid & lmod.eq(tid)
+                rows["n"].append(m.sum(1).cpu())
+                rows["ce_sum"].append((ce * m).sum(1).double().cpu())
+                rows["top1"].append((c1 & m).sum(1).cpu())
+                if mor:
+                    d = grabbed[-1][:, :-1].to(device).long() + 1
+                    imod = mids[:, :-1].to(device)
+                    for key, sel in (("d_pred", m), ("d_tgt", imod.eq(tid)),
+                                     ("d_src", imod.gt(0) & imod.ne(tid))):
+                        rows[key].append(torch.stack([(sel & d.eq(k)).sum(1) for k in (1, 2, 3)], 1).cpu())
             if keep_tokens:
                 toks["ce"].append(torch.where(valid, ce, torch.zeros_like(ce)).half().cpu())
                 toks["correct"].append((c1 & valid).cpu())
@@ -284,4 +335,6 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     out = {"per_modality": per_mod, "ce_all_body_tokens": tot_ce / max(tot_n, 1)}
     if keep_tokens:
         out["tokens"] = {k: torch.cat(v).numpy() for k, v in toks.items() if v}
+    if tid is not None:
+        out["rows"] = {k: torch.cat(v).numpy() for k, v in rows.items() if v}
     return out

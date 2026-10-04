@@ -24,6 +24,8 @@ unverified deliverable:
   W10 depth is content-driven             [Step 8]  reads the Step 8 artifact
   W11 10-epoch arms change only budget    [Step 11] plus the LR schedule,
                                                     anchored on arm A's run
+  W12 sources=None target-last unchanged  [Step 12] P3, token for token; and
+                                                    trim_collate drops only padding
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -1189,6 +1191,84 @@ def w11_budget_only() -> bool:
     return bool(ok and c1 and c2 and c3 and c4)
 
 
+def w12_targetlast_sources() -> bool:
+    """`TargetLast(sources=None)` is today's target-last layout, token for token (Step 12, P3).
+
+    ⚠ eval_checkpoint.py's target-last pass and D3.11's prompt layout both rest
+    on this path; Step 12.0 added the `sources=` filter beside it. Checked on
+    every row the target-last pass uses (7 targets x <= 512), against the
+    ORIGINAL ordering rule written out here, plus `trim_collate` removing
+    padding and nothing else. CPU only.
+    """
+    import torch
+    from eo.data.eo_vocab import IMAGE_MODALITIES, MODALITIES as MODS, MODALITY_TO_ID, PAD_ID
+    from eo.data.eval_split import load_eval_rows, load_row_table
+    from eo.eval import teacher_forced as TF
+    from lm_dataset.sequence_assembly import assemble_sequence
+
+    ds, _ = TF.eval_loader(_compose(ARM_A10), num_workers=0)
+    eval_rows = load_eval_rows(root_dir=ROOT)
+    corpus = load_row_table(ROOT).corpus.values
+
+    def reference(row, target, drop=()):
+        present = ds.present_modalities(row)
+        order = [m for m in MODS if m in present and m != target and m not in drop] + [target]
+        return assemble_sequence(
+            chunks=[ds._load_chunk(m, row) for m in order],
+            chunk_modality_ids=[MODALITY_TO_ID[m] for m in order],
+            chunk_shufflable=[m in IMAGE_MODALITIES for m in order],
+            max_length=ds.max_length, pad_id=PAD_ID,
+            rng=np.random.default_rng(0), shuffle_image_patches=False)
+
+    def same(a, b):
+        return set(a) == set(b) and all(torch.equal(a[k], b[k]) for k in a)
+
+    n_rows = n_none = n_all = 0
+    c1_caught = c2_caught = 0
+    for T in ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC", "Coords"]:
+        R = TF.stratified_target_rows(ds, eval_rows, corpus, T, 512)
+        tl_none = TF.TargetLast(ds, R, T)
+        tl_all = TF.TargetLast(ds, R, T, sources=[m for m in MODS if m != T])
+        tl_empty = TF.TargetLast(ds, R, T, sources=[])
+        for i, r in enumerate(R):
+            ref = reference(r, T)
+            n_rows += 1
+            n_none += same(tl_none[i], ref)
+            n_all += same(tl_all[i], ref)
+            if T != "Coords" and "Coords" in ds.present_modalities(r):
+                c1_caught += not same(tl_none[i], reference(r, T, drop=("Coords",)))
+            c2_caught += not same(tl_empty[i], ref)
+    ok_none, ok_all = n_none == n_rows, n_all == n_rows
+    print(f"    sources=None == original layout on {n_none}/{n_rows} rows       = {ok_none}")
+    print(f"    explicit all-sources list == original on {n_all}/{n_rows} rows  = {ok_all}")
+
+    # trim_collate: cuts trailing padding and nothing else.
+    T = "DEM"
+    R = TF.stratified_target_rows(ds, eval_rows, corpus, T, 512)[:16]
+    trim_ok = True
+    for src in ([], ["S2L2A"]):
+        dsub = TF.TargetLast(ds, R, T, sources=src)
+        for b in range(0, len(R), 4):
+            items = [dsub[j] for j in range(b, min(b + 4, len(R)))]
+            full = torch.utils.data.default_collate(items)
+            cut = TF.trim_collate(items)
+            k = cut["input_ids"].shape[1]
+            trim_ok &= k < full["input_ids"].shape[1] and all(torch.equal(cut[x], full[x][:, :k]) for x in full)
+            trim_ok &= bool((full["attention_mask"][:, k:] == 0).all() and (full["labels"][:, k:] == -100).all())
+    print(f"    trim_collate drops only padding (none and S2L2A->DEM)  = {trim_ok}")
+
+    # CONTROL 1: a layout that silently drops Coords must be caught on every
+    # row that carries it. CONTROL 2: sources=[] must differ from None.
+    n_c1 = sum(1 for T in ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC"]
+               for r in TF.stratified_target_rows(ds, eval_rows, corpus, T, 512)
+               if "Coords" in ds.present_modalities(r))
+    c1 = c1_caught == n_c1 and n_c1 > 0
+    c2 = c2_caught == n_rows
+    print(f"    control: dropping Coords is caught on {c1_caught}/{n_c1} rows = {c1}")
+    print(f"    control: sources=[] differs from None on {c2_caught}/{n_rows} rows  = {c2}")
+    return bool(ok_none and ok_all and trim_ok and c1 and c2)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1205,6 +1285,7 @@ def main() -> int:
         ("W8   arm configs differ only as intended [Step 4]", w8_arm_configs),
         ("W8'  A10/B10 configs differ only as intended [Step 11]", w8p_arm10_configs),
         ("W11  10-epoch arms change only the budget [Step 11]", w11_budget_only),
+        ("W12  TargetLast(sources=None) is unchanged [Step 12, P3]", w12_targetlast_sources),
         ("W7   decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]
