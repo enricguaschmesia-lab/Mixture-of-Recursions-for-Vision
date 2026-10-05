@@ -85,6 +85,20 @@ def finish(fig, path, title, subtitle, handles=None):
 
 # ------------------------------------------------------------------ figures
 
+def _schedule(arm):
+    """(decay start, decay end, eval cadence) in steps, read from the run's own log.
+
+    ⚠ Not hardcoded: the 50-epoch arms decay over 14,850-16,500 and evaluate every
+    500 steps, A10/B10 over 2,970-3,300 every 165. The decay starts at the last
+    logged step still at peak LR (WSD: flat until the anneal)."""
+    tr = [(e["step"], e["learning_rate"]) for e in arm["logged"]["train"]]
+    peak = max(lr for _, lr in tr)
+    start = max(s for s, lr in tr if lr >= peak * (1 - 1e-6))
+    ev = sorted({e["step"] for e in arm["logged"]["eval"] if e["step"] > 0})
+    cadence = int(np.median(np.diff(ev))) if len(ev) > 1 else None
+    return start, tr[-1][0], cadence
+
+
 def fig_training(arms, out):
     fig, axs = fig_frame(8, 4, h=2.4)
     names = ["aggregate"] + CV.MODS
@@ -104,19 +118,23 @@ def fig_training(arms, out):
             # step 0 (~11.4 = ln V) would flatten every panel; the axis starts past warmup
             lo = min(min(e[tk] for e in tr if tk in e and e["step"] > 300), min(ey))
             ax.set_ylim(lo - 0.3, max(ey) + 0.3)
+    sched = {_schedule(A) for A in arms}
+    if len(sched) > 1:
+        print(f"⚠ fig_training: the arms' schedules differ {sorted(sched)}; the band shows the first")
+    d0, d1, cadence = _schedule(arms[0])
     for ax, n in zip(axs, names):
         style(ax, n)
-        ax.axvspan(14850 / CV.EPOCH_STEPS, 16500 / CV.EPOCH_STEPS, color=GRID_INK, alpha=0.35, lw=0)
+        ax.axvspan(d0 / CV.EPOCH_STEPS, d1 / CV.EPOCH_STEPS, color=GRID_INK, alpha=0.35, lw=0)
         ax.set_xlabel("epoch", fontsize=8, color=INK_2)
     axs[0].set_ylabel("cross-entropy (nats)", fontsize=8, color=INK_2)
     from matplotlib.lines import Line2D
     h = [Line2D([], [], color=INK_2, lw=1, alpha=0.5), Line2D([], [], color=INK_2, lw=2, marker="o", ms=3),
          Line2D([], [], marker="o", ls="", mfc="none", mec=INK)]
-    lab = ["train (logged every 10 steps)", "held-out eval (every 500 steps)", "eval minimum"]
+    lab = ["train (logged every 10 steps)", f"held-out eval (every {cadence} steps)", "eval minimum"]
     for ai, A in enumerate(arms):
         h.append(Line2D([], [], color=ARM_COLORS[ai], lw=2)); lab.append(A["arm"])
     finish(fig, out / "fig1_training_curves.png", "Training and held-out loss per modality",
-           "grey band = LR decay (steps 14,850-16,500). Eval rows: 4,416 geographically held-out. "
+           f"grey band = LR decay (steps {d0:,}-{d1:,}). Eval rows: 4,416 geographically held-out. "
            "Lower is better. ⚠ S1GRD on 9.8% of rows; Coords is 3 tokens/scene (memorization).",
            (h, lab))
 
@@ -298,7 +316,12 @@ def fig_depth_vs_ce(arm, out):
     r = [r for r in arm["checkpoints"] if r.get("routing")]
     if not r:
         return
+    # The 50-epoch arm's figure used these three; any other run gets its first trained,
+    # middle and last checkpoint (A10: 330, 1980, 3300).
     picks = [x for x in r if x["checkpoint"] in ("checkpoint-2000", "checkpoint-8000", "checkpoint-16500")]
+    if len(picks) < 3:
+        trained = [x for x in r if x["step"] > 0]
+        picks = [trained[0], trained[len(trained) // 2], trained[-1]] if len(trained) >= 3 else trained
     fig, axs = fig_frame(7, 4, h=2.5)
     for ci, rec in enumerate(picks):
         for ax, n in zip(axs, CV.MODS):
@@ -470,18 +493,24 @@ def main() -> int:
     fig_training(arms, out)
     fig_accuracy(arms, out, "top1")
     fig_accuracy(arms, out, "top5")
-    fig_generation(arms, out, "epoch", "fig3_epoch_vs_generation.png", "epoch",
-                   "Generation quality against held-out ground truth, per checkpoint")
-    fig_generation(arms, out, "cum_flops_full", "fig4_d311_flops_vs_generation.png",
-                   "cumulative training FLOPs (full count)",
-                   "D3.11 — generation error against compute consumed")
+    # A10/B10 have no D3.11 decodes (Step 12 dropped decoded metrics, plan 4.18):
+    # draw no empty generation panels and pair nothing.
+    has_gen = any(r["gen"] for A in arms for r in A["checkpoints"])
+    if has_gen:
+        fig_generation(arms, out, "epoch", "fig3_epoch_vs_generation.png", "epoch",
+                       "Generation quality against held-out ground truth, per checkpoint")
+        fig_generation(arms, out, "cum_flops_full", "fig4_d311_flops_vs_generation.png",
+                       "cumulative training FLOPs (full count)",
+                       "D3.11 — generation error against compute consumed")
+    else:
+        print("no D3.11 decodes for these arms: generation figures and pairing skipped")
     for A in arms:
         fig_routing(A, out)
         fig_interventions(A, out)
         fig_depth_vs_ce(A, out)
         fig_content(A, out)
         fig_content_over_training(A, out)
-    if len(arms) == 2:
+    if len(arms) == 2 and has_gen:
         paired(arms[0], arms[1], out)
     print(f"-> {out}")
     return 0
