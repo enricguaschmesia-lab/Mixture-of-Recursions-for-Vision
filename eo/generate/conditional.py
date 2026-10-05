@@ -113,7 +113,8 @@ def build_model(config_name: str, checkpoint: Optional[str], device: str = "cuda
     return model, cfg
 
 
-def build_prompt(dataset, row: int, target: str) -> Dict[str, torch.Tensor]:
+def build_prompt(dataset, row: int, target: str,
+                 sources: Optional[Sequence[str]] = None) -> Dict[str, torch.Tensor]:
     """Context modalities in FIXED order, then `<BO_target>`.
 
     Returns the prompt ids plus the ground-truth target body, so the caller can
@@ -123,15 +124,27 @@ def build_prompt(dataset, row: int, target: str) -> Dict[str, torch.Tensor]:
     are exact complements, so every row carries one of them and never both;
     emitting an absent modality as an empty BO/EO pair would teach the prompt a
     structure the training data never had.
+
+    `sources` (Step 12.5/12.6) restricts the context, with TargetLast's semantics:
+      None   every present non-target modality -- D3.11's prompt, unchanged (gate
+             W13 holds it token-identical, and equal to TargetLast's prefix);
+      [S..]  only those, each only if the row carries it, still in FIXED order;
+      []     the target alone.
     """
     present = set(dataset.present_modalities(row))
     if target not in present:
         raise ValueError(f"row {row} does not carry {target!r}; it has {sorted(present)}")
+    if sources is not None:
+        bad = [s for s in sources if s not in FIXED_ORDER or s == target]
+        if bad:
+            raise ValueError(f"sources {bad}: not a modality, or the target itself")
 
     chunks: List[torch.Tensor] = []
     context: List[str] = []
     for name in FIXED_ORDER:
         if name == target or name not in present:
+            continue
+        if sources is not None and name not in sources:
             continue
         chunks.append(dataset._load_chunk(name, row))   # [BO, body, EO], offset applied
         context.append(name)

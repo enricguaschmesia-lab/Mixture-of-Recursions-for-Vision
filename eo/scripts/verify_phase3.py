@@ -26,6 +26,9 @@ unverified deliverable:
                                                     anchored on arm A's run
   W12 sources=None target-last unchanged  [Step 12] P3, token for token; and
                                                     trim_collate drops only padding
+  W13 build_prompt(sources=None) unchanged [Step 12.5] D3.11's prompt, token for
+                                                    token, and a prompt is the prefix
+                                                    of TargetLast's sequence
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -1269,6 +1272,65 @@ def w12_targetlast_sources() -> bool:
     return bool(ok_none and ok_all and trim_ok and c1 and c2)
 
 
+def w13_build_prompt_sources() -> bool:
+    """`build_prompt(sources=None)` is D3.11's prompt, token for token (Step 12.5).
+
+    ⚠ D3.11's generations rest on this path; chains (12.5) and illustrations
+    (12.6) add the `sources=` filter beside it. Checked on the target-last rows
+    of every target against the ORIGINAL prompt rule written out here. Also: a
+    prompt is exactly the prefix of TargetLast's sequence for the same sources,
+    up to and including <BO_target>, so a generation and the teacher-forced
+    score of the same cell see the same context. CPU only.
+    """
+    import torch
+    from eo.data.eo_vocab import MODALITIES as MODS, get_modality
+    from eo.data.eval_split import load_eval_rows, load_row_table
+    from eo.eval import teacher_forced as TF
+    from eo.generate import conditional as C
+
+    ds, _ = TF.eval_loader(_compose(ARM_A10), num_workers=0)
+    eval_rows = load_eval_rows(root_dir=ROOT)
+    corpus = load_row_table(ROOT).corpus.values
+
+    def reference(row, target, drop=()):
+        present = ds.present_modalities(row)
+        chunks = [ds._load_chunk(m, row) for m in MODS
+                  if m in present and m != target and m not in drop]
+        return torch.cat(chunks + [torch.tensor([get_modality(target).bo_id])])
+
+    n = n_none = n_all = n_prefix = n_one = n_one_prefix = 0
+    c1_caught = n_c1 = c2_caught = 0
+    for T in ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC", "Coords"]:
+        R = TF.stratified_target_rows(ds, eval_rows, corpus, T, 512)
+        tl = TF.TargetLast(ds, R, T)
+        S = "S2L2A" if T != "S2L2A" else "DEM"
+        tl_one = TF.TargetLast(ds, R, T, sources=[S])
+        for i, r in enumerate(R):
+            ref = reference(r, T)
+            p = C.build_prompt(ds, r, T)["prompt"]
+            n += 1
+            n_none += torch.equal(p, ref)
+            n_all += torch.equal(C.build_prompt(ds, r, T, sources=[m for m in MODS if m != T])["prompt"], ref)
+            n_prefix += torch.equal(tl[i]["input_ids"][:len(p)], p)
+            if S in ds.present_modalities(r):
+                q = C.build_prompt(ds, r, T, sources=[S])["prompt"]
+                n_one += 1
+                n_one_prefix += torch.equal(tl_one[i]["input_ids"][:len(q)], q)
+            if T != "Coords" and "Coords" in ds.present_modalities(r):
+                n_c1 += 1
+                c1_caught += not torch.equal(p, reference(r, T, drop=("Coords",)))
+            c2_caught += not torch.equal(C.build_prompt(ds, r, T, sources=[])["prompt"], ref)
+    ok = n_none == n and n_all == n and n_prefix == n and n_one_prefix == n_one and n_one > 0
+    print(f"    sources=None == original prompt on {n_none}/{n} rows          = {n_none == n}")
+    print(f"    explicit all-sources list == original on {n_all}/{n} rows    = {n_all == n}")
+    print(f"    prompt == TargetLast prefix (None) on {n_prefix}/{n} rows      = {n_prefix == n}")
+    print(f"    prompt == TargetLast prefix (one source) on {n_one_prefix}/{n_one} rows = {n_one_prefix == n_one}")
+    c1, c2 = c1_caught == n_c1 and n_c1 > 0, c2_caught == n
+    print(f"    control: dropping Coords is caught on {c1_caught}/{n_c1} rows  = {c1}")
+    print(f"    control: sources=[] differs from None on {c2_caught}/{n} rows   = {c2}")
+    return bool(ok and c1 and c2)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1286,7 +1348,8 @@ def main() -> int:
         ("W8'  A10/B10 configs differ only as intended [Step 11]", w8p_arm10_configs),
         ("W11  10-epoch arms change only the budget [Step 11]", w11_budget_only),
         ("W12  TargetLast(sources=None) is unchanged [Step 12, P3]", w12_targetlast_sources),
-        ("W7   decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
+        ("W13  build_prompt(sources=None) is unchanged [Step 12.5]", w13_build_prompt_sources),
+        ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]
     if not args.skip_forward:
