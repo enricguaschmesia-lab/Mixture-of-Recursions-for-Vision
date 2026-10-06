@@ -173,10 +173,31 @@ def illus_rows_for(target, R):
             "ssl4eos12": [int(r) for r, c in zip(R, cor) if c == "ssl4eos12"][:3]}
 
 
-def pick_row(pick, S, cell_rows):
+#: An illustration candidate whose target raster is near-constant is an empty tile, not a
+#: scene: median per-band std below this, in σ. Measured 2026-10-07 on the S2L2A column's 64
+#: rows: 3 empty tiles at 0.0004-0.008 (one, row 80397, has B04-B12 at DN ~1), then genuinely
+#: uniform scenes (water) from 0.04, median 0.23. Applies to the ILLUSTRATIONS only; every
+#: scene stays in the metrics (plan 12.6b).
+DEGENERATE_STD = 0.01
+
+
+def degenerate_rows(target, rows):
+    if target == "LULC" or not rows:
+        return set()
+    mean = np.array(C.V1_TOK_MEAN[target], dtype=np.float32)[:, None, None]
+    std = np.array(C.V1_TOK_STD[target], dtype=np.float32)[:, None, None]
+    bad = set()
+    for r, a in zip(rows, D.read_rasters(target, np.array(rows))):
+        z = (P.center_crop(a[0] if a.ndim == 4 else a).astype(np.float32) - mean) / std
+        if np.nanmedian(np.nanstd(z, axis=(1, 2))) < DEGENERATE_STD:
+            bad.add(int(r))
+    return bad
+
+
+def pick_row(pick, S, cell_rows, skip=frozenset()):
     order = (pick["ssl4eos12"] + pick["majortom"]) if S == "S1GRD" else (pick["majortom"] + pick["ssl4eos12"])
     have = {int(r) for r in cell_rows}
-    return next((r for r in order if r in have), None)
+    return next((r for r in order if r in have and r not in skip), None)
 
 
 def decode_cmd(args) -> int:
@@ -265,6 +286,16 @@ def figures_cmd(args) -> int:
               for z in [np.load(odir / f)] for k, v in ((k, z[k]) for k in z.files)}
         R = merged[f"ceiling|{T}|rows"]
         pick = illus_rows_for(T, R)
+        skip = degenerate_rows(T, pick["majortom"] + pick["ssl4eos12"])
+        # ⚠ Illustration rule, revised 2026-10-07 after the first S1GRD figure: "the first row"
+        # landed on open water, where even the true tokens decode at 6.3 (column median 0.32)
+        # because the released clamp cannot reach water's backscatter -- it showed the clamp,
+        # not the models. Candidates are now ordered by how close their FLOOR error (true
+        # tokens decoded) is to the column's median floor error: the most typical scene for the
+        # decoder, chosen without looking at either model's output.
+        floor = dict(zip(merged[f"ceiling|{T}|rows"].tolist(), merged[f"ceiling|{T}|err"].tolist()))
+        med = float(np.median(list(floor.values())))
+        pick = {c: sorted(v, key=lambda r: abs(floor[r] - med)) for c, v in pick.items()}
         cells = [k.split("|")[1] for k in merged if k.startswith(f"{A}|") and k.endswith("|err")]
         means = {S: {a: float(merged[f"{a}|{S}|err"].mean()) for a in args.arms} for S in cells}
         means_ml7 = {S: {a: float(merged[f"{a}|{S}|err_ml7"].mean()) for a in args.arms} for S in cells}
@@ -272,7 +303,8 @@ def figures_cmd(args) -> int:
         doc = {"target": T, "unit": unit, "decoder_setting": SETTING_TEXT[SETTING[T]],
                "ceiling": float(merged[f"ceiling|{T}|err"].mean()), "cells": means,
                "ceiling_ml7": float(merged[f"ceiling|{T}|err_ml7"].mean()), "cells_ml7": means_ml7,
-               "illustration_rows": pick, "decode": {"seed": SEED, "batch": BATCH, "timesteps": STEPS}}
+               "illustration_rows": pick, "illustration_skipped_empty": sorted(skip),
+               "illustration_rule": "candidate closest to the column's median floor error", "decode": {"seed": SEED, "batch": BATCH, "timesteps": STEPS}}
         (odir / "decoded.json").write_text(json.dumps(doc, indent=1) + "\n")
         summary[T] = doc
 
@@ -286,7 +318,7 @@ def figures_cmd(args) -> int:
         fig.patch.set_facecolor("#fcfcfb")
         for j, S in enumerate(cols_fig):
             r = pick_row(pick, "S2L2A" if S == "ceiling" else S,
-                         R if S == "ceiling" else merged[f"{A}|{S}|rows"])
+                         R if S == "ceiling" else merged[f"{A}|{S}|rows"], skip)
             ref_img = il[f"truth|{r}|img"]
             if S == "ceiling":
                 panels = [(None, "true tokens\n(no model)"), (ref_img, f"row {r}"),
@@ -335,10 +367,10 @@ def figures_cmd(args) -> int:
                      f"panel labels: this scene's.", fontsize=9.5, x=0.01, ha="left")
         foot = ("Error rows: misclassified pixels in red." if T == "LULC" else
                 f"Error rows: per-pixel RMS error over bands, in σ, white 0 → dark red ≥ {ERR_VMAX:g}.")
-        fig.text(0.01, 0.002, foot + " Scenes chosen by rule (the first of the column's rows that the "
-                 "cell contains, majortom first; ssl4eos12 first for an S1GRD source), not by looking.",
-                 fontsize=8.5, color="#52514e")
-        plt.tight_layout(rect=(0, 0.015, 1, 0.975))
+        fig.text(0.01, 0.002, foot + "\nScenes chosen by rule, not by looking: among the column's first "
+                 "3 rows per corpus, the one whose true-token decode error is closest to the column median "
+                 "(majortom; ssl4eos12 for an S1GRD source).", fontsize=8.5, color="#52514e")
+        plt.tight_layout(rect=(0, 0.03, 1, 0.975))
         fig.savefig(odir / f"fig_decoded_{T}.png", dpi=110, facecolor="#fcfcfb")
         plt.close(fig)
         print(f"{T}: ceiling {doc['ceiling']:.4f}  " + "  ".join(

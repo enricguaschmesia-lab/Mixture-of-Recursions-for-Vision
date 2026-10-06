@@ -237,7 +237,50 @@ def report(args) -> int:
     return 0
 
 
+def rerun(args) -> int:
+    """How much does ONE sampled generation per scene move a cell's decoded error?
+
+    A10's S2L2A, S1GRD and S1RTC columns were generated twice: on the TITAN V before it
+    stalled (kept in titanv_aborted_2026-10-06/), and on the Titan X (the reported run). Same
+    model, same scenes, same protocol and seeds; only the card's numerics differ, which gives
+    different draws. Both were decoded on the Titan X with the same settings. The paired
+    run-to-run difference per cell is the noise floor against which an A10 - B10 decoded
+    difference has to be read."""
+    import grid_report as GR
+    old_root = REPORT / "titanv_aborted_2026-10-06"
+    res = {}
+    for T in TARGETS:
+        po, pn = old_root / T / "errors_a10.npz", REPORT / T / "errors_a10.npz"
+        if not (po.exists() and pn.exists()):
+            continue
+        zo, zn = np.load(po), np.load(pn)
+        pb = REPORT / T / "errors_b10.npz"
+        zb = np.load(pb) if pb.exists() else None
+        for S in cells_of(T):
+            ro, eo_ = zo[f"a10|{S}|rows"], zo[f"a10|{S}|{args.metric}"].astype(np.float64)
+            rn, en = zn[f"a10|{S}|rows"], zn[f"a10|{S}|{args.metric}"].astype(np.float64)
+            assert np.array_equal(ro, rn), f"{S}->{T}: the two runs used different rows"
+            c = {"n": int(len(en)), "run_titanv": float(eo_.mean()), "run_titanx": float(en.mean()),
+                 "rerun": GR.boot(en - eo_, f"rerun|{S}->{T}", 0, 10_000),
+                 "scene_corr": float(np.corrcoef(eo_, en)[0, 1])}
+            if zb is not None:
+                c["a10_minus_b10"] = GR.boot(en - zb[f"b10|{S}|{args.metric}"].astype(np.float64),
+                                             f"dec-paired|{S}->{T}", 0, 10_000)
+            res[f"{S}->{T}"] = c
+    sfx = "" if args.metric == "err" else "_ml7"
+    (REPORT / f"rerun{sfx}.json").write_text(json.dumps(res, indent=1) + "\n")
+    print(f"{'cell':16}{'n':>4}{'TITAN V run':>13}{'Titan X run':>13}{'rerun diff [95% CI]':>28}"
+          f"{'A10-B10 [95% CI]':>28}")
+    for k, c in res.items():
+        r, ab = c["rerun"], c.get("a10_minus_b10")
+        print(f"{k:16}{c['n']:4d}{c['run_titanv']:13.3f}{c['run_titanx']:13.3f}"
+              f"{r['mean']:+12.3f} [{r['lo']:+.3f},{r['hi']:+.3f}]"
+              + (f"{ab['mean']:+12.3f} [{ab['lo']:+.3f},{ab['hi']:+.3f}]" if ab else ""))
+    return 0
+
+
 def main() -> int:
+    global REPORT
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("generate")
@@ -254,7 +297,13 @@ def main() -> int:
     r.add_argument("--root", default=str(REPORT))
     r.add_argument("--metric", choices=["err", "err_ml7"], default="err",
                    help="err: plain MSE (headline); err_ml7: after the 7x7 multilook")
+    q = sub.add_parser("rerun")
+    q.add_argument("--root", default=str(REPORT))
+    q.add_argument("--metric", choices=["err", "err_ml7"], default="err")
     args = ap.parse_args()
+    if args.cmd == "rerun":
+        REPORT = Path(args.root)
+        return rerun(args)
     return generate(args) if args.cmd == "generate" else report(args)
 
 
