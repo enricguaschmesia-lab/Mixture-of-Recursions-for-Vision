@@ -199,9 +199,9 @@ def report(args) -> int:
                                    color="#ffffff" if Mn[i, j] > 0.55 else GR.INK)
     DR = M(lambda c: 100 * c["paired"]["rel"] if "paired" in c else None)
     XD = M(lambda c: float(c["paired"]["lo"] > 0 or c["paired"]["hi"] < 0) if "paired" in c else None) == 1
-    lim = max(2.0, float(np.nanmax(np.abs(DR))))
+    lim = min(50.0, max(2.0, float(np.nanmax(np.abs(DR)))))      # one outlier (∅ -> DEM) must not wash out the rest
     GR._heatmap(axs[0, 2], DR, rows, GR.DIV, TwoSlopeNorm(0, -lim, lim), lambda v: f"{v:+.1f}%",
-                f"{A} − {B}, paired by scene, relative to {B} (outlined: 95% CI excludes 0)",
+                f"{A} − {B}, paired, relative to {B} (outlined: CI excludes 0; colour saturates at ±{lim:.0f}%)",
                 outline=XD, cbar_label=f"% of {B}'s error  (blue: {A} lower)", fig=fig)
     for k, arm in enumerate(arms):
         G_ = M(lambda c, arm=arm: 100 * c[arm]["gain_rel"] if "gain_rel" in c[arm] else None)[:-2]

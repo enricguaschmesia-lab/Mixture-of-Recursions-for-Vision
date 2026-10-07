@@ -269,6 +269,11 @@ def show(ax, target, img, ref_img=None):
         lo = np.nanpercentile(ref_img, 2, axis=(0, 1)); hi = np.nanpercentile(ref_img, 98, axis=(0, 1))
         ax.imshow(np.clip((img - lo) / np.maximum(hi - lo, 1e-6), 0, 1))
         return
+    if target == "DEM":
+        # Relief relative to each image's own mean: a generation's absolute elevation is often
+        # off by more than the scene's local relief, which would push the whole panel outside
+        # the truth's colour range. The offset is in the error rows.
+        img, ref_img = img - np.nanmean(img), ref_img - np.nanmean(ref_img)
     lo, hi = np.nanpercentile(ref_img, 2), np.nanpercentile(ref_img, 98)
     cmap = {"DEM": "terrain", "NDVI": "RdYlGn"}.get(target, "gray")
     ax.imshow(img, cmap=cmap, vmin=lo, vmax=max(hi, lo + 1e-6))
@@ -311,14 +316,20 @@ def figures_cmd(args) -> int:
         # one figure per target column, slide-shaped: each figure COLUMN is one cell (the
         # tokenizer floor first), each figure ROW one view of it, both arms
         cols_fig = ["ceiling"] + cells
+        # error maps on ONE scale per column: its 95th percentile over every error panel drawn
+        # (a fixed 2σ suits S2L2A but is ~1,900 m for DEM, where it renders everything white)
+        drawn = {S: pick_row(pick, "S2L2A" if S == "ceiling" else S,
+                             R if S == "ceiling" else merged[f"{A}|{S}|rows"], skip) for S in cols_fig}
+        err_stack = [il[f"{a}|{S}|{drawn[S]}|err"].ravel() for S in cells for a in args.arms]
+        err_vmax = (1.0 if T == "LULC" else
+                    max(float(np.nanpercentile(np.concatenate(err_stack), 95)), 1e-6) if err_stack else ERR_VMAX)
         row_names = ["source given", "ground truth", f"{A} decoded", f"{A} error",
                      f"{B} decoded", f"{B} error"]
         fig, axs = plt.subplots(len(row_names), len(cols_fig),
                                 figsize=(1.95 * len(cols_fig) + 0.7, 1.95 * len(row_names) + 1.1))
         fig.patch.set_facecolor("#fcfcfb")
         for j, S in enumerate(cols_fig):
-            r = pick_row(pick, "S2L2A" if S == "ceiling" else S,
-                         R if S == "ceiling" else merged[f"{A}|{S}|rows"], skip)
+            r = drawn[S]
             ref_img = il[f"truth|{r}|img"]
             if S == "ceiling":
                 panels = [(None, "true tokens\n(no model)"), (ref_img, f"row {r}"),
@@ -348,7 +359,7 @@ def figures_cmd(args) -> int:
                         ax.imshow(img, cmap=ListedColormap(["#ffffff", "#d03b3b"]), vmin=0, vmax=1,
                                   interpolation="nearest")
                     else:
-                        ax.imshow(img, cmap="Reds", vmin=0, vmax=ERR_VMAX)
+                        ax.imshow(img, cmap="Reds", vmin=0, vmax=err_vmax)
                     continue
                 if i == 0:
                     show(ax, S, img, img)
@@ -366,7 +377,10 @@ def figures_cmd(args) -> int:
                      f"Column heads: the cell's mean {unit} over its scenes, {A} / {B}; "
                      f"panel labels: this scene's.", fontsize=9.5, x=0.01, ha="left")
         foot = ("Error rows: misclassified pixels in red." if T == "LULC" else
-                f"Error rows: per-pixel RMS error over bands, in σ, white 0 → dark red ≥ {ERR_VMAX:g}.")
+                f"Error rows: per-pixel RMS error over bands, in σ, white 0 → dark red ≥ {err_vmax:.2f}σ "
+                f"(the 95th percentile of the error panels drawn here)."
+                + (" DEM panels: relief relative to each image's own mean; absolute offsets show in the "
+                   "error rows." if T == "DEM" else ""))
         fig.text(0.01, 0.002, foot + "\nScenes chosen by rule, not by looking: among the column's first "
                  "3 rows per corpus, the one whose true-token decode error is closest to the column median "
                  "(majortom; ssl4eos12 for an S1GRD source).", fontsize=8.5, color="#52514e")
