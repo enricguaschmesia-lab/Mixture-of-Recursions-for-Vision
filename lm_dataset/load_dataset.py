@@ -45,9 +45,18 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
     ⚠ Train is the COMPLEMENT of eval, computed here rather than stored, so the
     two cannot overlap by construction. A second committed row list would be
     one more thing that can drift.
+
+    `multimodal.token_set` (original | clean, default original) picks the token
+    root here, for training and in-training evaluation alike, so the run's
+    config records which tokens it saw (eo/terramesh_tok/clean.py).
     """
     from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
     from eo.data.eval_split import default_split_path, load_eval_rows, train_rows_from_eval
+    from eo.terramesh_tok.clean import resolve_token_root
+
+    token_set = mm_cfg.get("token_set", "original")
+    root_dir = str(resolve_token_root(root_dir, token_set))
+    print(f"TerraMesh token set: {token_set} -> {root_dir} ({want})")
 
     split_ref = mm_cfg.get("eval_split", None)
     rows = None

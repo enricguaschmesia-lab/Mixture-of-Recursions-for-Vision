@@ -29,6 +29,8 @@ unverified deliverable:
   W13 build_prompt(sources=None) unchanged [Step 12.5] D3.11's prompt, token for
                                                     token, and a prompt is the prefix
                                                     of TargetLast's sequence
+  W14 B10c/A10c change only token_set     [next steps 2026-10-11, Step 2] and
+                                                    the key reaches the data
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -609,6 +611,7 @@ ARM_MUST_MATCH = [
     "precision", "mixed_precision", "max_length", "model_config.vocab_size",
     "learning_rate", "max_grad_norm", "dataloader_num_workers",
     "multimodal.modality_order", "multimodal.active_modalities",
+    "multimodal.token_set",
 ]
 
 ARM_A = "eo_terramesh/arm_a_mor"
@@ -625,6 +628,13 @@ BUDGET_DIFF_KEYS = {
     "num_train_steps", "stop_steps", "num_warmup_steps",
     "lr_scheduler_kwargs.num_decay_steps", "save_steps", "eval_steps",
 }
+
+#: The 10-epoch arms on the cleaned tokens (next steps 2026-10-11, Step 2).
+ARM_A10C = "eo_terramesh/arm_a10c_mor"
+ARM_B10C = "eo_terramesh/arm_b10c_vanilla"
+
+#: The ONLY key a cleaned arm may differ from its 10-epoch parent in.
+TOKEN_SET_DIFF_KEYS = {"multimodal.token_set"}
 
 #: The plan's A10/B10 schedule (Step 11.1), in optimizer steps.
 A10_TOTAL, A10_WARMUP_END, A10_DECAY_START = 3300, 165, 2970
@@ -1331,6 +1341,72 @@ def w13_build_prompt_sources() -> bool:
     return bool(ok and c1 and c2)
 
 
+def _same_sample(ds_a, ds_b, pos: int):
+    """(input_ids equal, modality_ids equal, modality ids at the differing positions)."""
+    a, b = ds_a[pos], ds_b[pos]
+    neq = a["input_ids"] != b["input_ids"]
+    return (not bool(neq.any()), bool((a["modality_ids"] == b["modality_ids"]).all()),
+            set(a["modality_ids"][neq].tolist()))
+
+
+def w14_clean_arms() -> bool:
+    """B10c / A10c differ from B10 / A10 in exactly multimodal.token_set, from
+    each other in exactly the arm keys, and the key reaches the data.
+
+    ⚠ Why the data half. A config diff proves the overlays changed one key; it
+    cannot prove the key does anything. The dataloader is built from each
+    config exactly as training builds it (load_eval_dataset_from_config), and
+    held-out scenes are compared: an offset scene must change in its S2L2A and
+    NDVI tokens and nowhere else, with the same modality layout; a clean scene
+    must be identical.
+    """
+    from eo.data.eo_vocab import MODALITY_TO_ID
+    from eo.terramesh_tok.clean import CLEANED_MODALITIES, clean_root, load_labels
+    from lm_dataset.load_dataset import load_eval_dataset_from_config
+
+    ok = True
+    for parent, child in ((ARM_B10, ARM_B10C), (ARM_A10, ARM_A10C)):
+        diff = _arm_diff(_compose(parent), _compose(child))
+        pair_ok = diff == TOKEN_SET_DIFF_KEYS
+        print(f"    {child} vs {parent}: differs in exactly {sorted(TOKEN_SET_DIFF_KEYS)} = {pair_ok}")
+        if not pair_ok:
+            print(f"      measured: {sorted(diff)}")
+        ok &= pair_ok
+    print(f"    {ARM_A10C} vs {ARM_B10C} (W8 with its controls):")
+    ok &= w8_arm_configs(ARM_A10C, ARM_B10C)
+
+    # The key reaches the data.
+    b10, b10c = _compose(ARM_B10), _compose(ARM_B10C)
+    ds_o, ds_c = load_eval_dataset_from_config(b10), load_eval_dataset_from_config(b10c)
+    roots = (Path(ds_o.root_dir).name, Path(ds_c.root_dir).name)
+    root_ok = roots == (Path(ROOT).name, clean_root(ROOT).name)
+    print(f"    B10 reads {roots[0]}/, B10c reads {roots[1]}/ = {root_ok}")
+    lab = load_labels(clean_root(ROOT)).set_index("row").offset
+    pos_of = {int(r): i for i, r in enumerate(ds_o.rows)}
+    off = [pos_of[r] for r in ds_o.rows if lab[int(r)]][:8]
+    cln = [pos_of[r] for r in ds_o.rows if not lab[int(r)]][:8]
+    allowed = {MODALITY_TO_ID[m] for m in CLEANED_MODALITIES}
+    off_res = [_same_sample(ds_o, ds_c, p) for p in off]
+    cln_res = [_same_sample(ds_o, ds_c, p) for p in cln]
+    off_ok = all((not same) and layout and mods and mods <= allowed for same, layout, mods in off_res)
+    cln_ok = all(same and layout for same, layout, _ in cln_res)
+    print(f"    {len(off)} offset scenes change, only in S2L2A/NDVI, same layout = {off_ok}")
+    print(f"    {len(cln)} clean scenes identical                             = {cln_ok}")
+    ok &= root_ok and off_ok and cln_ok
+
+    # CONTROL 1: a stray difference in a cleaned overlay must be caught.
+    c1 = _arm_diff(_compose(ARM_B10), _compose(ARM_B10C, ["seed=7"])) != TOKEN_SET_DIFF_KEYS
+    print(f"    control: a stray seed in the cleaned overlay is caught = {c1}")
+    # CONTROL 2: the data check must fail when both configs read the same tokens.
+    c2 = not all(not _same_sample(ds_o, load_eval_dataset_from_config(b10), p)[0] for p in off[:2])
+    print(f"    control: original vs original does not pass as cleaned = {c2}")
+    # CONTROL 3: the restriction to S2L2A/NDVI must be able to fail.
+    c3 = not all(mods <= {MODALITY_TO_ID["S2L2A"]} for _, _, mods in off_res)
+    print(f"    control: the changed slots are not S2L2A alone          = {c3}")
+
+    return bool(ok and c1 and c2 and c3)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1349,6 +1425,7 @@ def main() -> int:
         ("W11  10-epoch arms change only the budget [Step 11]", w11_budget_only),
         ("W12  TargetLast(sources=None) is unchanged [Step 12, P3]", w12_targetlast_sources),
         ("W13  build_prompt(sources=None) is unchanged [Step 12.5]", w13_build_prompt_sources),
+        ("W14  B10c/A10c change only the token set   [next steps, Step 2]", w14_clean_arms),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]

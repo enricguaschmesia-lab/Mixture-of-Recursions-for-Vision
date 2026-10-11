@@ -18,8 +18,8 @@ pixels with slightly negative reflectance) and flags ~3% of clean ones (bright s
 
 THE CLEANED SET keeps TerraMesh's convention (no offset; negative values kept, as TerraMesh does
 after 2022). Only S2L2A and NDVI change, and only in the offset rows; it lives in its own root
-(CLEAN_ROOT_NAME) next to val/, with every unchanged artifact symlinked, so a run is switched to
-it by TERRAMESH_TOK_ROOT alone.
+(CLEAN_ROOT_NAME) next to val/, with every unchanged artifact symlinked. A run selects it with
+`multimodal.token_set: clean` (resolve_token_root), so the config records which tokens it saw.
 
 Pure numpy/pandas: importable from both envs, like contract.py.
 """
@@ -84,3 +84,36 @@ def load_labels(root: Path):
     """The per-row labels (row, stem, corpus, offset, ...) written by label_s2_offset.py."""
     import pandas as pd
     return pd.read_parquet(Path(root) / LABELS_FILE)
+
+
+#: `multimodal.token_set` in a run's config. The config, not the environment, says which
+#: tokens a run saw: TERRAMESH_TOK_ROOT always names the original root, and this picks.
+TOKEN_SETS = ("original", "clean")
+#: Written by `tokenize_clean.py assemble`; a cleaned root is usable only if it says "pass": true.
+GATE_FILE = "clean_build.json"
+
+
+def resolve_token_root(base_root, token_set: str = "original") -> Path:
+    """The token root a run with this `token_set` reads, given TERRAMESH_TOK_ROOT.
+
+    Refuses rather than guesses: an unknown token_set, a base root that is itself a cleaned
+    root (the run's config would then misreport its data), and a cleaned root whose build
+    gate is missing or failed.
+    """
+    import json
+    if token_set not in TOKEN_SETS:
+        raise ValueError(f"multimodal.token_set={token_set!r}; expected one of {TOKEN_SETS}")
+    base = Path(base_root)
+    if base.name == CLEAN_ROOT_NAME or (base / GATE_FILE).exists():
+        raise ValueError(f"TERRAMESH_TOK_ROOT={base} is a cleaned root; point it at the original "
+                         f"root and select the cleaned tokens with multimodal.token_set=clean")
+    if token_set == "original":
+        return base
+    root = clean_root(base)
+    gate = root / GATE_FILE
+    if not gate.is_file():
+        raise FileNotFoundError(f"{gate} missing: the cleaned root was never built and gated "
+                                f"(eo/scripts/tokenize_clean.py)")
+    if json.loads(gate.read_text()).get("pass") is not True:
+        raise RuntimeError(f"{gate} does not say pass: true; the cleaned root failed its gate")
+    return root

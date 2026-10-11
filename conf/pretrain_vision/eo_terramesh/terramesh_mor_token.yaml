@@ -55,6 +55,12 @@ multimodal:
   # about whether Coords routes differently.
   modality_order: random
   shuffle_image_patches: false
+  # Which tokens (2026-10-11): `original` is TerraMesh as released; `clean` is
+  # the sibling root val_clean/, where ~24% of S2L2A rows had ESA's +1000 DN
+  # BOA offset removed and NDVI was recomputed (eo/terramesh_tok/clean.py).
+  # TERRAMESH_TOK_ROOT always names the original root; this key picks. Absent
+  # (every run before B10c) means original.
+  token_set: original
   # NOTE: sample_from_k_augmentations / text_tokenizer_path / text_max_length are
   # CLEVR-only. The EO dataset has no augmentation dimension and no text branch,
   # and load_dataset.py's EO branch does not pass them. Do not add them here.

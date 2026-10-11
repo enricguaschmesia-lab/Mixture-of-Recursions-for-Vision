@@ -1,0 +1,24 @@
+# @package _global_
+#
+# ARM A10c — A10 (MoR, 10 epochs) on the CLEANED tokens.  Next steps
+# 2026-10-11, Step 2.
+#
+# ┌── THE DIFF FROM A10 (arm_a10_mor), IN FULL ─────────────────────────┐
+# │                            A10          A10c (this)                 │
+# │   multimodal.token_set     original     clean                       │
+# │ Nothing else. W14 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# Why the cleaned tokens: arm_b10c_vanilla.yaml. Trained after B10c, on the
+# same card type.
+#
+#   launch (RCP):  jobs/train.sh mor10c eo_terramesh/arm_a10c_mor mor10c_<ts>
+#   launch (here): bash eo/scripts/train_eo.sh --gpu titanx --arm mor10c \
+#                      --config eo_terramesh/arm_a10c_mor --detach
+
+defaults:
+  - arm_a10_mor
+  - _self_
+
+multimodal:
+  token_set: clean

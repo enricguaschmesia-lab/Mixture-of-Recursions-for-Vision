@@ -14,6 +14,9 @@ raises; each one produces a run that trains happily and is worthless:
                                   but they would be on the wrong filesystem, and
                                   invisible to anyone looking under /data.)
   * TERRAMESH_TOK_ROOT unset   -- points at a default that may not exist
+  * token_set unresolvable     -- a cleaned root that was never gated, or a
+                                  TERRAMESH_TOK_ROOT that already is one, so
+                                  the config misreports which tokens the run saw
   * a non-empty run directory  -- silently overwrites a previous arm
   * vocab_size drift           -- indexes past the embedding table, or carries
                                   dead rows and a wrong ln(V) loss baseline
@@ -410,6 +413,41 @@ def check_eval_split(ctx: PreflightContext) -> CheckResult:
     return CheckResult("eval split", True, f"{split_path.name}: {len(rows)} held-out rows")
 
 
+def check_token_set(ctx: PreflightContext) -> CheckResult:
+    """`multimodal.token_set` resolves to a usable token root (2026-10-11).
+
+    The dataloader resolves it too (load_dataset._build_terramesh) and raises
+    on the same faults, but only after the model is built; this says so before
+    launch, and also checks that the resolved root carries every modality --
+    a cleaned root is mostly symlinks, and a broken one would be found at load.
+    """
+    if ctx.config_path is None:
+        return CheckResult("token set", True, "skipped (no --config given)")
+    if not ctx.config_path.is_file():
+        return CheckResult("token set", True, "skipped (config missing; check_config reports it)")
+    raw = ctx.env.get("TERRAMESH_TOK_ROOT")
+    if not raw:
+        return CheckResult("token set", True, "skipped (TERRAMESH_TOK_ROOT unset; reported above)")
+
+    from eo.terramesh_tok.clean import resolve_token_root
+    from eo.terramesh_tok.contract import tok_dir_name
+    from eo.data.eo_vocab import DEFAULT_ACTIVE_MODALITIES
+
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    token_set = (cfg.get("multimodal") or {}).get("token_set", "original")
+    try:
+        root = resolve_token_root(raw, token_set)
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        return CheckResult("token set", False, str(e).splitlines()[0])
+    missing = [m for m in DEFAULT_ACTIVE_MODALITIES
+               if not (root / tok_dir_name(m) / "tokens.npy").is_file()]
+    if not (root / "tok_index.parquet").is_file():
+        missing.append("tok_index.parquet")
+    if missing:
+        return CheckResult("token set", False, f"{root}: missing {missing}")
+    return CheckResult("token set", True, f"{token_set} -> {root}")
+
+
 def _load_config(path: Path, overrides: Optional[Dict[str, object]] = None) -> dict:
     """The config the RUN will actually see, with CLI overrides applied.
 
@@ -643,6 +681,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_disk,
     check_config,
     check_eval_split,
+    check_token_set,
     check_gpu_free_memory,
     check_resume_checkpoint,
     check_gpu_identity,      # last: the only one that touches CUDA

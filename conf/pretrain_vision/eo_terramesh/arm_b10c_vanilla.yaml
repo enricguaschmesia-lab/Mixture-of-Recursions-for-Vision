@@ -1,0 +1,29 @@
+# @package _global_
+#
+# ARM B10c — B10 (vanilla, 10 epochs) on the CLEANED tokens.  Next steps
+# 2026-10-11, Step 2.
+#
+# ┌── THE DIFF FROM B10 (arm_b10_vanilla), IN FULL ─────────────────────┐
+# │                            B10          B10c (this)                 │
+# │   multimodal.token_set     original     clean                       │
+# │ Nothing else. W14 in eo/scripts/verify_phase3.py asserts the        │
+# │ RESOLVED configs differ in exactly this key, and that B10c and A10c │
+# │ differ in exactly recursive.enable / mor.enable.                    │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# WHY. ~24% of TerraMesh val S2L2A rows (21,461; Major TOM baseline 05.00,
+# acquired before 2022-01-25) still carry ESA's +1000 DN BOA offset, and their
+# NDVI is compressed toward 0. The cleaned root val_clean/ removes the offset
+# and recomputes NDVI; everything else is the same tokens (symlinks). B10c is
+# trained first, then A10c, on the same card type (A100 on RCP).
+#
+#   launch (RCP):  jobs/train.sh vanilla10c eo_terramesh/arm_b10c_vanilla vanilla10c_<ts>
+#   launch (here): bash eo/scripts/train_eo.sh --gpu titanx --arm vanilla10c \
+#                      --config eo_terramesh/arm_b10c_vanilla --detach
+
+defaults:
+  - arm_b10_vanilla
+  - _self_
+
+multimodal:
+  token_set: clean

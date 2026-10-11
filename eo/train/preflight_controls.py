@@ -107,7 +107,15 @@ def _results(env, *, run_dir: Optional[Path] = None, config: Optional[Path] = No
         check_torch=check_torch,
         min_free_gpu_mib=min_free_gpu_mib,
     )
-    return {r.name: r.ok for r in run_checks(ctx)}
+    results = run_checks(ctx)
+    out = _Res({r.name: r.ok for r in results})
+    out.detail = {r.name: r.detail for r in results}
+    return out
+
+
+class _Res(dict):
+    """{check name: ok}, plus `.detail` so a control can show WHY it fired."""
+    detail: Dict[str, str]
 
 
 def _broken_config(tmp: Path, **overrides) -> Path:
@@ -120,7 +128,11 @@ def _broken_config(tmp: Path, **overrides) -> Path:
         for k in keys[:-1]:
             node = node[k]
         node[keys[-1]] = value
-    out = tmp / ("broken_" + "_".join(overrides) + ".yaml")
+    # ⚠ Numbered, not named by the keys alone: cases are built before any is
+    # evaluated, so until 2026-10-11 the four eval-split cases (same key,
+    # different values) all wrote one file and all tested the last value.
+    n = len(list(tmp.glob("broken_*.yaml")))
+    out = tmp / (f"broken_{n:03d}_" + "_".join(overrides) + ".yaml")
     out.write_text(yaml.safe_dump(cfg))
     return out
 
@@ -272,13 +284,38 @@ def main(argv=None) -> int:
         ("MOR_SAVE_DIR on /data2 (not /data)",  "MOR_SAVE_DIR", dict(env=_env(MOR_SAVE_DIR="/data2/runs"))),
     ]
 
+    # --- token set (2026-10-11). The config must be the record of which tokens a
+    # run saw, so a cleaned root is reachable only through multimodal.token_set,
+    # and only once its build gate passed. Fake sites: a `val` symlink to the real
+    # root, beside a cleaned root that is missing, failed, or empty. ---
+    real_val = Path(GOOD_ENV["TERRAMESH_TOK_ROOT"])
+    sites = {}
+    for name, gate in (("nogate", None), ("failed", {"pass": False}), ("empty", {"pass": True})):
+        site = tmp / f"tm_{name}"
+        site.mkdir()
+        (site / "val").symlink_to(real_val)
+        if gate is not None:
+            from eo.terramesh_tok.clean import CLEAN_ROOT_NAME, GATE_FILE
+            (site / CLEAN_ROOT_NAME).mkdir()
+            (site / CLEAN_ROOT_NAME / GATE_FILE).write_text(__import__("json").dumps(gate))
+        sites[name] = str(site / "val")
+    clean_cfg = _broken_config(tmp, multimodal__token_set="clean")
+    cases += [
+        ("token set: unknown value",            "token set", dict(env=GOOD_ENV, config=_broken_config(tmp, multimodal__token_set="cleaned"))),
+        ("token set: root already val_clean",   "token set", dict(env=_env(TERRAMESH_TOK_ROOT=str(real_val.parent / "val_clean")))),
+        ("token set: clean, root never built",  "token set", dict(env=_env(TERRAMESH_TOK_ROOT=sites["nogate"]), config=clean_cfg)),
+        ("token set: clean, gate failed",       "token set", dict(env=_env(TERRAMESH_TOK_ROOT=sites["failed"]), config=clean_cfg)),
+        ("token set: clean, gated but empty",   "token set", dict(env=_env(TERRAMESH_TOK_ROOT=sites["empty"]), config=clean_cfg)),
+    ]
+    arm_cfg = REPO / "conf/pretrain_vision/eo_terramesh"
+
     print("\nnegative controls (each must FIRE):")
     fired = 0
     for label, target, kw in cases:
         res = _results(**kw)
         ok = not res[target]
         fired += ok
-        print(f"  {'FIRED ' if ok else 'MISSED'}  {label:<36} -> {target}")
+        print(f"  {'FIRED ' if ok else 'MISSED'}  {label:<36} -> {target}: {res.detail[target][:90]}")
 
     print("\npositive controls (must still PASS):")
     positives = [
@@ -302,12 +339,18 @@ def main(argv=None) -> int:
          _results(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split=None))),
     ] + [
         (f"a100: {name} under the RCP root", name, rcp_base) for name in ("MOR_SAVE_DIR", "HF_HOME", "W&B")
+    ] + [
+        ("token set: clean resolves to val_clean", "token set", _results(env=GOOD_ENV, config=clean_cfg)),
+    ] + [
+        (f"token set: {arm} (Hydra overlay)", "token set",
+         _results(env=GOOD_ENV, config=arm_cfg / f"{arm}.yaml"))
+        for arm in ("arm_b10c_vanilla", "arm_a10c_mor")
     ]
     pos_ok = 0
     for label, target, res in positives:
         ok = res[target]
         pos_ok += ok
-        print(f"  {'PASS  ' if ok else 'FAILED'}  {label:<36} -> {target}")
+        print(f"  {'PASS  ' if ok else 'FAILED'}  {label:<36} -> {target}: {res.detail[target][:90]}")
 
     # --- GPU alias resolution on fake inventories (gpu.resolve, no nvidia-smi). The
     # compute capability is what disambiguates names: an A10 (sm_86) contains "A10"
