@@ -29,6 +29,12 @@ main pass, e.g. for a grid-only run on an already-evaluated checkpoint.
 autocast noise. It is printed per modality and stored; a large gap means the
 loader, the modality order or the attribution differs from training.
 
+⚠ THE TOKENS ARE THE CONFIG'S: `multimodal.token_set` in --arm-config picks the
+root (original | clean, lm_dataset/load_dataset.py) and metrics.json records it.
+To score an original-token checkpoint on the cleaned tokens (the bridge, next
+steps §3), pass the cleaned arm's config and a new --arm-tag: the model is the
+same, and `logged_eval` then differs from the pass in S2L2A/NDVI by design.
+
 ⚠ `untrained` is a legitimate checkpoint name: a randomly initialised model
 (seed 42), the step-0 point of every curve.
 
@@ -213,8 +219,15 @@ def main() -> int:
         if ov is None and any(m != "router" for m in todo):
             raise SystemExit(f"{ck}: interventions need a router; this arm has none")
         step = 0 if ck == "untrained" else int(ck.split("-")[-1])
+        # The tokens come from the config's multimodal.token_set (absent = original, every
+        # run before B10c). Results resume per directory, so one directory holds one set.
+        token_set = (cfg.get("multimodal") or {}).get("token_set", "original")
+        if doc and doc.get("token_set", "original") != token_set:
+            raise SystemExit(f"{out} holds token_set={doc.get('token_set', 'original')!r} results; "
+                             f"this config reads {token_set!r}. Use another --arm-tag.")
         ds, loader = TF.eval_loader(cfg, num_workers=args.num_workers)
         doc.update({"arm_tag": args.arm_tag, "arm_config": args.arm_config, "checkpoint": ck,
+                    "token_set": token_set, "token_root": str(ds.root_dir),
                     "step": step, "gpu": gpu, "n_eval_rows": len(ds),
                     "has_router": ov is not None,
                     "logged_eval": logged_eval(run_dir, step) if ck != "untrained" else None})
