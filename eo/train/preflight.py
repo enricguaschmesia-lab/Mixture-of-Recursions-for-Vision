@@ -548,12 +548,14 @@ def _checkpoint_param_keys(ckpt: Path) -> Optional[List[str]]:
     return None
 
 
-def _arm_name(recursive: bool, mor: bool) -> str:
-    return "MoR" if mor else ("recursive-no-router" if recursive else "vanilla")
+def _arm_name(recursive: bool, mor: bool, rand: bool = False) -> str:
+    if mor:
+        return "MoR (random router)" if rand else "MoR"
+    return "recursive-no-router" if recursive else "vanilla"
 
 
-def _checkpoint_arm(ckpt: Path, keys: List[str], cfg: dict) -> "tuple[bool, bool]":
-    """(recursive, mor) as the checkpoint ON DISK actually is.
+def _checkpoint_arm(ckpt: Path, keys: List[str], cfg: dict) -> "tuple[bool, bool, bool]":
+    """(recursive, mor, random router) as the checkpoint ON DISK actually is.
 
     Measured on real checkpoints from all three arms, 2026-09-21:
 
@@ -576,19 +578,28 @@ def _checkpoint_arm(ckpt: Path, keys: List[str], cfg: dict) -> "tuple[bool, bool
     (`lm_head.weight` present-vs-absent also separates them, because
     `sharing_strategy` unties the head -- worklog open item 26. That is a
     symptom of a bug rather than a definition, so it is not used as the test.)
+
+    ⚠ `mor.rand_router=true` (Step 4's random-router control, 2026-10-11): the
+    MoR transform runs, so the keys are `block_list` ones, but there is no
+    `mor_router` (264 tensors against MoR's 266; measured on a built model).
+    Without this branch it fingerprinted as vanilla and every resume was
+    refused; treated as plain MoR, a learned-router run could resume from it as
+    a partial load. Hence the third component.
     """
     if any("mor_router" in k for k in keys):
-        return True, True          # MoR implies recursive sharing here
+        return True, True, False   # MoR implies recursive sharing here
+    if any(".block_list." in k for k in keys):
+        return True, True, True    # the MoR transform without a learned router
 
     n_layers = (cfg.get("model_config") or {}).get("num_hidden_layers")
     n_rec = (cfg.get("recursive") or {}).get("num_recursion")
     if not n_layers or not n_rec or n_rec < 2:
-        return False, False        # cannot tell; treat as non-recursive
+        return False, False, False  # cannot tell; treat as non-recursive
     base_depth = (int(n_layers) - 2) // int(n_rec)
     a = f"model.layers.1.self_attn.q_proj.weight"
     b = f"model.layers.{1 + base_depth}.self_attn.q_proj.weight"
     if a not in keys or b not in keys:
-        return False, False
+        return False, False, False
 
     import torch
     st = ckpt / "model.safetensors"
@@ -600,7 +611,7 @@ def _checkpoint_arm(ckpt: Path, keys: List[str], cfg: dict) -> "tuple[bool, bool
         sd = torch.load(ckpt / "pytorch_model.bin", map_location="cpu",
                         mmap=True, weights_only=True)
         shared = torch.equal(sd[a], sd[b])
-    return bool(shared), False
+    return bool(shared), False, False
 
 
 def check_resume_checkpoint(ctx: PreflightContext) -> CheckResult:
@@ -649,15 +660,16 @@ def check_resume_checkpoint(ctx: PreflightContext) -> CheckResult:
     cfg = _load_config(ctx.config_path, ctx.overrides) if ctx.config_path else {}
     want_recursive = bool((cfg.get("recursive") or {}).get("enable"))
     want_mor = bool((cfg.get("mor") or {}).get("enable"))
-    got_recursive, got_mor = _checkpoint_arm(ckpt, keys, cfg)
+    want_rand = want_mor and bool((cfg.get("mor") or {}).get("rand_router"))
+    got_recursive, got_mor, got_rand = _checkpoint_arm(ckpt, keys, cfg)
 
-    if (got_recursive, got_mor) != (want_recursive, want_mor):
+    if (got_recursive, got_mor, got_rand) != (want_recursive, want_mor, want_rand):
         return CheckResult(
             "resume checkpoint", False,
-            f"{ckpt.name} is a {_arm_name(got_recursive, got_mor)} checkpoint but this run "
-            f"is {_arm_name(want_recursive, want_mor)} "
-            f"(checkpoint recursive={got_recursive}/mor={got_mor}, "
-            f"config recursive={want_recursive}/mor={want_mor})",
+            f"{ckpt.name} is a {_arm_name(got_recursive, got_mor, got_rand)} checkpoint but this run "
+            f"is {_arm_name(want_recursive, want_mor, want_rand)} "
+            f"(checkpoint recursive={got_recursive}/mor={got_mor}/rand={got_rand}, "
+            f"config recursive={want_recursive}/mor={want_mor}/rand={want_rand})",
             "Resuming across arms is a PARTIAL model load that HF reports as a warning. "
             "It is caught today only by the optimizer's param-group check, i.e. only when "
             "optimizer.pt is present. Do not rely on that.")

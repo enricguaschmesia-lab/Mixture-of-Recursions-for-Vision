@@ -1,0 +1,26 @@
+# @package _global_
+#
+# ARM B10c-11L — B10c with 11 layers: vanilla PARAMETER-matched to A10c.
+# Next steps 2026-10-11, Step 4.2 (worklog §4 item 31).
+#
+# ┌── THE DIFF FROM B10c (arm_b10c_vanilla), IN FULL ───────────────────┐
+# │                               B10c        B10c-11L (this)           │
+# │   model_config.num_hidden_layers  29      11                        │
+# │ Nothing else. W15 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question: does recursion help, or does a smaller model just overfit
+# less? A10c has 11 UNIQUE layers (2 + 9 shared, applied up to 3 times).
+# Measured on built models (2026-10-11), non-embedding parameters:
+#   A10c 39.61M (incl. the 0.67M router) · this 38.94M (-1.7%) · 12 layers 42.48M (+7%)
+# Embedding + head 50.43M in all of them. FLOPs per token are NOT matched
+# (11 layer applications against A10c's ~19.9): that is the point of the pair.
+#
+#   launch (RCP):  jobs/train.sh vanilla10c11 eo_terramesh/arm_b10c11_vanilla vanilla10c11_<ts>
+
+defaults:
+  - arm_b10c_vanilla
+  - _self_
+
+model_config:
+  num_hidden_layers: 11

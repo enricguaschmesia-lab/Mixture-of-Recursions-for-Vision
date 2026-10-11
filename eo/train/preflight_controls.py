@@ -73,13 +73,17 @@ def _fake_checkpoint(parent: Path, arm: str, *, drop: Tuple[str, ...] = (),
 
     base_depth = (29 - 2) // 3          # middle_cycle, num_recursion=3 -> layers 1 and 10
     a = torch.eye(2)
-    sd = {
-        "model.embed_tokens.weight": torch.zeros(2, 2),
-        "model.layers.1.self_attn.q_proj.weight": a,
-        # recursive sharing means THE SAME TENSOR, not merely equal values
-        f"model.layers.{1 + base_depth}.self_attn.q_proj.weight":
-            a if arm in ("recursive", "mor") else torch.ones(2, 2),
-    }
+    if arm == "random":                 # the MoR transform's names, no learned router (real: 264 keys)
+        sd = {"model.embed_tokens.weight": torch.zeros(2, 2),
+              "model.layers.1.block_list.0.0.self_attn.q_proj.weight": a}
+    else:
+        sd = {
+            "model.embed_tokens.weight": torch.zeros(2, 2),
+            "model.layers.1.self_attn.q_proj.weight": a,
+            # recursive sharing means THE SAME TENSOR, not merely equal values
+            f"model.layers.{1 + base_depth}.self_attn.q_proj.weight":
+                a if arm in ("recursive", "mor") else torch.ones(2, 2),
+        }
     if arm == "mor":
         sd["model.layers.1.mor_router.router.0.weight"] = torch.zeros(2, 2)
     torch.save(sd, d / "pytorch_model.bin")
@@ -233,7 +237,8 @@ def main(argv=None) -> int:
     # from global step N", and a model that was partly or wholly random. ---
     ARMS = {"vanilla": {"recursive.enable": False, "mor.enable": False},
             "recursive": {"recursive.enable": True, "mor.enable": False},
-            "mor": {"recursive.enable": True, "mor.enable": True}}
+            "mor": {"recursive.enable": True, "mor.enable": True},
+            "random": {"recursive.enable": True, "mor.enable": True, "mor.rand_router": True}}
     ck = {arm: (tmp / f"run_{arm}") for arm in ARMS}
     for arm, d in ck.items():
         _fake_checkpoint(d, arm)
@@ -260,7 +265,8 @@ def main(argv=None) -> int:
                        overrides=ARMS["mor"], allow_existing=True)))
     for ckpt_arm, run_arm in [("vanilla", "mor"), ("recursive", "mor"), ("mor", "vanilla"),
                               ("mor", "recursive"), ("vanilla", "recursive"),
-                              ("recursive", "vanilla")]:
+                              ("recursive", "vanilla"), ("random", "mor"), ("mor", "random"),
+                              ("random", "vanilla"), ("vanilla", "random")]:
         cases.append((f"resume: {ckpt_arm} ckpt as {run_arm} run", "resume checkpoint",
                       resume_case(ckpt_arm, run_arm)))
 

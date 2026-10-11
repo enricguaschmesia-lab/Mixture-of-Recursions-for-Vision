@@ -1,0 +1,29 @@
+# @package _global_
+#
+# ARM A10c seed 2 — A10c with another seed.  Next steps 2026-10-11, Step 4.3
+# (worklog §4 item 36).
+#
+# ┌── THE DIFF FROM A10c (arm_a10c_mor), IN FULL ───────────────────────┐
+# │                            A10c         A10c-s2 (this)              │
+# │   seed                     42           43                          │
+# │ Nothing else. W15 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question: how stable is the routing, and how large is the run-to-run
+# noise of the A - B gap? `seed` drives the initialization, the data order and
+# the per-sample modality order (_get_rng seeds on (seed, worker, idx)); the
+# held-out split is a committed artifact and does not move.
+#
+# ⚠ `seed` ALSO sets the modality order of the held-out SEQUENCES, so this
+# run's logged eval scores the same rows in different orders than A10c's.
+# Evaluate its checkpoints with `eval_checkpoint.py --arm-config
+# eo_terramesh/arm_a10c_mor` (same model, seed-42 sequences): the comparison
+# with A10c is then the training seed alone.
+#
+#   launch (RCP):  jobs/train.sh mor10cs2 eo_terramesh/arm_a10cs2_mor mor10cs2_<ts>
+
+defaults:
+  - arm_a10c_mor
+  - _self_
+
+seed: 43

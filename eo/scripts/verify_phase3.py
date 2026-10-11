@@ -31,6 +31,9 @@ unverified deliverable:
                                                     of TargetLast's sequence
   W14 B10c/A10c change only token_set     [next steps 2026-10-11, Step 2] and
                                                     the key reaches the data
+  W15 Step 4 controls one key each        [next steps, Step 4] A10cR has no
+                                                    router; B10c-11L matches A10c's
+                                                    non-embedding parameters
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -635,6 +638,16 @@ ARM_B10C = "eo_terramesh/arm_b10c_vanilla"
 
 #: The ONLY key a cleaned arm may differ from its 10-epoch parent in.
 TOKEN_SET_DIFF_KEYS = {"multimodal.token_set"}
+
+#: The controls on the cleaned tokens (next steps Step 4): each is one key off its parent.
+ARM_A10CR = "eo_terramesh/arm_a10cr_random"
+ARM_B10C11 = "eo_terramesh/arm_b10c11_vanilla"
+ARM_A10CS2 = "eo_terramesh/arm_a10cs2_mor"
+CONTROL_DIFFS = {ARM_A10CR: (ARM_A10C, {"mor.rand_router"}),
+                 ARM_B10C11: (ARM_B10C, {"model_config.num_hidden_layers"}),
+                 ARM_A10CS2: (ARM_A10C, {"seed"})}
+#: B10c-11L must match A10c's non-embedding parameters this closely (measured -1.7%).
+PARAM_MATCH_TOL = 0.03
 
 #: The plan's A10/B10 schedule (Step 11.1), in optimizer steps.
 A10_TOTAL, A10_WARMUP_END, A10_DECAY_START = 3300, 165, 2970
@@ -1407,6 +1420,58 @@ def w14_clean_arms() -> bool:
     return bool(ok and c1 and c2 and c3)
 
 
+def _model_stats(config: str, overrides=()):
+    """(non-embedding parameters, state-dict keys) of a freshly built model, on CPU."""
+    import torch
+    from eo.generate import conditional as G
+    torch.manual_seed(0)
+    m, _ = G.build_model(config, None, device="cpu", overrides=list(overrides))
+    ne = sum(p.numel() for n, p in m.named_parameters()
+             if "embed_tokens" not in n and "lm_head" not in n)
+    keys = list(m.state_dict().keys())
+    del m
+    return ne, keys
+
+
+def w15_step4_controls() -> bool:
+    """Each Step 4 control is one key off its parent, and does what it claims:
+    A10cR has no learned router, B10c-11L matches A10c's non-embedding
+    parameters (next steps 2026-10-11, Step 4)."""
+    ok = True
+    for child, (parent, keys) in CONTROL_DIFFS.items():
+        diff = _arm_diff(_compose(parent), _compose(child))
+        pair_ok = diff == keys
+        print(f"    {child} vs {parent}: differs in exactly {sorted(keys)} = {pair_ok}")
+        if not pair_ok:
+            print(f"      measured: {sorted(diff)}")
+        ok &= pair_ok
+
+    ne_a, keys_a = _model_stats(ARM_A10C)
+    ne_r, keys_r = _model_stats(ARM_A10CR)
+    ne_s, _ = _model_stats(ARM_B10C11)
+    rel = ne_s / ne_a - 1
+    router_a = [k for k in keys_a if "mor_router" in k]
+    router_r = [k for k in keys_r if "mor_router" in k]
+    no_router = bool(router_a) and not router_r and set(keys_a) - set(keys_r) == set(router_a)
+    match = abs(rel) <= PARAM_MATCH_TOL
+    print(f"    A10cR: no mor_router ({len(keys_r)} vs {len(keys_a)} tensors), nothing else missing = {no_router}")
+    print(f"    B10c-11L non-embedding {ne_s / 1e6:.2f}M vs A10c {ne_a / 1e6:.2f}M ({rel:+.1%}, "
+          f"band {PARAM_MATCH_TOL:.0%}) = {match}")
+    ok &= no_router and match
+
+    # CONTROL 1: a stray difference in a control overlay must be caught.
+    c1 = _arm_diff(_compose(ARM_A10C), _compose(ARM_A10CR, ["learning_rate=0.001"])) != {"mor.rand_router"}
+    print(f"    control: a stray learning_rate in A10cR is caught       = {c1}")
+    # CONTROL 2: the parameter band must reject a 12-layer vanilla (measured +7%).
+    ne_12, _ = _model_stats(ARM_B10C11, ["model_config.num_hidden_layers=12"])
+    c2 = abs(ne_12 / ne_a - 1) > PARAM_MATCH_TOL
+    print(f"    control: 12 layers ({ne_12 / ne_a - 1:+.1%}) falls outside the band      = {c2}")
+    # CONTROL 3: the learned-router model must not pass as router-less.
+    c3 = bool([k for k in keys_a if "mor_router" in k])
+    print(f"    control: A10c itself has a mor_router                   = {c3}")
+    return bool(ok and c1 and c2 and c3)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1426,6 +1491,7 @@ def main() -> int:
         ("W12  TargetLast(sources=None) is unchanged [Step 12, P3]", w12_targetlast_sources),
         ("W13  build_prompt(sources=None) is unchanged [Step 12.5]", w13_build_prompt_sources),
         ("W14  B10c/A10c change only the token set   [next steps, Step 2]", w14_clean_arms),
+        ("W15  Step 4 controls: one key each, as claimed [next steps, Step 4]", w15_step4_controls),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]

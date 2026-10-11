@@ -1,0 +1,39 @@
+# @package _global_
+#
+# ARM A10cR — A10c with a RANDOM router.  Next steps 2026-10-11, Step 4.1.
+#
+# ┌── THE DIFF FROM A10c (arm_a10c_mor), IN FULL ───────────────────────┐
+# │                            A10c         A10cR (this)                │
+# │   mor.rand_router          false        true                        │
+# │ Nothing else. W15 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question: does the LEARNED router beat a random one? Prerequisite for any
+# routing claim (PROJECT.md §3, weakness 2: on CLEVR the random router was
+# competitive).
+#
+# DESIGN (2026-10-11): uniform random depth, the existing `rand_router` --
+# every token draws its depth uniformly from {1,2,3} at every forward pass, and
+# its update weight U(0,1) * alpha. Chosen over "random within each modality's
+# measured mix" because:
+#   * it is FLOP-matched: 2 + 9 * E[d] = 20.0 layers/token, against A10's
+#     learned 19.93 (W10 log), i.e. within 0.4%;
+#   * it is the same control as the CLEVR random-router baseline
+#     (baseline_random/110526_..._baseline_random.yaml);
+#   * it needs no new code (the next steps build nothing new).
+# The per-modality mix would ask a narrower question (is it the per-token
+# choice, given each modality's share?) and is worth building only if this
+# control comes out close to A10c.
+#
+# A random-router checkpoint has the MoR transform's block_list keys and no
+# mor_router (264 tensors vs 266): preflight's resume fingerprint knows it as
+# "MoR (random router)". Eval treats it as router-less (no depth capture).
+#
+#   launch (RCP):  jobs/train.sh mor10cr eo_terramesh/arm_a10cr_random mor10cr_<ts>
+
+defaults:
+  - arm_a10c_mor
+  - _self_
+
+mor:
+  rand_router: true
