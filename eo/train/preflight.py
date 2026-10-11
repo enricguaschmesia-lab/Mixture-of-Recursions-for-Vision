@@ -40,7 +40,7 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from eo.train import gpu as gpu_mod
 
@@ -62,7 +62,31 @@ MIN_FREE_GPU_MIB = 11000
 
 #: Large outputs belong on /data (CLAUDE.md). This is the load-bearing
 #: guardrail now that the data is local rather than reachable only over SSH.
+#: A remote alias (gpu.py, `large_output_env`) replaces it with its private root.
 LARGE_OUTPUT_PREFIX = "/data"
+
+
+def large_output_root(ctx: "PreflightContext") -> Tuple[Optional[Path], str]:
+    """(root large outputs must live under, error). The root is None on error.
+
+    Workstation aliases: /data, whatever the environment says, so an RCP variable
+    left in a local shell cannot relax the local guard. Remote aliases: the
+    absolute path in the alias's `large_output_env`, which must be set.
+    """
+    spec = gpu_mod.GPU_ALIASES.get(ctx.gpu_alias.strip().lower())
+    key = spec.large_output_env if spec else None
+    if key is None:
+        return Path(LARGE_OUTPUT_PREFIX), ""
+    raw = ctx.env.get(key)
+    if not raw or not Path(raw).is_absolute():
+        return None, (f"{key} {'unset' if not raw else f'{raw!r} is not absolute'}: "
+                      f"--gpu {ctx.gpu_alias} needs the site's private root there")
+    return Path(raw), ""
+
+
+def _under(p: Path, root: Path) -> bool:
+    """Path containment, not a string prefix: /data2 is not under /data."""
+    return p == root or root in p.parents
 
 
 @dataclass
@@ -192,9 +216,13 @@ def check_save_dir(ctx: PreflightContext) -> CheckResult:
     p = Path(raw)
     if not p.is_absolute():
         return CheckResult("MOR_SAVE_DIR", False, f"{raw!r} is not absolute", "Use an absolute path.")
-    if not str(p).startswith(LARGE_OUTPUT_PREFIX):
-        return CheckResult("MOR_SAVE_DIR", False, f"{p} is not under {LARGE_OUTPUT_PREFIX}",
-                           "Large outputs go on /data, never /home (CLAUDE.md).")
+    root, err = large_output_root(ctx)
+    if root is None:
+        return CheckResult("MOR_SAVE_DIR", False, err)
+    if not _under(p, root):
+        return CheckResult("MOR_SAVE_DIR", False, f"{p} is not under {root}",
+                           "Large outputs go on /data, never /home (CLAUDE.md); on RCP, "
+                           "under the private root.")
     try:
         p.mkdir(parents=True, exist_ok=True)
         probe = p / ".preflight_write_test"
@@ -235,8 +263,11 @@ def check_hf_home(ctx: PreflightContext) -> CheckResult:
         return CheckResult("HF_HOME", False, "unset",
                            "paths.py falls back to <repo>/hf_cache, i.e. model weights on /home.")
     p = Path(raw)
-    if not str(p).startswith(LARGE_OUTPUT_PREFIX):
-        return CheckResult("HF_HOME", False, f"{p} is not under {LARGE_OUTPUT_PREFIX}")
+    root, err = large_output_root(ctx)
+    if root is None:
+        return CheckResult("HF_HOME", False, err)
+    if not _under(p, root):
+        return CheckResult("HF_HOME", False, f"{p} is not under {root}")
     return CheckResult("HF_HOME", True, str(p))
 
 
@@ -253,8 +284,11 @@ def check_wandb(ctx: PreflightContext) -> CheckResult:
     if mode == "disabled":
         return CheckResult("W&B", True, "disabled")
     wandb_dir = ctx.env.get("WANDB_DIR")
-    if wandb_dir and not str(Path(wandb_dir)).startswith(LARGE_OUTPUT_PREFIX):
-        return CheckResult("W&B", False, f"WANDB_DIR={wandb_dir} is not under {LARGE_OUTPUT_PREFIX}")
+    root, err = large_output_root(ctx)
+    if root is None:
+        return CheckResult("W&B", False, err)
+    if wandb_dir and not _under(Path(wandb_dir), root):
+        return CheckResult("W&B", False, f"WANDB_DIR={wandb_dir} is not under {root}")
     if not wandb_dir and mode != "disabled":
         return CheckResult(
             "W&B", False, "WANDB_DIR unset",

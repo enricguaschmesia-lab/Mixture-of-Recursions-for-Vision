@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -91,7 +92,9 @@ SPLIT_TAG = "v1"
 EARTH_RADIUS_KM = 6371.0
 TILE_WIDTH_M = 2640.0        # measured off `bounds`, identical in both corpora
 
-DEFAULT_METADATA_PATH = "/data/enric/data/TerraMesh/val_metadata.parquet"
+#: TERRAMESH_METADATA_PATH overrides it (RCP, 2026-10-07), like TERRAMESH_TOK_ROOT for the tokens.
+#: Unset, the default is the workstation path, unchanged.
+DEFAULT_METADATA_PATH = os.environ.get("TERRAMESH_METADATA_PATH", "/data/enric/data/TerraMesh/val_metadata.parquet")
 
 
 def _sha256(path: Path) -> str:

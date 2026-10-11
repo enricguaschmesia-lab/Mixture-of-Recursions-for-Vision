@@ -23,6 +23,7 @@
 #
 #   --arm NAME        required. Names the run, the W&B run, and the output dir.
 #   --gpu ALIAS       titanv (default, the training card) | titanx
+#                     | a100 (EPFL RCP only, inside a Run:AI job; no --detach)
 #   --config NAME     Hydra config name under conf/pretrain_vision/
 #                     (default: eo_terramesh/terramesh_mor_token)
 #   --detach          run in tmux, logging to /data/enric/logs/<run>.log
@@ -35,6 +36,9 @@
 #   bash eo/scripts/train_eo.sh --arm smoke stop_steps=30 total_batch_size=4 wandb=false
 #   bash eo/scripts/train_eo.sh --arm mor --detach
 #   bash eo/scripts/train_eo.sh --arm mor --resume --run-id mor_20260921_143000
+#
+# Environment overrides (RCP; unset on the workstation): MOR_PYTHON (the
+# interpreter, default .venv/bin/python), MOR_LOG_DIR (default /data/enric/logs).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -86,8 +90,12 @@ fi
 # --- 2 & 3. device order, then resolve the GPU by NAME -----------------------
 # Pinned BEFORE resolving so the index we compute is the index CUDA will use.
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-PY="$REPO/.venv/bin/python"
-[[ -x "$PY" ]] || { echo "ERROR: $PY not found. The EO training path runs in .venv." >&2; exit 2; }
+PY="${MOR_PYTHON:-$REPO/.venv/bin/python}"
+[[ -x "$PY" ]] || { echo "ERROR: $PY not found. The EO training path runs in .venv (MOR_PYTHON on RCP)." >&2; exit 2; }
+# On RCP the Run:AI job is the supervisor (restarts, logs); a tmux inside a pod dies with it.
+if [[ "$GPU" == "a100" && $DETACH -eq 1 ]]; then
+  echo "ERROR: --detach is for the workstation. On RCP, submit the run as a Run:AI job." >&2; exit 2
+fi
 
 if ! GPU_INDEX="$("$PY" -m eo.train.gpu "$GPU")"; then
   echo "ERROR: could not resolve --gpu '$GPU'." >&2
@@ -101,7 +109,7 @@ export CUDA_VISIBLE_DEVICES="$GPU_INDEX"
 [[ -n "$RUN_ID" ]] || RUN_ID="${ARM}_$(date +%Y%m%d_%H%M%S)"
 OUTPUT_DIR="phase3/${RUN_ID}"
 RUN_DIR="${MOR_SAVE_DIR:-/data/enric/runs}/pretrain/${OUTPUT_DIR}"
-LOG_DIR="/data/enric/logs"
+LOG_DIR="${MOR_LOG_DIR:-/data/enric/logs}"
 LOG_FILE="${LOG_DIR}/${RUN_ID}.log"
 
 PRE_FLAGS=()

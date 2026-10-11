@@ -30,6 +30,13 @@ fp16 run from silently landing on a card with no fp16 tensor cores.
 
 Imports torch lazily: `list_gpus`/`resolve` shell out to `nvidia-smi` and are
 usable before CUDA is initialized, which is exactly when the selection is made.
+
+REMOTE ALIASES (2026-10-11). `a100` is EPFL RCP's Run:AI A100, used only through
+the RCP job wrapper. A pod sees exactly one card, so resolution and the
+assertions below work unchanged. What differs is WHERE large outputs may live:
+there is no /data on RCP, and the private project root is named by the alias's
+`large_output_env` (`MOR_EO_RCP`). Preflight enforces that root on RCP, and
+/data on the workstation, so the remote setting can never relax the local guard.
 """
 from __future__ import annotations
 
@@ -52,6 +59,9 @@ class GpuSpec:
     name_contains: str
     compute_capability: Tuple[int, int]
     note: str
+    #: None on the workstation (large outputs under /data). On a remote site, the
+    #: env var naming the private root that large outputs must live under.
+    large_output_env: Optional[str] = None
 
 
 #: Aliases are matched case-insensitively as substrings of the reported name and
@@ -71,6 +81,14 @@ GPU_ALIASES: Dict[str, GpuSpec] = {
         compute_capability=(5, 2),
         note="Maxwell. No tensor cores (5.30 TFLOP/s fp32, 4.44 fp16 -- fp16 is SLOWER here). "
              "Reserved for eval/generation so they never steal training time.",
+    ),
+    "a100": GpuSpec(
+        alias="a100",
+        name_contains="A100",
+        compute_capability=(8, 0),
+        note="Ampere, EPFL RCP (Run:AI). fp16/bf16 tensor cores. Remote: launched only through "
+             "the RCP job wrapper; large outputs under $MOR_EO_RCP, not /data.",
+        large_output_env="MOR_EO_RCP",
     ),
 }
 

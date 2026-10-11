@@ -95,9 +95,9 @@ def _fake_checkpoint(parent: Path, arm: str, *, drop: Tuple[str, ...] = (),
 def _results(env, *, run_dir: Optional[Path] = None, config: Optional[Path] = None,
              allow_existing: bool = False, resuming: bool = False,
              overrides: Optional[dict] = None, check_torch: bool = False,
-             min_free_gpu_mib: Optional[int] = None) -> Dict[str, bool]:
+             min_free_gpu_mib: Optional[int] = None, gpu_alias: str = "titanv") -> Dict[str, bool]:
     ctx = PreflightContext(
-        gpu_alias="titanv",
+        gpu_alias=gpu_alias,
         run_dir=run_dir or (Path(tempfile.mkdtemp()) / "fresh"),
         config_path=CONFIG if config is None else config,
         allow_existing=allow_existing,
@@ -252,6 +252,26 @@ def main(argv=None) -> int:
         cases.append((f"resume: {ckpt_arm} ckpt as {run_arm} run", "resume checkpoint",
                       resume_case(ckpt_arm, run_arm)))
 
+    # --- remote site (RCP A100, 2026-10-11). Large outputs must live under the
+    # private root named by MOR_EO_RCP, and that variable must never relax the
+    # workstation's /data guard. ---
+    rcp = tmp / "rcp"
+    rcp_env = _env(MOR_EO_RCP=str(rcp), MOR_SAVE_DIR=str(rcp / "runs"), HF_HOME=str(rcp / "hf"),
+                   WANDB_DIR=str(rcp / "runs/wandb"), WANDB_MODE="offline")
+    rcp_base = _results(rcp_env, gpu_alias="a100")
+    if not all(rcp_base.values()):
+        print(f"  BROKEN a100 BASELINE -- failing: {[k for k, v in rcp_base.items() if not v]}")
+        return 1
+    cases += [
+        ("a100: MOR_EO_RCP unset",              "MOR_SAVE_DIR", dict(env={k: v for k, v in rcp_env.items() if k != "MOR_EO_RCP"}, gpu_alias="a100")),
+        ("a100: MOR_EO_RCP relative",           "MOR_SAVE_DIR", dict(env={**rcp_env, "MOR_EO_RCP": "rcp"}, gpu_alias="a100")),
+        ("a100: MOR_SAVE_DIR outside RCP root", "MOR_SAVE_DIR", dict(env={**rcp_env, "MOR_SAVE_DIR": "/data/enric/runs"}, gpu_alias="a100")),
+        ("a100: HF_HOME outside RCP root",      "HF_HOME",      dict(env={**rcp_env, "HF_HOME": "/data/enric/hf"}, gpu_alias="a100")),
+        ("a100: WANDB_DIR outside RCP root",    "W&B",          dict(env={**rcp_env, "WANDB_DIR": "/data/enric/runs/wandb"}, gpu_alias="a100")),
+        ("titanv: MOR_EO_RCP cannot relax /data", "MOR_SAVE_DIR", dict(env={**rcp_env}, gpu_alias="titanv")),
+        ("MOR_SAVE_DIR on /data2 (not /data)",  "MOR_SAVE_DIR", dict(env=_env(MOR_SAVE_DIR="/data2/runs"))),
+    ]
+
     print("\nnegative controls (each must FIRE):")
     fired = 0
     for label, target, kw in cases:
@@ -280,6 +300,8 @@ def main(argv=None) -> int:
         # Phase 2 behaviour. Without this the check could be "always fail".
         ("eval split: null is allowed (no eval)", "eval split",
          _results(env=GOOD_ENV, config=_broken_config(tmp, multimodal__eval_split=None))),
+    ] + [
+        (f"a100: {name} under the RCP root", name, rcp_base) for name in ("MOR_SAVE_DIR", "HF_HOME", "W&B")
     ]
     pos_ok = 0
     for label, target, res in positives:
@@ -287,9 +309,35 @@ def main(argv=None) -> int:
         pos_ok += ok
         print(f"  {'PASS  ' if ok else 'FAILED'}  {label:<36} -> {target}")
 
-    total_ok = fired == len(cases) and pos_ok == len(positives)
+    # --- GPU alias resolution on fake inventories (gpu.resolve, no nvidia-smi). The
+    # compute capability is what disambiguates names: an A10 (sm_86) contains "A10"
+    # but not "A100"; a card NAMED A100 at the wrong capability must still refuse. ---
+    from eo.train.gpu import GpuInfo, resolve
+    a100 = GpuInfo(0, "NVIDIA A100-SXM4-80GB", (8, 0), 81920)
+    res_cases = [
+        ("resolve a100 on an RCP pod",            [a100], "a100", 0),
+        ("resolve titanv on the workstation",     [GpuInfo(0, "NVIDIA GeForce GTX TITAN X", (5, 2), 12288),
+                                                   GpuInfo(1, "NVIDIA TITAN V", (7, 0), 12288)], "titanv", 1),
+        ("a100 alias on an A10 (sm_86) refuses",  [GpuInfo(0, "NVIDIA A10", (8, 6), 24576)], "a100", None),
+        ("a100 alias at the wrong capability",    [GpuInfo(0, "NVIDIA A100-SXM4-80GB", (7, 5), 81920)], "a100", None),
+        ("a100 alias with two A100s visible",     [a100, GpuInfo(1, "NVIDIA A100-SXM4-80GB", (8, 0), 81920)], "a100", None),
+        ("a100 alias on the workstation refuses", [GpuInfo(1, "NVIDIA TITAN V", (7, 0), 12288)], "a100", None),
+    ]
+    print("\nalias resolution (fake inventories):")
+    res_ok = 0
+    for label, inv, alias, want in res_cases:
+        try:
+            got = resolve(alias, inv).index
+        except RuntimeError:
+            got = None
+        ok = got == want
+        res_ok += ok
+        print(f"  {'OK    ' if ok else 'WRONG '}  {label:<36} -> {got}")
+
+    total_ok = fired == len(cases) and pos_ok == len(positives) and res_ok == len(res_cases)
     print(f"\n{fired}/{len(cases)} negative controls fired, "
-          f"{pos_ok}/{len(positives)} positive controls passed")
+          f"{pos_ok}/{len(positives)} positive controls passed, "
+          f"{res_ok}/{len(res_cases)} alias resolutions right")
     print("PREFLIGHT CONTROLS PASSED" if total_ok else "PREFLIGHT CONTROLS FAILED")
     return 0 if total_ok else 1
 
