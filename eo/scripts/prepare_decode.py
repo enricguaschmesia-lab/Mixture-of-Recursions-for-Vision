@@ -174,6 +174,8 @@ def main() -> int:
         "source_dir": str(gen_dir),
         "generation": json.loads(stats_path.read_text()) if stats_path.exists() else None,
     }
+    # Which tokens the prompts and the decode references come from (absent = original).
+    manifest["token_set"] = ((manifest["generation"] or {}).get("provenance") or {}).get("token_set", "original")
     (out / f"decode_manifest_{target}.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 

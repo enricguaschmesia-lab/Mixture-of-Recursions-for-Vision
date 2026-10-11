@@ -74,6 +74,31 @@ LULC_CMAP = ListedColormap(["#d9d9d9", "#419bdf", "#397d49", "#7a87c6", "#e49635
 INDEX = None
 
 
+def arm_token_set(arm: str, target: str) -> str:
+    """The token set an arm's generations were prompted with (absent: original, before B10c)."""
+    return json.loads((GEN / arm / target / "manifest.json").read_text()).get("token_set", "original")
+
+
+def root_token_set(arms, target=None) -> str:
+    """The one token set of this output root. The ceiling (true tokens decoded, scored against
+    the references) is shared by every arm in a root and both change with the token set, so a
+    root holds one set: decoded_grid/ the original, e.g. decoded_grid_clean/ the cleaned."""
+    marker = OUT / "token_set.json"
+    have = json.loads(marker.read_text())["token_set"] if marker.exists() else None
+    sets = {arm_token_set(a, T) for a in arms for T in ([target] if target else TARGETS)
+            if (GEN / a / T / "manifest.json").exists()}
+    if have is not None:
+        sets.add(have)
+    if len(sets) > 1:
+        raise SystemExit(f"{OUT}: token sets {sorted(sets)} meet in one root "
+                         f"({marker.name}: {have}); use a separate --out-root per token set")
+    ts = sets.pop() if sets else "original"
+    if have is None:
+        OUT.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"token_set": ts}) + "\n")
+    return ts
+
+
 def corpus_of(rows):
     global INDEX
     if INDEX is None:
@@ -181,13 +206,13 @@ def illus_rows_for(target, R):
 DEGENERATE_STD = 0.01
 
 
-def degenerate_rows(target, rows):
+def degenerate_rows(target, rows, token_set="original"):
     if target == "LULC" or not rows:
         return set()
     mean = np.array(C.V1_TOK_MEAN[target], dtype=np.float32)[:, None, None]
     std = np.array(C.V1_TOK_STD[target], dtype=np.float32)[:, None, None]
     bad = set()
-    for r, a in zip(rows, D.read_rasters(target, np.array(rows))):
+    for r, a in zip(rows, D.read_rasters(target, np.array(rows), token_set)):
         z = (P.center_crop(a[0] if a.ndim == 4 else a).astype(np.float32) - mean) / std
         if np.nanmedian(np.nanstd(z, axis=(1, 2))) < DEGENERATE_STD:
             bad.add(int(r))
@@ -211,6 +236,7 @@ def decode_cmd(args) -> int:
                 print(f"not generated yet: {todo}"); return 1
             time.sleep(120); continue
         T, arm = ready[0]
+        ts = root_token_set(args.arms, T)
         odir = OUT / T
         odir.mkdir(parents=True, exist_ok=True)
         if (odir / f"errors_{arm}.npz").exists():
@@ -221,11 +247,11 @@ def decode_cmd(args) -> int:
         tok = TK.build(T, device=TK.DEVICE)
         sched = CT.scheduler_like(tok, **CT.VARIANTS["noclip"]) if SETTING[T] == "unclamped" else None
         refs = [P.center_crop(a[0] if a.ndim == 4 else a).astype(np.float32)
-                for a in D.read_rasters(T, R)]
-        print(f"{T}: {len(R)} rows, decoder {SETTING[T]}, illustration rows {pick}", flush=True)
+                for a in D.read_rasters(T, R, ts)]
+        print(f"{T}: {len(R)} rows, token set {ts}, decoder {SETTING[T]}, illustration rows {pick}",
+              flush=True)
         if not (odir / "errors_ceiling.npz").exists():
-            truth = np.asarray(np.load(D.VAL / C.tok_dir_name(T) / "tokens.npy", mmap_mode="r")[R]
-                               ).astype(np.int64).reshape(-1, C.GRID, C.GRID)
+            truth = D.read_tokens(T, R, ts)
             out = decode(tok, T, truth, sched)
             e, eml, maps = score(T, out, refs)
             cil = {}
@@ -252,11 +278,11 @@ def decode_cmd(args) -> int:
     return 0
 
 
-def source_image(src, row):
+def source_image(src, row, token_set="original"):
     """The conditioning modality of an illustration row, for display (None for Coords / ∅)."""
     if src in ("Coords", "none"):
         return None, src
-    a = D.read_rasters(src, np.array([row]))[0]
+    a = D.read_rasters(src, np.array([row]), token_set)[0]
     ref = P.center_crop(a[0] if a.ndim == 4 else a).astype(np.float32)
     return (ref[0] if src == "LULC" else display(src, ref)), src
 
@@ -281,6 +307,7 @@ def show(ax, target, img, ref_img=None):
 
 def figures_cmd(args) -> int:
     A, B = args.arms
+    ts = root_token_set(args.arms)
     summary = {}
     for T in TARGETS:
         odir = OUT / T
@@ -291,7 +318,7 @@ def figures_cmd(args) -> int:
               for z in [np.load(odir / f)] for k, v in ((k, z[k]) for k in z.files)}
         R = merged[f"ceiling|{T}|rows"]
         pick = illus_rows_for(T, R)
-        skip = degenerate_rows(T, pick["majortom"] + pick["ssl4eos12"])
+        skip = degenerate_rows(T, pick["majortom"] + pick["ssl4eos12"], ts)
         # ⚠ Illustration rule, revised 2026-10-07 after the first S1GRD figure: "the first row"
         # landed on open water, where even the true tokens decode at 6.3 (column median 0.32)
         # because the released clamp cannot reach water's backscatter -- it showed the clamp,
@@ -305,7 +332,7 @@ def figures_cmd(args) -> int:
         means = {S: {a: float(merged[f"{a}|{S}|err"].mean()) for a in args.arms} for S in cells}
         means_ml7 = {S: {a: float(merged[f"{a}|{S}|err_ml7"].mean()) for a in args.arms} for S in cells}
         unit = "misclassified pixel share" if T == "LULC" else "MSE (z units²)"
-        doc = {"target": T, "unit": unit, "decoder_setting": SETTING_TEXT[SETTING[T]],
+        doc = {"target": T, "token_set": ts, "unit": unit, "decoder_setting": SETTING_TEXT[SETTING[T]],
                "ceiling": float(merged[f"ceiling|{T}|err"].mean()), "cells": means,
                "ceiling_ml7": float(merged[f"ceiling|{T}|err_ml7"].mean()), "cells_ml7": means_ml7,
                "illustration_rows": pick, "illustration_skipped_empty": sorted(skip),
@@ -337,7 +364,7 @@ def figures_cmd(args) -> int:
                           (il[f"ceiling|{r}|err"], "err"), (None, ""), (None, "")]
                 head = f"tokenizer floor\nmean {doc['ceiling']:.3f}"
             else:
-                src_img, _ = source_image(S, r)
+                src_img, _ = source_image(S, r, ts)
                 panels = [(src_img, "∅: no source" if S == "none" else ("coordinates" if S == "Coords" else "")),
                           (ref_img, f"row {r}")]
                 for a in args.arms:

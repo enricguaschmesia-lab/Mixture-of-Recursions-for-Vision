@@ -72,7 +72,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from scipy.ndimage import uniform_filter  # noqa: E402
 
-from terramesh_tok import contract as C, io as tio, preprocess as P, tokenizers as T  # noqa: E402
+from terramesh_tok import clean as CL, contract as C, io as tio, preprocess as P, tokenizers as T  # noqa: E402
 
 VAL = pathlib.Path(os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val"))
 
@@ -118,13 +118,52 @@ def assert_gpu(allow_titanv: bool) -> str:
     return name
 
 
-def read_rasters(modality: str, rows: np.ndarray):
+def token_root(token_set: str = "original") -> pathlib.Path:
+    """The token root of a token set (clean.resolve_token_root): VAL itself, or val_clean/."""
+    return CL.resolve_token_root(VAL, token_set)
+
+
+def read_tokens(modality: str, rows, token_set: str = "original") -> np.ndarray:
+    """(N, GRID, GRID) int64 stored tokens of `rows` in that token set."""
+    art = np.load(token_root(token_set) / C.tok_dir_name(modality) / "tokens.npy", mmap_mode="r")
+    return np.asarray(art[np.asarray(rows)]).astype(np.int64).reshape(-1, C.GRID, C.GRID)
+
+
+def read_rasters(modality: str, rows: np.ndarray, token_set: str = "original"):
     """Raw arrays for `rows`, one tar pass per shard rather than per scene.
 
     io.read_sample scans a tar from the start for each call, so asking it for
     N scattered scenes reopens and rescans a shard N times. The eval rows are
     scattered by construction (a geographic group split), so this matters.
+
+    `token_set="clean"`: the rasters the cleaned tokens encode. The raw tars are
+    not cleaned (val_clean/ links none), so S2L2A loses the BOA offset and NDVI is
+    recomputed from the corrected S2L2A in the offset rows (eo/terramesh_tok/clean.py).
     """
+    arrs = _read_raw(modality, rows)
+    if token_set == "original" or modality not in CL.CLEANED_MODALITIES:
+        return arrs
+    lab = CL.load_labels(token_root(token_set)).set_index("row").offset
+    off = [i for i, r in enumerate(rows) if bool(lab[int(r)])]
+    if not off:
+        return arrs
+    if modality == "S2L2A":
+        for i in off:
+            arrs[i] = CL.correct_s2(arrs[i], True)
+        return arrs
+    s2 = _read_raw("S2L2A", np.asarray(rows)[off])
+    for i, a in zip(off, s2):
+        stored = arrs[i]
+        # The stored NDVI must be TerraMesh's formula on the stored bands (bit-exact on all
+        # 89,088 rows, 2026-10-11); if not, the correction below rests on a wrong premise.
+        if not np.array_equal(CL.ndvi_from_s2(a).reshape(stored.shape), stored):
+            raise RuntimeError(f"row {int(rows[i])}: stored NDVI is not ndvi_from_s2(stored S2L2A)")
+        arrs[i] = CL.ndvi_from_s2(CL.correct_s2(a, True)).reshape(stored.shape)
+    return arrs
+
+
+def _read_raw(modality: str, rows: np.ndarray):
+    """read_rasters' tar pass, as stored."""
     import pandas as pd
     idx = pd.read_parquet(VAL / "tok_index.parquet").set_index("row")
     want = idx.loc[rows, ["stem", "source_shard"]]
@@ -286,8 +325,8 @@ def main() -> int:
     print(f"repaired tokens   : {100 * manifest['repair']['repaired_fraction']:.2f}%")
 
     # --- the three token sources -----------------------------------------
-    art = np.load(VAL / C.tok_dir_name(target) / "tokens.npy", mmap_mode="r")
-    truth = np.asarray(art[rows]).astype(np.int64).reshape(-1, C.GRID, C.GRID)
+    token_set = manifest.get("token_set", "original")     # absent: every run before B10c
+    truth = read_tokens(target, rows, token_set)
 
     rng = np.random.default_rng(args.seed)
     shuffled = np.stack([
@@ -297,7 +336,7 @@ def main() -> int:
     sources = {"ceiling": truth, "generated": gen_grids, "shuffled": shuffled}
 
     # --- reference rasters and the clamp filter --------------------------
-    rasters = read_rasters(target, rows)
+    rasters = read_rasters(target, rows, token_set)
     if target == "LULC":
         in_range = np.ones(len(rows), dtype=bool)
         zs = [None] * len(rows)

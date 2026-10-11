@@ -87,6 +87,7 @@ def generate(args) -> int:
         R = TF.stratified_target_rows(ds, eval_rows, corpus, T, args.rows)
         arrays, man = {"column_rows": np.array(R)}, {
             "arm_tag": args.arm_tag, "arm_config": args.arm_config, "checkpoint": args.checkpoint,
+            "token_set": (cfg.get("multimodal") or {}).get("token_set", "original"),
             "run_dir": args.run_dir, "gpu": gpu, "target": T, "seed": 42, "temperature": 1.0,
             "slot_masked": True, "batch": 8, "column_rows_corpus": {
                 c: int(sum(corpus[r] == c for r in R)) for c in ("majortom", "ssl4eos12")},

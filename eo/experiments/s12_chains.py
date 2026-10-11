@@ -202,6 +202,7 @@ def run(args) -> int:
                   + f"  ({time.perf_counter() - t0:.0f}s)", flush=True)
 
     doc = {"arm_tag": args.arm_tag, "arm_config": args.arm_config, "run_dir": args.run_dir,
+           "token_set": (cfg.get("multimodal") or {}).get("token_set", "original"),
            "checkpoint": args.checkpoint, "gpu": gpu, "rows_per_variant": args.rows, "seed": args.seed,
            "candidates": n_cand, "generation": gstats, "seconds": round(time.perf_counter() - t0, 1)}
     tmp = out / "chains.tmp.npz"

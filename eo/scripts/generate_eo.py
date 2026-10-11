@@ -37,6 +37,7 @@ from eo.data.eo_vocab import get_modality  # noqa: E402
 from eo.data.eval_split import load_eval_rows, load_row_table  # noqa: E402
 from eo.data.terramesh_token_dataset import TerraMeshTokenDataset  # noqa: E402
 from eo.generate import conditional as C  # noqa: E402
+from eo.terramesh_tok.clean import resolve_token_root  # noqa: E402
 
 ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
 
@@ -72,9 +73,18 @@ def write_identity(args, ds, rows) -> int:
     out = Path(args.out or f"/data/enric/generations/identity_control_{args.target}") / "slot_masked"
     C.save(out, args.target, rows, truths,
            {"note": f"identity control: ground-truth {args.target} tokens fed back in as if generated"},
-           {"synthetic": True, "checkpoint": None, "n_scenes": len(rows)})
+           {"synthetic": True, "checkpoint": None, "n_scenes": len(rows), "token_set": args.token_set})
     print(f"identity      : {len(truths)} ground-truth bodies\n  -> {out}")
     return 0
+
+
+def config_token_set(arm_config: str) -> str:
+    """multimodal.token_set of an arm config, composed through Hydra (the configs are overlays)."""
+    from hydra import compose, initialize_config_dir
+    repo = Path(__file__).resolve().parents[2]
+    with initialize_config_dir(config_dir=str(repo / "conf/pretrain_vision"), version_base=None):
+        cfg = compose(config_name=arm_config)
+    return (cfg.get("multimodal") or {}).get("token_set", "original")
 
 
 def main() -> int:
@@ -97,11 +107,16 @@ def main() -> int:
                     help="write ground truth as if generated; no model, no GPU")
     args = ap.parse_args()
 
-    ds = TerraMeshTokenDataset(root_dir=ROOT, max_length=1048, modality_order="fixed")
+    # The tokens are the arm config's (multimodal.token_set; absent = original), as in training.
+    token_set = config_token_set(args.arm_config)
+    ds = TerraMeshTokenDataset(root_dir=str(resolve_token_root(ROOT, token_set)),
+                               max_length=1048, modality_order="fixed")
     rows = stratified_rows(args.n_scenes, args.target, ds)
+    print(f"token set     : {token_set} ({ds.root_dir})")
     print(f"target        : {args.target}")
     print(f"scenes        : {len(rows)} held-out rows (corpus-stratified)")
     if args.identity:
+        args.token_set = token_set
         return write_identity(args, ds, rows)
     print(f"checkpoint    : {args.checkpoint or 'NONE -- untrained control'}")
 
@@ -142,7 +157,7 @@ def main() -> int:
             "arm_config": args.arm_config, "checkpoint": args.checkpoint,
             "mode": name, "seed": args.seed, "greedy": args.greedy,
             "use_cache": args.use_cache, "n_scenes": len(rows),
-            "context_order": built[0]["context"],
+            "context_order": built[0]["context"], "token_set": token_set,
         })
         print(f"  -> {out}\n")
     return 0
