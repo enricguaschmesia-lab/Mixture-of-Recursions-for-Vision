@@ -40,7 +40,7 @@ from eo.eval import curves as CV  # noqa: E402
 
 # Reference palette (dataviz skill): categorical slots in fixed order, the
 # arm keeps its colour whatever else is plotted.
-ARM_COLORS = ["#2a78d6", "#eb6834"]
+ARM_COLORS = ["#2a78d6", "#eb6834", "#2e9e5b"]   # a third for a control overlaid on a pair (2026-10-12)
 CAT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 INK, INK_2, GRID_INK, SURFACE, REF = "#0b0b0b", "#52514e", "#d8d7d2", "#fcfcfb", "#8a8984"
 DIV_NEG, DIV_POS = "#2a78d6", "#e34948"
