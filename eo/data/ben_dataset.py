@@ -91,10 +91,14 @@ class BenTokenDataset(Dataset):
         self.rows = np.asarray(rows, dtype=np.int64)
         if self.rows.size == 0 or len(np.unique(self.rows)) != len(self.rows):
             raise ValueError("rows must be non-empty and unique")
-        n_lab = np.array([bin(int(m)).count("1") for m in self.labels19[self.rows]])
-        if (n_lab == 0).any():
-            raise RuntimeError(f"{int((n_lab == 0).sum())} selected rows have no 19-class "
-                               f"label; an empty label block is not a valid target")
+        lab = self.labels19[self.rows]
+        if (lab < 0).any():
+            raise RuntimeError(f"{int((lab < 0).sum())} selected rows were never packed/labelled")
+        # A patch whose only v1 labels are classes the 19-class grouping drops (e.g. Airports)
+        # has an EMPTY label set: 25 of the 243,838 packed rows. SMARTIES keeps them with an
+        # all-zero target, so they stay, as the block `BO_BEN EO_BEN`.
+        n_lab = np.array([bin(int(m)).count("1") for m in lab])
+        self.n_empty = int((n_lab == 0).sum())
 
         self._present: Dict[str, np.ndarray] = {}
         for src, mod in V.INPUT_MODALITIES.items():

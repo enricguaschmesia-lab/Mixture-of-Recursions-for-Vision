@@ -315,6 +315,50 @@ def main(argv=None) -> int:
     ]
     arm_cfg = REPO / "conf/pretrain_vision/eo_terramesh"
 
+    # --- Phase 6: a BEN fine-tune starts from an EXTENDED checkpoint whose identity check
+    # passed, and reads BEN tokens that exist for every row it uses (2026-10-12). Fake
+    # extension dirs symlink the real weights and doctor extension.json; skipped (and said
+    # so) where the real extended checkpoint or the BEN tokens are absent.
+    ben_full = REPO / "conf/pretrain_vision/eo_ben/b10_full.yaml"
+    ext = Path("/data/enric/runs/pretrain/phase6/base/b10_ext_ckpt3300")
+    ben_cases, ben_pos = [], []
+    if (ext / "extension.json").is_file() and Path("/data/enric/data/BigEarthNet/S2L2A_tok224/present.npy").is_file():
+        import json as _json
+
+        def fake_ext(name, mutate=None, drop_json=False):
+            d = tmp / f"ext_{name}"
+            d.mkdir()
+            for f in ext.iterdir():
+                if f.name != "extension.json":
+                    (d / f.name).symlink_to(f)
+            if not drop_json:
+                doc = _json.loads((ext / "extension.json").read_text())
+                if mutate:
+                    mutate(doc)
+                (d / "extension.json").write_text(_json.dumps(doc))
+            return str(d)
+
+        def ben(init, **kw):
+            return dict(env=GOOD_ENV, config=ben_full, overrides={"finetune.init_from": init, **kw.pop("ov", {})}, **kw)
+        ben_cases = [
+            ("BEN: extension.json missing",      "init from", ben(fake_ext("nojson", drop_json=True))),
+            ("BEN: weights changed after check", "init from", ben(fake_ext("sha", lambda d: d.__setitem__("weights_sha256", "0" * 64)))),
+            ("BEN: identity check failed",       "init from", ben(fake_ext("ident", lambda d: d["identity"].__setitem__("passed", False)))),
+            ("BEN: a control did not fire",      "init from", ben(fake_ext("ctrl", lambda d: d["control_untied_resize"].__setitem__("fired", False)))),
+            ("BEN: no init_from at all",         "init from", dict(env=GOOD_ENV, config=ben_full)),
+            ("BEN: --resume of a fine-tune",     "init from", ben(str(ext), resuming=True, allow_existing=True)),
+            ("BEN: EO vocab size on a BEN run",  "config",    ben(str(ext), ov={"model_config.vocab_size": 87556})),
+            ("BEN: eval role never tokenized",   "BEN data",  ben(str(ext), ov={"ben.eval_role": "sm_train"})),
+            ("BEN: role not in the index",       "BEN data",  ben(str(ext), ov={"ben.train_role": "nope"})),
+        ]
+        ben_pos = [
+            (f"BEN: {c} from the extended B10", chk, _results(**ben(str(ext)) | {"config": REPO / f"conf/pretrain_vision/eo_ben/{c}.yaml"}))
+            for c in ("b10_full", "b10_lora") for chk in ("config", "BEN data", "init from")
+        ]
+    else:
+        print("\n(Phase 6 controls skipped: no extended checkpoint or BEN tokens on this machine)")
+    cases += ben_cases
+
     print("\nnegative controls (each must FIRE):")
     fired = 0
     for label, target, kw in cases:
@@ -351,7 +395,7 @@ def main(argv=None) -> int:
         (f"token set: {arm} (Hydra overlay)", "token set",
          _results(env=GOOD_ENV, config=arm_cfg / f"{arm}.yaml"))
         for arm in ("arm_b10c_vanilla", "arm_a10c_mor")
-    ]
+    ] + ben_pos
     pos_ok = 0
     for label, target, res in positives:
         ok = res[target]

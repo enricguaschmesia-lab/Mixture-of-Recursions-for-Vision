@@ -496,8 +496,8 @@ def check_ben_data(ctx: PreflightContext) -> CheckResult:
         if not len(rows):
             problems.append(f"role {role} is empty")
         lab = idx.labels19.to_numpy()[rows]
-        if (lab <= 0).any():
-            problems.append(f"{role}: {int((lab <= 0).sum())} rows unlabelled or with no 19-class label")
+        if (lab < 0).any():                    # 0 = an empty 19-class set: legitimate (SMARTIES keeps it)
+            problems.append(f"{role}: {int((lab < 0).sum())} rows unlabelled (never packed)")
         for src, mod in BV.INPUT_MODALITIES.items():
             d = root / tok_dir_name(mod)
             if not (d / "present.npy").is_file() or not (d / "metadata.json").is_file():
@@ -541,6 +541,8 @@ def check_init_from(ctx: PreflightContext) -> CheckResult:
                            "and then load the run's checkpoint over it.")
     from eo.finetune.init import verify_extension
     vocab = (cfg.get("model_config") or {}).get("vocab_size")
+    if vocab is None:
+        return CheckResult("init from", False, "the config has no model_config.vocab_size")
     try:
         doc = verify_extension(Path(str(init)), int(vocab))
     except (RuntimeError, FileNotFoundError, KeyError) as e:
@@ -619,8 +621,20 @@ def _compose_config(path: Path, overrides: Optional[Dict[str, object]] = None):
     try:
         ov = [f"{k}={_hydra_value(v)}" for k, v in (overrides or {}).items()]
         # ⚠ must be ABSOLUTE; train_eo.sh passes a repo-relative path.
-        with initialize_config_dir(config_dir=str(path.resolve().parent), version_base=None):
-            cfg = compose(config_name=path.stem, overrides=ov)
+        # ⚠ Compose from conf/pretrain_vision with the group-qualified name, exactly as
+        #   pretrain.py does (--config-path conf/pretrain_vision --config-name <group>/<name>),
+        #   whenever the file lives there. Composing from the file's own directory resolves
+        #   relative defaults identically, but cannot see another group: the Phase 6 configs
+        #   (eo_ben/*) default to /eo_terramesh/arm_b10_vanilla, and composition failed
+        #   (2026-10-12). Files elsewhere (the controls' temp copies) keep the old way.
+        root = (REPO / "conf/pretrain_vision").resolve()
+        rp = path.resolve()
+        if root in rp.parents:
+            cdir, cname = root, str(rp.relative_to(root).with_suffix(""))
+        else:
+            cdir, cname = rp.parent, path.stem
+        with initialize_config_dir(config_dir=str(cdir), version_base=None):
+            cfg = compose(config_name=cname, overrides=ov)
         return OmegaConf.to_container(cfg, resolve=False)
     except Exception as e:
         # ⚠ Never fail silently here. A silent fallback made this function look
