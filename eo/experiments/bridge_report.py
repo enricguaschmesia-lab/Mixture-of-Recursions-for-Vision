@@ -138,6 +138,35 @@ def main() -> int:
             b = v["delta_offset"]
             lines.append(f"   {c:15} n_off {b['n']:3d}  {b['mean']:+.4f} [{b['lo']:+.4f},{b['hi']:+.4f}]")
 
+    # The retrained model (B10c / A10c), when evaluated: against the old model, both on the
+    # cleaned tokens, same rows and modality orders. On offset rows this says whether the
+    # corrected targets are intrinsically harder (retrained no better) or only unfamiliar to a
+    # model trained with the offset (retrained better); on clean rows it is the run-to-run
+    # difference of two trainings that differ only in the 24% offset rows' tokens.
+    for arm in ("b10", "a10"):
+        tag = f"{arm}c"
+        if not (EVAL / tag / CK / "tokens_router.npz").exists():
+            continue
+        new = load(tag)
+        old = E[arm]["clean"]
+        if not np.array_equal(new["rows"], old["rows"]) or not np.array_equal(new["mod"], old["mod"]):
+            raise SystemExit(f"{tag}: rows or modality layout differ from {arm}_tok224c")
+        off = np.array([bool(lab[int(r)]) for r in new["rows"]])
+        res[arm]["retrained"] = {}
+        lines.append(f"\n=== {tag.upper()} (retrained on the cleaned tokens) - {arm.upper()} (old), both on the "
+                     f"cleaned tokens, checkpoint-3300, paired by row")
+        lines.append(f"{'modality':8} {'old':>8} {'retrained':>9}   {'offset rows':>26}   {'clean rows':>26}")
+        for name in MODS:
+            mid = MODALITY_TO_ID[name]
+            d = per_row(new, mid) - per_row(old, mid)
+            r = {"ce_old": float(np.nanmean(per_row(old, mid))), "ce_retrained": float(np.nanmean(per_row(new, mid))),
+                 "delta_offset": boot(np.where(off, d, np.nan), f"{tag}|{name}|off"),
+                 "delta_clean": boot(np.where(~off, d, np.nan), f"{tag}|{name}|cln")}
+            res[arm]["retrained"][name] = r
+            f = lambda b: f"{b['mean']:+.4f} [{b['lo']:+.4f},{b['hi']:+.4f}]" if b.get("n") else "-"
+            lines.append(f"{name:8} {r['ce_old']:8.4f} {r['ce_retrained']:9.4f}   {f(r['delta_offset']):>26}   "
+                         f"{f(r['delta_clean']):>26}")
+
     # The A10 - B10 gap per token set (paired by row, same card).
     res["gap"] = {}
     lines.append("\n=== A10 - B10, paired by row, A100")
