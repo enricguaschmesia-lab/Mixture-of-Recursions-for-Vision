@@ -92,6 +92,12 @@ def out_dir(args) -> Path:
     return Path(args.out or REPORTS / f"chain_{args.source}_{args.mid}_{args.target}")
 
 
+def pair_sfx(arms) -> str:
+    """Suffix of the pair-level outputs at the chain root: '' for A10/B10 (their files keep their
+    names), '_a10c_b10c' etc. otherwise, so a second pair never overwrites the first."""
+    return "" if list(arms) == ["a10", "b10"] else "_" + "_".join(arms)
+
+
 def arm_token_set(base: Path, arm: str) -> str:
     """The token set an arm's chain run was prompted with (run.json; absent = original)."""
     return json.loads((base / arm / "run.json").read_text()).get("token_set", "original")
@@ -527,8 +533,8 @@ def analyze(args) -> int:
                         f"{k} {v:.4f}" for k, v in r[key]["onehot_mse"].items()) + f"  floor {r[key]['floor'] / 5:.4f}")
         res[arm] = r
         L.append("")
-    save_json(base / "chain_result.json", res)
-    (base / "chain_result.txt").write_text("\n".join(L) + "\n")
+    save_json(base / f"chain_result{pair_sfx(args.arms)}.json", res)
+    (base / f"chain_result{pair_sfx(args.arms)}.txt").write_text("\n".join(L) + "\n")
     print("\n".join(L))
     return 0
 
@@ -596,7 +602,7 @@ def figures_cmd(args) -> int:
              f"Dashed line: the one-to-one generation {S} → {T}. {S} rows only (ssl4eos12), checkpoint-3300.",
              fontsize=8.5, color=INK2)
     plt.tight_layout(rect=(0, 0.04, 1, 1))
-    fig.savefig(base / "fig_chain_effects.png", dpi=130, facecolor=SURF)
+    fig.savefig(base / f"fig_chain_effects{pair_sfx(args.arms)}.png", dpi=130, facecolor=SURF)
     plt.close(fig)
 
     # ---- (2) illustration scenes
@@ -675,9 +681,9 @@ def figures_cmd(args) -> int:
              f"the median. Every panel is re-decoded exactly as scored. {X} panels: relief relative to each "
              f"image's own mean (absolute offset in the MSE label, σ²).", fontsize=8, color=INK2)
     plt.tight_layout(rect=(0, 0.11, 1, 1))
-    fig.savefig(base / "fig_chain_scenes.png", dpi=130, facecolor=SURF)
+    fig.savefig(base / f"fig_chain_scenes{pair_sfx(args.arms)}.png", dpi=130, facecolor=SURF)
     plt.close(fig)
-    print(f"-> {base}/fig_chain_effects.png, fig_chain_scenes.png (scenes {scenes})", flush=True)
+    print(f"-> {base}/fig_chain_effects{pair_sfx(args.arms)}.png, fig_chain_scenes{pair_sfx(args.arms)}.png (scenes {scenes})", flush=True)
     return 0
 
 
@@ -741,7 +747,7 @@ def slides_cmd(args) -> int:
              f"{json.loads((base / A / 'run.json').read_text())['rows_scored']} held-out scenes; bar: paired 95% "
              f"bootstrap CI.", fontsize=8.5, color=INK2)
     plt.tight_layout(rect=(0, 0.04, 1, 1))
-    fig.savefig(base / "fig_slides_effects.png", dpi=130, facecolor=SURF)
+    fig.savefig(base / f"fig_slides_effects{pair_sfx(args.arms)}.png", dpi=130, facecolor=SURF)
     plt.close(fig)
 
     # ---- (2) the chain as a picture: one arm, middle step at t1
@@ -828,9 +834,9 @@ def slides_cmd(args) -> int:
              + (f"true-token {T} decode error closest to the median), re-decoded exactly as scored." if args.scene_rule != "worse" else
                 f"chained decode worse than one-to-one, median excess among those), re-decoded exactly as scored."), fontsize=8, color=INK2)
     plt.tight_layout(rect=(0, 0.07, 1, 1))
-    fig.savefig(base / args.scene_fig, dpi=130, facecolor=SURF)
+    fig.savefig(base / args.scene_fig.replace(".png", f"{pair_sfx(args.arms)}.png"), dpi=130, facecolor=SURF)
     plt.close(fig)
-    print(f"-> {base}/fig_slides_effects.png, {args.scene_fig} (scenes {scenes})", flush=True)
+    print(f"-> {base}/fig_slides_effects{pair_sfx(args.arms)}.png, {args.scene_fig.replace('.png', pair_sfx(args.arms) + '.png')} (scenes {scenes})", flush=True)
     return 0
 
 
