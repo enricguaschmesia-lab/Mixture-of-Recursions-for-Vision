@@ -51,6 +51,27 @@ as its single source of truth without dragging terratorch into the training env.
 Phase 3 adds `eval/`, `generate/` and `decode/` as it needs them. The rule: real code
 lives in a package under `eo/`, and `eo/scripts/` holds only thin CLI entry points.
 
+## Phase 6: BigEarthNet (S1, S2 -> land-cover labels as tokens)
+
+    ben/                  BigEarthNet v1: labels (19-class, SMARTIES' code), layout, the
+                          patch index and splits (any env); pack.py + preprocess.py (`mor`)
+    data/ben_vocab.py     21 ids appended after the EO vocabulary (eo_vocab.py untouched)
+    data/ben_dataset.py   S1 / S2 / S1+S2 -> `BO_BEN c_1 .. c_k EO_BEN` (.venv)
+    finetune/             vocabulary extension (identity-checked), hand-rolled LoRA,
+                          init-from-checkpoint (.venv)
+    eval/ben.py           constrained label decoding (KV cache, vanilla only), marginals, AP
+    scripts/{build_ben_index,pack_ben,tokenize_ben}.py      data, in that order (`mor`)
+    scripts/extend_checkpoint.py                            D6.4 (.venv)
+    scripts/{eval_ben,eval_forgetting,ben_report,verify_phase6}.py   test, forgetting, gate
+
+A fine-tune starts through the same entry point, from an EXTENDED checkpoint:
+
+    bash eo/scripts/train_eo.sh --arm b10full --config eo_ben/b10_full --gpu titanx \
+        --init-from /data/enric/runs/pretrain/phase6/base/b10_ext_ckpt3300 --detach
+
+`--init-from` is not a resume: a strict load, fresh optimizer and scheduler, and preflight
+verifies the extension's identity artifact first.
+
 ## Starting a training run
 
 **`eo/scripts/train_eo.sh` is the only supported entry point.** Not `scripts/pretrain.sh`,

@@ -1,0 +1,14 @@
+# @package _global_
+#
+# B10, LoRA on BEN: rank-16 adapters on q/k/v/o/gate/up/down plus the 21 new vocabulary rows
+# (a separate Parameter, eo/finetune/lora.py); everything else frozen and checked
+# bit-identical after training (gate X6). 10x the full-FT learning rate, the usual LoRA
+# practice; no weight decay, so the adapters are not pulled anywhere but by the loss.
+defaults:
+  - ben_b10
+  - _self_
+
+finetune:
+  regime: lora
+learning_rate: 1.0e-3
+weight_decay: 0.0

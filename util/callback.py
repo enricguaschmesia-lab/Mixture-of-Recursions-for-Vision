@@ -573,3 +573,20 @@ class ScalingLawsSaveCallback(TrainerCallback):
     def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
         if state.global_step in self.fixed_save_steps and state.global_step != 0:
             control.should_save = True         
+
+class SetEpochCallback(TrainerCallback):
+    """Tell a dataset which epoch is starting (Phase 6, BEN's per-epoch input condition).
+
+    HF's Trainer calls on_epoch_begin BEFORE `iter(epoch_dataloader)`, i.e. before the
+    epoch's worker processes are forked, so non-persistent workers inherit the new epoch.
+    ⚠ With dataloader_persistent_workers=True they would NOT; the dataset would then stay
+    at epoch 0. Verified by the X4 check (two epochs, same row, different condition stream).
+    """
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        if args.dataloader_persistent_workers:
+            raise RuntimeError("SetEpochCallback needs non-persistent dataloader workers")
+        self.dataset.set_epoch(int(round(state.epoch or 0)))

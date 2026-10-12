@@ -19,6 +19,9 @@ TERRAMESH_TOK_ROOT = os.environ.get(
     "TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val"
 )
 
+# Root of the tokenized BigEarthNet v1 (index_v1.parquet + <MOD>_tok224/). Phase 6.
+BEN_ROOT = os.environ.get("BEN_ROOT", "/data/enric/data/BigEarthNet")
+
 MULTIMODAL_DATASETS = {
     "clevr_multimodal": {
         "root_dir": CLEVR_ROOT,
@@ -28,6 +31,10 @@ MULTIMODAL_DATASETS = {
     },
     "terramesh_multimodal": {
         "root_dir": TERRAMESH_TOK_ROOT,
+    },
+    # Phase 6: BigEarthNet S1/S2 tokens -> label block (eo/data/ben_dataset.py).
+    "ben_multimodal": {
+        "root_dir": BEN_ROOT,
     },
 }
 
@@ -89,6 +96,27 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
     )
 
 
+def _build_ben(cfg, want="train"):
+    """BigEarthNet fine-tuning data. `ben.train_role` / `ben.eval_role` name index columns.
+
+    Train draws its input set per example and epoch; eval uses the same RANDOM policy with a
+    fixed epoch (0), so the teacher-forced eval loss is a fixed mix of the three conditions.
+    The per-condition test is not run here (eo/scripts/eval_ben.py).
+    """
+    from eo.data.ben_dataset import BenTokenDataset
+
+    bcfg = cfg.get("ben", {})
+    role = bcfg.get("train_role", "ft_train") if want == "train" else bcfg.get("eval_role", None)
+    if role is None:
+        return None
+    ds = BenTokenDataset(root=MULTIMODAL_DATASETS["ben_multimodal"]["root_dir"], role=role,
+                         condition="random", seed=cfg.get("seed", 42),
+                         max_length=cfg.max_length, loss_on=bcfg.get("loss_on", "labels"))
+    print(f"BEN {want}: role {role}, {len(ds)} patches, loss on {ds.loss_on}, "
+          f"max_length {ds.max_length} (required {ds.required_length})")
+    return ds
+
+
 def load_eval_dataset_from_config(cfg):
     """The held-out evaluation dataset, or None if this run has no split.
 
@@ -97,6 +125,8 @@ def load_eval_dataset_from_config(cfg):
     dataset back.
     """
     dataset_name = [ds.strip() for ds in cfg.dataset.split(',')]
+    if dataset_name == ["ben_multimodal"]:
+        return _build_ben(cfg, want="eval")
     if len(dataset_name) != 1 or dataset_name[0] != "terramesh_multimodal":
         return None
     mm_cfg = cfg.get("multimodal", {})
@@ -122,6 +152,8 @@ def load_dataset_from_config(cfg):
         # no text), shared sequence assembly.
         if ds_name == "terramesh_multimodal":
             return _build_terramesh(cfg, mm_cfg, ds_cfg["root_dir"], want="train")
+        if ds_name == "ben_multimodal":
+            return _build_ben(cfg, want="train")
 
         active_modalities = list(mm_cfg.get("active_modalities", ["tok_rgb@256"]))
         modality_order = mm_cfg.get("modality_order", "fixed")

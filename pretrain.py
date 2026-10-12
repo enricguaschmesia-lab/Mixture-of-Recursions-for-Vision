@@ -144,6 +144,15 @@ def main(cfg: DictConfig):
         else:
             raise ValueError(f"Unknown MoR type {cfg.mor.type}.")
         
+    # Phase 6: start from an EXTENDED pretrained checkpoint (BEN ids appended), then apply
+    # the fine-tuning regime (full / LoRA). Not a resume: fresh optimizer and scheduler, a
+    # strict load, and the extension's identity artifact verified (eo/finetune/init.py).
+    finetune_report = None
+    if cfg.get("finetune") and cfg.finetune.get("init_from"):
+        from eo.finetune.init import init_from
+        finetune_report = init_from(model, cfg)
+        print(f"finetune: {finetune_report}")
+
     print_trainable_parameters(model)
         
     report_to = []
@@ -242,6 +251,18 @@ def main(cfg: DictConfig):
 
     if fixed_save_steps is not None:
         callbacks.append(ScalingLawsSaveCallback(fixed_save_steps,))
+    if hasattr(train_dataset, "set_epoch"):
+        # BEN draws each example's input set from (seed, epoch, row); HF calls on_epoch_begin
+        # before it spawns the epoch's dataloader workers, so they see the new epoch.
+        from util.callback import SetEpochCallback
+        callbacks.append(SetEpochCallback(train_dataset))
+    if finetune_report is not None:
+        import json
+        from omegaconf import OmegaConf
+        os.makedirs(train_args.output_dir, exist_ok=True)
+        with open(os.path.join(train_args.output_dir, "finetune_init.json"), "w") as fh:
+            json.dump(finetune_report, fh, indent=2)
+        OmegaConf.save(cfg, os.path.join(train_args.output_dir, "finetune_config.yaml"))
         
     if "mor" in cfg and cfg.mor.get("enable"):
         trainer = MoRTrainer(model=model, args=train_args, train_dataset=train_dataset,

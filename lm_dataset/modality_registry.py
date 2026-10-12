@@ -44,10 +44,15 @@ _REGISTRY_BY_DATASET: Dict[str, str] = {
     "clevr_multimodal": "clevr",
     "coco_multimodal": "clevr",
     "terramesh_multimodal": "eo",
+    # Phase 6: BigEarthNet S1/S2 -> label block. Its ids are eo_vocab's plus 21
+    # appended after PAD (eo/data/ben_vocab.py), so it is a registry of its own.
+    "ben_multimodal": "eo_ben",
 }
 
 CLEVR_REGISTRY = "lm_dataset.multimodal_vocab_shared_caption_scene_desc"
 EO_REGISTRY = "eo.data.eo_vocab"
+BEN_REGISTRY = "eo.data.ben_vocab"
+_MODULE_BY_KIND = {"clevr": CLEVR_REGISTRY, "eo": EO_REGISTRY, "eo_ben": BEN_REGISTRY}
 
 
 def dataset_names(cfg) -> List[str]:
@@ -79,7 +84,8 @@ def registry_kind(cfg) -> Optional[str]:
 
 
 def is_eo(cfg) -> bool:
-    return registry_kind(cfg) == "eo"
+    """An EO-family run: TerraMesh pretraining, or a BigEarthNet fine-tune on top of it."""
+    return registry_kind(cfg) in ("eo", "eo_ben")
 
 
 def get_registry(cfg) -> ModuleType:
@@ -92,7 +98,7 @@ def get_registry(cfg) -> ModuleType:
             f"No multimodal vocabulary registry applies to dataset(s) "
             f"{dataset_names(cfg)}. Known: {sorted(_REGISTRY_BY_DATASET)}."
         )
-    return importlib.import_module(EO_REGISTRY if kind == "eo" else CLEVR_REGISTRY)
+    return importlib.import_module(_MODULE_BY_KIND[kind])
 
 
 def get_id_to_modality(cfg) -> Dict[int, str]:

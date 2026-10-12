@@ -100,6 +100,10 @@ class CheckResult:
     hint: str = ""
 
 
+#: The datasets an EO run may use: TerraMesh pretraining, and the Phase 6 BEN fine-tune.
+EO_DATASETS = ("terramesh_multimodal", "ben_multimodal")
+
+
 @dataclass
 class PreflightContext:
     """Everything the checks read. Explicit so tests can construct a broken one."""
@@ -343,14 +347,18 @@ def check_config(ctx: PreflightContext) -> CheckResult:
         return CheckResult("config", False, f"{path} does not exist")
 
     cfg = _load_config(path, ctx.overrides)
-    from eo.data.eo_vocab import TOTAL_VOCAB_SIZE
 
     problems = []
     vocab = (cfg.get("model_config") or {}).get("vocab_size")
-    if vocab != TOTAL_VOCAB_SIZE:
-        problems.append(f"vocab_size {vocab} != registry {TOTAL_VOCAB_SIZE}")
-    if cfg.get("dataset") != "terramesh_multimodal":
-        problems.append(f"dataset {cfg.get('dataset')!r} is not the EO dataset")
+    if cfg.get("dataset") not in EO_DATASETS:
+        problems.append(f"dataset {cfg.get('dataset')!r} is not an EO dataset {EO_DATASETS}")
+    else:
+        # The registry is the DATASET's: eo_vocab for TerraMesh, ben_vocab (eo_vocab + 21
+        # appended ids) for a BigEarthNet fine-tune.
+        from lm_dataset.modality_registry import get_registry
+        expected = get_registry(cfg).TOTAL_VOCAB_SIZE
+        if vocab != expected:
+            problems.append(f"vocab_size {vocab} != registry {expected}")
     if cfg.get("deepspeed") is not None:
         problems.append("deepspeed must be null -- get_launcher_type() returns "
                         "'deepspeed' for plain `python`, so a non-null value is honoured")
@@ -389,6 +397,8 @@ def check_eval_split(ctx: PreflightContext) -> CheckResult:
         return CheckResult("eval split", True, "skipped (config missing; check_config reports it)")
 
     cfg = _load_config(path, ctx.overrides)
+    if cfg.get("dataset") == "ben_multimodal":
+        return CheckResult("eval split", True, "n/a: a BEN run evaluates on ben.eval_role ('BEN data')")
     ref = (cfg.get("multimodal") or {}).get("eval_split")
     if ref is None:
         return CheckResult("eval split", True,
@@ -434,6 +444,8 @@ def check_token_set(ctx: PreflightContext) -> CheckResult:
     from eo.data.eo_vocab import DEFAULT_ACTIVE_MODALITIES
 
     cfg = _load_config(ctx.config_path, ctx.overrides)
+    if cfg.get("dataset") == "ben_multimodal":
+        return CheckResult("token set", True, "n/a: a BEN run reads BigEarthNet tokens ('BEN data')")
     token_set = (cfg.get("multimodal") or {}).get("token_set", "original")
     try:
         root = resolve_token_root(raw, token_set)
@@ -446,6 +458,96 @@ def check_token_set(ctx: PreflightContext) -> CheckResult:
     if missing:
         return CheckResult("token set", False, f"{root}: missing {missing}")
     return CheckResult("token set", True, f"{token_set} -> {root}")
+
+
+def check_ben_data(ctx: PreflightContext) -> CheckResult:
+    """A BEN fine-tune's data exists, is labelled, and was tokenized for every row it reads.
+
+    The dataset raises on the same faults, but only after the model is built; and a role
+    whose rows were never tokenized would otherwise read zero-filled token rows (0 is a
+    valid id), which trains without an error.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("BEN data", True, "skipped (no config)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    if cfg.get("dataset") != "ben_multimodal":
+        return CheckResult("BEN data", True, "n/a (not a BEN run)")
+    import json as _json
+    import numpy as _np
+    import pandas as _pd
+    from eo.data import ben_vocab as BV
+    from eo.terramesh_tok.contract import CROP, TOKENS_PER_SAMPLE, tok_dir_name
+    root = Path(ctx.env.get("BEN_ROOT", "/data/enric/data/BigEarthNet"))
+    index = root / "index_v1.parquet"
+    if not index.is_file():
+        return CheckResult("BEN data", False, f"{index} missing", "eo/scripts/build_ben_index.py")
+    idx = _pd.read_parquet(index)
+    if "labels19" not in idx.columns:
+        return CheckResult("BEN data", False, f"{index} has no labels", "build_ben_index.py labels")
+    bcfg = cfg.get("ben") or {}
+    roles = [bcfg.get("train_role", "ft_train")] + ([bcfg["eval_role"]] if bcfg.get("eval_role") else [])
+    problems, counts = [], {}
+    for role in roles:
+        if role not in idx.columns:
+            problems.append(f"no role {role!r} in the index")
+            continue
+        rows = _np.flatnonzero(idx[role].to_numpy(bool))
+        counts[role] = len(rows)
+        if not len(rows):
+            problems.append(f"role {role} is empty")
+        lab = idx.labels19.to_numpy()[rows]
+        if (lab <= 0).any():
+            problems.append(f"{role}: {int((lab <= 0).sum())} rows unlabelled or with no 19-class label")
+        for src, mod in BV.INPUT_MODALITIES.items():
+            d = root / tok_dir_name(mod)
+            if not (d / "present.npy").is_file() or not (d / "metadata.json").is_file():
+                problems.append(f"{d} not tokenized")
+                continue
+            meta = _json.loads((d / "metadata.json").read_text())
+            if meta.get("tokenizer_modality") != mod or int(meta.get("crop", -1)) != CROP \
+                    or int(meta.get("tokens_per_sample", -1)) != TOKENS_PER_SAMPLE:
+                problems.append(f"{d}: metadata {meta.get('tokenizer_modality')}/{meta.get('crop')} "
+                                f"is not {mod}/{CROP}")
+            pres = _np.load(d / "present.npy")
+            if len(pres) != len(idx):
+                problems.append(f"{d}: {len(pres)} rows, index has {len(idx)}")
+            elif not pres[rows].all():
+                problems.append(f"{role}: {int((~pres[rows]).sum())} rows not tokenized in {mod}")
+    if problems:
+        return CheckResult("BEN data", False, "; ".join(problems[:3]))
+    return CheckResult("BEN data", True, f"{root.name}: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
+
+
+def check_init_from(ctx: PreflightContext) -> CheckResult:
+    """A fine-tune starts from an EXTENDED checkpoint whose identity check passed (§4.9).
+
+    Not a resume: the resume checks refuse a partial load, which loading across a vocabulary
+    change would be. This verifies instead that the starting weights are exactly the
+    ones extend_checkpoint.py proved identical to the pretrained model on every old id.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("init from", True, "skipped (no config)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    init = (cfg.get("finetune") or {}).get("init_from")
+    is_ben = cfg.get("dataset") == "ben_multimodal"
+    if init in (None, "???"):
+        if is_ben:
+            return CheckResult("init from", False, "a BEN run has no finetune.init_from",
+                               "Launch with train_eo.sh --init-from <extended checkpoint>.")
+        return CheckResult("init from", True, "n/a (not a fine-tune)")
+    if ctx.resuming:
+        return CheckResult("init from", False, "--resume of a fine-tune is not supported",
+                           "A fine-tune is short; rerun it. A resume would re-run init_from "
+                           "and then load the run's checkpoint over it.")
+    from eo.finetune.init import verify_extension
+    vocab = (cfg.get("model_config") or {}).get("vocab_size")
+    try:
+        doc = verify_extension(Path(str(init)), int(vocab))
+    except (RuntimeError, FileNotFoundError, KeyError) as e:
+        return CheckResult("init from", False, str(e).splitlines()[0])
+    return CheckResult("init from", True,
+                       f"{Path(str(init)).name}: identity max |dlogit| {doc['identity']['max_abs_diff']:.1e}, "
+                       f"controls fired, sha {doc['weights_sha256'][:10]}")
 
 
 def _load_config(path: Path, overrides: Optional[Dict[str, object]] = None) -> dict:
@@ -694,6 +796,8 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_config,
     check_eval_split,
     check_token_set,
+    check_ben_data,
+    check_init_from,
     check_gpu_free_memory,
     check_resume_checkpoint,
     check_gpu_identity,      # last: the only one that touches CUDA

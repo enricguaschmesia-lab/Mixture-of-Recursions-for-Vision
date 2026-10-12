@@ -1,0 +1,56 @@
+# @package _global_
+#
+# BEN fine-tune of B10, shared settings. Phase 6 Step 4 (PHASE6_PLAN.md, D6.6).
+# The regime overlays (b10_full, b10_lora) differ from this file in the regime key and
+# its optimizer settings only; W-style checks assert that.
+#
+# Model: B10 exactly (arm_b10_vanilla), built at the EXTENDED vocabulary and initialised
+# from the extended checkpoint, whose identity artifact preflight verifies
+# (eo/scripts/extend_checkpoint.py, eo/finetune/init.py). Not a resume: optimizer and
+# scheduler start fresh.
+#
+#   launch:  bash eo/scripts/train_eo.sh --arm b10full --config eo_ben/b10_full \
+#                --init-from /data/enric/runs/pretrain/phase6/base/b10_ext_ckpt3300 --gpu titanx
+
+defaults:
+  - /eo_terramesh/arm_b10_vanilla
+  - _self_
+
+dataset: ben_multimodal
+ben:
+  train_role: ft_train          # SMARTIES MM 10% list, 31,166 pairs
+  eval_role: ft_valsel          # 5,000 from SMARTIES train minus the 10% list (valid under test option a AND c)
+  loss_on: labels               # §4.5 lean: labels only; labels_inputs is the S6.b ablation
+multimodal:
+  eval_split: null              # TerraMesh's held-out split does not apply; BEN eval is ben.eval_role
+
+model_config:
+  # 87,556 + 19 classes + BO_BEN + EO_BEN. Asserted against eo/data/ben_vocab.py at startup.
+  vocab_size: 87577
+# 2 x (196 + BO + EO) + (19 + BO_BEN + EO_BEN): the absolute bound, so no row can truncate.
+max_length: 417
+
+finetune:
+  init_from: ???                # set by train_eo.sh --init-from (the extended checkpoint)
+  regime: ???                   # full | lora
+  lora:
+    r: 16
+    alpha: 32
+
+# === Budget (§4.8): 3 epochs over 31,166 at batch 64, the same for every regime ===
+#   ceil(31,166 / 64) = 487 steps per epoch; 3 x 487 = 1,461 steps.
+total_batch_size: 64
+per_device_train_batch_size: 8
+per_device_eval_batch_size: 16
+num_train_steps: 1461
+stop_steps: 1461
+num_warmup_steps: 73            # 5%, as pretraining
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 292          # the last 20%, linear (decay_type inherited)
+save_steps: 487                 # one checkpoint per epoch; selection on val, never test
+eval_steps: 243                 # two teacher-forced eval passes per epoch, plus step 0
+eval_on_start: true
+save_total_limit: null
+
+wandb_project: mor-eo-phase6

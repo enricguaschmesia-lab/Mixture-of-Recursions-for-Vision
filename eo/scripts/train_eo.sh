@@ -31,11 +31,17 @@
 #   --force           overwrite an existing run directory (destructive)
 #   --run-id ID       reuse an exact run id instead of minting a timestamp
 #                     (required with --resume)
+#   --init-from DIR   Phase 6 fine-tune: start from an EXTENDED checkpoint
+#                     (eo/scripts/extend_checkpoint.py). NOT a resume: fresh optimizer
+#                     and scheduler, a strict load, and preflight verifies the
+#                     extension's identity artifact. Runs go under phase6/.
 #
 # Examples:
 #   bash eo/scripts/train_eo.sh --arm smoke stop_steps=30 total_batch_size=4 wandb=false
 #   bash eo/scripts/train_eo.sh --arm mor --detach
 #   bash eo/scripts/train_eo.sh --arm mor --resume --run-id mor_20260921_143000
+#   bash eo/scripts/train_eo.sh --arm b10full --config eo_ben/b10_full --gpu titanx \
+#        --init-from /data/enric/runs/pretrain/phase6/base/b10_ext_ckpt3300 --detach
 #
 # Environment overrides (RCP; unset on the workstation): MOR_PYTHON (the
 # interpreter, default .venv/bin/python), MOR_LOG_DIR (default /data/enric/logs).
@@ -45,7 +51,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 
 ARM=""; GPU="titanv"; CONFIG="eo_terramesh/terramesh_mor_token"
-DETACH=0; RESUME=0; FORCE=0; RUN_ID=""
+DETACH=0; RESUME=0; FORCE=0; RUN_ID=""; INIT_FROM=""
 HYDRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -54,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --gpu)     GPU="$2"; shift 2 ;;
     --config)  CONFIG="$2"; shift 2 ;;
     --run-id)  RUN_ID="$2"; shift 2 ;;
+    --init-from) INIT_FROM="$2"; shift 2 ;;
     --detach)  DETACH=1; shift ;;
     --resume)  RESUME=1; shift ;;
     --force)   FORCE=1; shift ;;
@@ -68,6 +75,17 @@ if [[ $RESUME -eq 1 && -z "$RUN_ID" ]]; then
   echo "       Available under \$MOR_SAVE_DIR/pretrain/phase3/:" >&2
   ls -1 "${MOR_SAVE_DIR:-/data/enric/runs}/pretrain/phase3" 2>/dev/null | sed 's/^/         /' >&2 || true
   exit 2
+fi
+
+PHASE_DIR="phase3"
+if [[ -n "$INIT_FROM" ]]; then
+  if [[ $RESUME -eq 1 ]]; then
+    echo "ERROR: --init-from and --resume do not combine: a fine-tune is rerun, not resumed." >&2; exit 2
+  fi
+  [[ -d "$INIT_FROM" ]] || { echo "ERROR: --init-from $INIT_FROM is not a directory." >&2; exit 2; }
+  INIT_FROM="$(cd "$INIT_FROM" && pwd)"
+  HYDRA_ARGS+=("finetune.init_from=$INIT_FROM")
+  PHASE_DIR="phase6"
 fi
 
 # --- 1. .env, without overriding anything already exported -------------------
@@ -107,7 +125,7 @@ export CUDA_VISIBLE_DEVICES="$GPU_INDEX"
 # Timestamped, so re-running an arm after a fix cannot silently destroy a week
 # of training. The refusal in preflight is the real guard; this makes it rare.
 [[ -n "$RUN_ID" ]] || RUN_ID="${ARM}_$(date +%Y%m%d_%H%M%S)"
-OUTPUT_DIR="phase3/${RUN_ID}"
+OUTPUT_DIR="${PHASE_DIR}/${RUN_ID}"
 RUN_DIR="${MOR_SAVE_DIR:-/data/enric/runs}/pretrain/${OUTPUT_DIR}"
 LOG_DIR="${MOR_LOG_DIR:-/data/enric/logs}"
 LOG_FILE="${LOG_DIR}/${RUN_ID}.log"

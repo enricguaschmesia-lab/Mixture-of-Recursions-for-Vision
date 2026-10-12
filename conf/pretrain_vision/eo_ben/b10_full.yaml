@@ -1,0 +1,12 @@
+# @package _global_
+#
+# B10, FULL fine-tuning on BEN: every weight trains, the new vocabulary rows included.
+# AdamW as in pretraining (betas 0.9/0.95, weight decay 0.1), at a fine-tuning LR.
+defaults:
+  - ben_b10
+  - _self_
+
+finetune:
+  regime: full
+learning_rate: 1.0e-4
+weight_decay: 0.1
