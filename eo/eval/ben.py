@@ -71,7 +71,9 @@ def decode_labels(model, prompts: torch.Tensor, *, k_samples: int = 0, greedy: b
     B = prompts.shape[0]
     ctx = torch.autocast("cuda", dtype=autocast) if autocast is not None else _null()
     with ctx:
-        out = model(input_ids=prompts, use_cache=True)
+        # logits_to_keep=1: only the last position's 87,577-way logits are used; the full
+        # (B, L, V) tensor would cost ~25% more compute and GBs of memory per batch.
+        out = model(input_ids=prompts, use_cache=True, logits_to_keep=1)
     first = out.logits[:, -1, :].float()
     slot_mass = torch.softmax(first, -1)[:, ALLOWED].sum(-1)
     res = {"slot_mass": slot_mass.cpu().numpy()}
@@ -146,7 +148,7 @@ def cache_check(model, prompts: torch.Tensor, n_steps: int = 3,
     cont = torch.tensor(V.CLASS_IDS[:n_steps], device=prompts.device)
     worst = 0.0
     with ctx:
-        out = model(input_ids=prompts, use_cache=True)
+        out = model(input_ids=prompts, use_cache=True, logits_to_keep=1)
         cache = out.past_key_values
         seq = prompts
         for t in range(n_steps):
@@ -154,7 +156,7 @@ def cache_check(model, prompts: torch.Tensor, n_steps: int = 3,
             o = model(input_ids=ids, past_key_values=cache, use_cache=True)
             cache = o.past_key_values
             seq = torch.cat([seq, ids], 1)
-            full = model(input_ids=seq, use_cache=False).logits[:, -1, :]
+            full = model(input_ids=seq, use_cache=False, logits_to_keep=1).logits[:, -1, :]
             d = (o.logits[:, -1, ALLOWED].float() - full[:, ALLOWED].float()).abs().max()
             worst = max(worst, float(d))
     return {"max_abs_logit_diff": worst, "steps": n_steps, "batch": int(prompts.shape[0])}
