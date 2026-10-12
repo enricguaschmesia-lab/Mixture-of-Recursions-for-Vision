@@ -81,7 +81,8 @@ def main(cfg: DictConfig):
         if "WANDB_MODE" not in os.environ:
             os.environ["WANDB_MODE"] = cfg.get("wandb_mode", "online")
         if os.environ["WANDB_MODE"] == "offline":
-            os.environ["WANDB_DIR"] = PROJECT_ROOT
+            # setdefault: a launcher's WANDB_DIR (eo/train/preflight.py checks it) must win
+            os.environ.setdefault("WANDB_DIR", PROJECT_ROOT)
         os.environ["WANDB_SAVE_CODE"] = "false"
         os.environ["WANDB_LOG_MODEL"] = "false"
         
