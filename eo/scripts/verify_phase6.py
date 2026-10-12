@@ -15,6 +15,7 @@ that must FIRE, so a pass means something.
   X6  LoRA: identity at init, frozen tensors bit-identical after training
                                                              | masked-grad + AdamW moves rows
   X7  test controls: wrong input collapses toward the prior  | own inputs via the same path do not
+  X8  the S6.b overlay differs from b10_full in exactly ben.loss_on | b10_lora is flagged
       + average precision equals sklearn's (run in the `mor` env) | a broken AP is caught
 
 Artifacts it reads are named in each check. A check whose artifact does not exist yet is
@@ -357,6 +358,24 @@ def x7(tag, ckpt, role):
            frac_ctrl > 0.8, f"scored against the input patch's own labels: {frac_ctrl:.3f} survives")
 
 
+def x8():
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+
+    def flat(d, p=""):
+        o = {}
+        for k, v in d.items():
+            o.update(flat(v, p + k + ".") if isinstance(v, dict) else {p + k: v})
+        return o
+    with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
+        c = {n: flat(OmegaConf.to_container(compose(f"eo_ben/{n}", overrides=["finetune.init_from=/x"]), resolve=False))
+             for n in ("b10_full", "b10_full_li", "b10_lora")}
+    diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
+    d_li, d_lora = diff("b10_full", "b10_full_li"), diff("b10_full", "b10_lora")
+    record("X8 S6.b overlay", d_li == ["ben.loss_on"], f"b10_full_li vs b10_full: {d_li}",
+           d_lora != ["ben.loss_on"], f"b10_lora vs b10_full differs in {d_lora}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", default=None)
@@ -383,6 +402,8 @@ def main():
         x6(a.lora_run)
     if want("X7") and a.x7:
         x7(*a.x7)
+    if want("X8"):
+        x8()
     fails = [r for r in RESULTS if r[1] is False or r[3] is False]
     skips = [r for r in RESULTS if r[1] is None]
     print(f"\n{len(RESULTS) - len(fails) - len(skips)} pass, {len(fails)} fail, {len(skips)} skipped")

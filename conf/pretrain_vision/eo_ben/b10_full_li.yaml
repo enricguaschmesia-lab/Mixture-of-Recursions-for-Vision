@@ -1,0 +1,12 @@
+# @package _global_
+#
+# S6.b (PHASE6_PLAN §4.5): B10 full fine-tuning with the loss on the label block AND the
+# S1/S2 input tokens. Differs from b10_full in exactly `ben.loss_on` (gate X8). Read against
+# b10_full's forgetting: does training on BEN's (upsampled, partly out-of-distribution) inputs
+# preserve or erode the pretrained generative ability?
+defaults:
+  - b10_full
+  - _self_
+
+ben:
+  loss_on: labels_inputs
