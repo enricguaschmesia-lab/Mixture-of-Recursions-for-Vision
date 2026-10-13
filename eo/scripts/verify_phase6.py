@@ -421,7 +421,7 @@ def x8():
     with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
         c = {n: flat(OmegaConf.to_container(compose(f"eo_ben/{n}", overrides=["finetune.init_from=/x"]), resolve=False))
              for n in ("b10_full", "b10_full_li", "b10_lora", "b10_lora_lr1e4", "b10_scratch",
-                       "b10_lora_1pct", "b10_scratch_1pct")}
+                       "b10_lora_1pct", "b10_scratch_1pct", "b10_head")}
     diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
     d_li, d_lora = diff("b10_full", "b10_full_li"), diff("b10_full", "b10_lora")
     record("X8 S6.b overlay", d_li == ["ben.loss_on"], f"b10_full_li vs b10_full: {d_li}",
@@ -430,6 +430,14 @@ def x8():
     record("X8 L6 overlay", d_lr == ["learning_rate"] and c["b10_lora_lr1e4"]["learning_rate"] == c["b10_full"]["learning_rate"],
            f"b10_lora_lr1e4 vs b10_lora: {d_lr}; lr {c['b10_lora_lr1e4']['learning_rate']} = full's {c['b10_full']['learning_rate']}",
            d_ctl != ["learning_rate"], f"b10_full vs b10_lora differs in {d_ctl}")
+    # L4 / L5: scratch = b10_full with no init and the scratch regime; head = b10_lora with the head regime.
+    # (X8 composes every overlay with finetune.init_from=/x, so scratch's init_from: null shows as /x here;
+    # preflight's check_init_from is what refuses an init_from on scratch.)
+    d4, d5 = diff("b10_full", "b10_scratch"), diff("b10_lora", "b10_head")
+    record("X8 L4/L5 overlays", d4 == ["finetune.regime"] and c["b10_scratch"]["finetune.regime"] == "scratch"
+           and d5 == ["finetune.regime"] and c["b10_head"]["finetune.regime"] == "head",
+           f"b10_scratch vs b10_full: {d4}; b10_head vs b10_lora: {d5}",
+           diff("b10_full", "b10_head") != ["finetune.regime"], f"b10_head vs b10_full differs in {diff('b10_full', 'b10_head')}")
     roles = ["ben.eval_role", "ben.train_role"]
     d1, d2 = diff("b10_lora", "b10_lora_1pct"), diff("b10_scratch", "b10_scratch_1pct")
     record("X8 L8 overlays", d1 == roles and d2 == roles and c["b10_lora_1pct"]["ben.train_role"] == "ft_train1"
