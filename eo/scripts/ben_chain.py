@@ -190,13 +190,19 @@ def run_cls(a):
     rows = ds.rows[pos]
     out = a.out_root / "cls" / a.classifier
     out.mkdir(parents=True, exist_ok=True)
-    gens = {}
+    gens, need = {}, []
     for gen, tname in [("base", "T1"), ("base", "T05"), ("self", "T1")]:
         src = a.out_root / "gen" / (a.classifier if gen == "self" else gen)
-        for direction in C.DIRECTIONS:
-            z = np.load(src / f"{direction}_{tname}.npz")
-            assert (z["rows"] == rows).all(), f"{src}: generated for other rows"
-            gens[(gen, direction, tname)] = z["tokens"]
+        need += [(gen, tname, d, src / f"{d}_{tname}.npz", src / f"{d}_{tname}.json") for d in C.DIRECTIONS]
+    t_wait = time.time()
+    while not all(j.exists() for *_, j in need):          # the json is written after its npz
+        if time.time() - t_wait > a.wait_gen:
+            sys.exit(f"generations missing after {a.wait_gen} s: {[str(n) for *_, n, j in need if not j.exists()]}")
+        time.sleep(60)
+    for gen, tname, direction, f, _ in need:
+        z = np.load(f)
+        assert (z["rows"] == rows).all(), f"{f}: generated for other rows"
+        gens[(gen, direction, tname)] = z["tokens"]
     model = load_model(a, a.classifier)
 
     # plumbing check: real blocks through the chain builder == eval_ben's stored S1S2, bit for bit
@@ -330,6 +336,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gen-batch", type=int, default=128)
     ap.add_argument("--cls-batch", type=int, default=128)
+    ap.add_argument("--wait-gen", type=int, default=0, help="cls: seconds to wait for the generations it needs")
     ap.add_argument("--autocast", choices=["none", "fp16"], default="fp16")
     ap.add_argument("--out-root", type=Path, default=Path("/data/enric/reports/ben/chain"))
     ap.add_argument("--ref-root", type=Path, default=Path("/data/enric/reports/ben"),
