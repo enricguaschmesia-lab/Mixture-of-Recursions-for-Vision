@@ -122,6 +122,15 @@ def generate(args) -> int:
     return 0
 
 
+#: The main pair of each root keeps unsuffixed file names; any other pair (a control against a
+#: model) gets `_<a>_<b>`, so it never overwrites them (2026-10-13). Same rule in s12_decoded_grid.py.
+MAIN_PAIRS = (["a10", "b10"], ["a10c", "b10c"])
+
+
+def pair_sfx(arms) -> str:
+    return "" if list(arms) in MAIN_PAIRS else "_" + "_".join(arms)
+
+
 def report(args) -> int:
     """MSE grid figure from s12_decoded_eval.py's errors, paired by row like the CE grid."""
     global REPORT
@@ -134,11 +143,11 @@ def report(args) -> int:
     A, B = arms
     err, unit, setting = {}, {}, {}
     for T in TARGETS:
-        p = REPORT / T / "errors.npz"
+        p = REPORT / T / f"errors{pair_sfx(args.arms)}.npz"
         if not p.exists():
             raise SystemExit(f"no decoded errors for {T} yet ({p})")
         err[T] = np.load(p)
-        doc = json.loads((REPORT / T / "decoded.json").read_text())
+        doc = json.loads((REPORT / T / f"decoded{pair_sfx(args.arms)}.json").read_text())
         unit[T], setting[T] = doc["unit"], doc["decoder_setting"]
     rows = SOURCES + ["none", "ceiling"]
     res = {"arms": arms, "cells": {}, "unit": unit, "decoder_setting": setting}
@@ -231,7 +240,7 @@ def report(args) -> int:
     GR._title(fig, "One-to-one generation, decoded: error against the real image (checkpoint-3300)",
               "Rows: the source given (then generated). Columns: the generated target. "
               "Paired comparisons on identical scenes; CIs are 10,000-resample bootstraps over scenes.")
-    sfx = "" if args.metric == "err" else "_ml7"
+    sfx = ("" if args.metric == "err" else "_ml7") + pair_sfx(args.arms)
     GR._save(fig, REPORT / f"fig_decoded_grid{sfx}.png")
     (REPORT / f"decoded_grid{sfx}.json").write_text(json.dumps(res, indent=1) + "\n")
     print(f"-> {REPORT / f'fig_decoded_grid{sfx}.png'}")

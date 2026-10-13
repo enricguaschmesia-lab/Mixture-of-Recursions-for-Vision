@@ -74,6 +74,15 @@ LULC_CMAP = ListedColormap(["#d9d9d9", "#419bdf", "#397d49", "#7a87c6", "#e49635
 INDEX = None
 
 
+#: The main pair of each root keeps unsuffixed file names; any other pair (a control against a
+#: model) gets `_<a>_<b>`, so it never overwrites them (2026-10-13). Same rule in s12_decoded_grid.py.
+MAIN_PAIRS = (["a10", "b10"], ["a10c", "b10c"])
+
+
+def pair_sfx(arms) -> str:
+    return "" if list(arms) in MAIN_PAIRS else "_" + "_".join(arms)
+
+
 def arm_token_set(arm: str, target: str) -> str:
     """The token set an arm's generations were prompted with (absent: original, before B10c)."""
     return json.loads((GEN / arm / target / "manifest.json").read_text()).get("token_set", "original")
@@ -313,7 +322,7 @@ def figures_cmd(args) -> int:
         odir = OUT / T
         parts = [np.load(odir / f) for f in ("errors_ceiling.npz",) + tuple(f"errors_{a}.npz" for a in args.arms)]
         merged = {k: p[k] for p in parts for k in p.files}
-        np.savez(odir / "errors.npz", **merged)
+        np.savez(odir / f"errors{pair_sfx(args.arms)}.npz", **merged)
         il = {k: v for f in ("illus_ceiling.npz",) + tuple(f"illus_{a}.npz" for a in args.arms)
               for z in [np.load(odir / f)] for k, v in ((k, z[k]) for k in z.files)}
         R = merged[f"ceiling|{T}|rows"]
@@ -337,7 +346,7 @@ def figures_cmd(args) -> int:
                "ceiling_ml7": float(merged[f"ceiling|{T}|err_ml7"].mean()), "cells_ml7": means_ml7,
                "illustration_rows": pick, "illustration_skipped_empty": sorted(skip),
                "illustration_rule": "candidate closest to the column's median floor error", "decode": {"seed": SEED, "batch": BATCH, "timesteps": STEPS}}
-        (odir / "decoded.json").write_text(json.dumps(doc, indent=1) + "\n")
+        (odir / f"decoded{pair_sfx(args.arms)}.json").write_text(json.dumps(doc, indent=1) + "\n")
         summary[T] = doc
 
         # one figure per target column, slide-shaped: each figure COLUMN is one cell (the
@@ -412,11 +421,11 @@ def figures_cmd(args) -> int:
                  "3 rows per corpus, the one whose true-token decode error is closest to the column median "
                  "(majortom; ssl4eos12 for an S1GRD source).", fontsize=8.5, color="#52514e")
         plt.tight_layout(rect=(0, 0.03, 1, 0.975))
-        fig.savefig(odir / f"fig_decoded_{T}.png", dpi=110, facecolor="#fcfcfb")
+        fig.savefig(odir / f"fig_decoded_{T}{pair_sfx(args.arms)}.png", dpi=110, facecolor="#fcfcfb")
         plt.close(fig)
         print(f"{T}: ceiling {doc['ceiling']:.4f}  " + "  ".join(
             f"{S} " + "/".join(f"{means[S][a]:.3f}" for a in args.arms) for S in cells))
-    (OUT / "decoded_summary.json").write_text(json.dumps(summary, indent=1) + "\n")
+    (OUT / f"decoded_summary{pair_sfx(args.arms)}.json").write_text(json.dumps(summary, indent=1) + "\n")
     print(f"-> {OUT}")
     return 0
 

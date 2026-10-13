@@ -702,7 +702,9 @@ def slides_cmd(args) -> int:
     A, B = args.arms
     ts = pair_token_set(base, args.arms)
     COL = {A: "#2a78d6", B: "#eb6834"}                 # grid_report.ARM_COLORS
-    NAME = {"a10": "A10 (MoR)", "b10": "B10 (vanilla)", "a10c": "A10c (MoR)", "b10c": "B10c (vanilla)"}
+    NAME = {"a10": "A10 (MoR)", "b10": "B10 (vanilla)", "a10c": "A10c (MoR)", "b10c": "B10c (vanilla)",
+            "a10cr": "A10cR (random router)", "a10cs2": "A10c seed 43", "b10c11": "B10c 11 layers"}
+    NAME.update({a: NAME.get(a, a.upper()) for a in args.arms})
     INK, INK2, SURF = "#0b0b0b", "#52514e", "#fcfcfb"
     modes = json.loads((base / A / "run.json").read_text()).get("mid_modes", ["t1"])
     MODE = {"t1": "T = 1", "t05": "T = 0.5", "greedy": "greedy"}
