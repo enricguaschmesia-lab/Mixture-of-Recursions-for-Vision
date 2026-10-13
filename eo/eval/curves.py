@@ -60,16 +60,19 @@ EPOCH_STEPS = 84_672 / BATCH
 
 # ------------------------------------------------------------------ compute
 
-def step_flops(depth: Optional[np.ndarray], input_mod: Optional[np.ndarray]) -> Dict[str, float]:
+def step_flops(depth: Optional[np.ndarray], input_mod: Optional[np.ndarray],
+               n_layers: int = 29) -> Dict[str, float]:
     """Training FLOPs per optimizer step under both definitions.
 
     `depth` is (rows, positions) passes-through-the-recursed-stack, or None for a
-    model with no router (every token takes all 29 layers).
+    model with no router (every token takes all `n_layers` layers: 29 for B/B10/B10c,
+    11 for the parameter-matched B10c-11L -- 2026-10-14: it was hardcoded to 29, which
+    charged B10c-11L B10c's compute).
     """
     if depth is None:
-        lin = 2 * P_LAYER * 29 * SEQ
-        att = 2 * D * 29 * SEQ ** 2
-        layers_body = 29.0
+        lin = 2 * P_LAYER * n_layers * SEQ
+        att = 2 * D * n_layers * SEQ ** 2
+        layers_body = float(n_layers)
     else:
         scale = SEQ / depth.shape[1]                 # the captured frame drops one position
         n = np.stack([(depth >= i).sum(1) * scale for i in range(1, N_REC + 1)], 1)  # (rows, 3)
@@ -108,6 +111,8 @@ def load_arm(arm: str, run_dir: str, eval_root="/data/enric/reports/arm_eval",
              d311_root="/data/enric/reports/d311") -> Dict:
     """Everything known about one arm, one record per evaluated checkpoint."""
     run_dir = Path(run_dir)
+    hf = run_dir / "config.json"                 # the trained model's own layer count
+    n_layers = int(json.loads(hf.read_text()).get("num_hidden_layers", 29)) if hf.exists() else 29
     recs = []
     for mp in sorted(Path(eval_root, arm).glob("*/metrics.json")):
         doc = json.loads(mp.read_text())
@@ -120,7 +125,7 @@ def load_arm(arm: str, run_dir: str, eval_root="/data/enric/reports/arm_eval",
              "has_router": doc["has_router"], "dir": str(mp.parent)}
         tok = np.load(mp.parent / "tokens_router.npz")
         depth = tok["depth"] if "depth" in tok.files else None
-        r.update(step_flops(depth, tok["input_mod"]))
+        r.update(step_flops(depth, tok["input_mod"], n_layers))
         gen = {}
         for T in TARGETS:
             hits = list(Path(d311_root, arm, ck).glob(f"{T}_*/metrics_{T}.json"))
