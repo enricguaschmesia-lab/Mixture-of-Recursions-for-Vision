@@ -24,13 +24,21 @@ from eo.ben import layout, pack  # noqa: E402
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kind", choices=["S2", "S1"], required=True)
+    ap.add_argument("--roles", default=",".join(layout.PACK_ROLES))
+    ap.add_argument("--out", type=Path, default=layout.PACKED)
+    ap.add_argument("--exclude-packed", action="store_true",
+                    help="skip rows already in the main pack (layout.PACKED): an extra pack, e.g. L8's")
     a = ap.parse_args()
+    roles = [r for r in a.roles.split(",") if r]
     index = pd.read_parquet(layout.INDEX)
-    wanted = np.flatnonzero(np.logical_or.reduce([index[r].to_numpy(bool) for r in layout.PACK_ROLES]))
-    print(f"packing {len(wanted)} rows ({', '.join(layout.PACK_ROLES)}) of {len(index)}", flush=True)
-    stats = pack.pack(a.kind, index[["row", "s2", "s1"]], wanted)
-    stats["roles"] = list(layout.PACK_ROLES)
-    (layout.PACKED / f"pack_{a.kind}.json").write_text(json.dumps(stats, indent=2) + "\n")
+    wanted = np.flatnonzero(np.logical_or.reduce([index[r].to_numpy(bool) for r in roles]))
+    if a.exclude_packed:
+        assert a.out.resolve() != layout.PACKED.resolve(), "--exclude-packed needs another --out"
+        wanted = np.setdiff1d(wanted, np.load(layout.PACKED / f"order_{a.kind}.npy"))
+    print(f"packing {len(wanted)} rows ({', '.join(roles)}) of {len(index)} into {a.out}", flush=True)
+    stats = pack.pack(a.kind, index[["row", "s2", "s1"]], wanted, out=a.out)
+    stats["roles"] = roles
+    (a.out / f"pack_{a.kind}.json").write_text(json.dumps(stats, indent=2) + "\n")
     print(json.dumps(stats, indent=2))
 
 

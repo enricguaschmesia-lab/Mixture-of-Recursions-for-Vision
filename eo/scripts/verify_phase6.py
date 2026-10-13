@@ -420,7 +420,8 @@ def x8():
         return o
     with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
         c = {n: flat(OmegaConf.to_container(compose(f"eo_ben/{n}", overrides=["finetune.init_from=/x"]), resolve=False))
-             for n in ("b10_full", "b10_full_li", "b10_lora", "b10_lora_lr1e4")}
+             for n in ("b10_full", "b10_full_li", "b10_lora", "b10_lora_lr1e4", "b10_scratch",
+                       "b10_lora_1pct", "b10_scratch_1pct")}
     diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
     d_li, d_lora = diff("b10_full", "b10_full_li"), diff("b10_full", "b10_lora")
     record("X8 S6.b overlay", d_li == ["ben.loss_on"], f"b10_full_li vs b10_full: {d_li}",
@@ -429,6 +430,12 @@ def x8():
     record("X8 L6 overlay", d_lr == ["learning_rate"] and c["b10_lora_lr1e4"]["learning_rate"] == c["b10_full"]["learning_rate"],
            f"b10_lora_lr1e4 vs b10_lora: {d_lr}; lr {c['b10_lora_lr1e4']['learning_rate']} = full's {c['b10_full']['learning_rate']}",
            d_ctl != ["learning_rate"], f"b10_full vs b10_lora differs in {d_ctl}")
+    roles = ["ben.eval_role", "ben.train_role"]
+    d1, d2 = diff("b10_lora", "b10_lora_1pct"), diff("b10_scratch", "b10_scratch_1pct")
+    record("X8 L8 overlays", d1 == roles and d2 == roles and c["b10_lora_1pct"]["ben.train_role"] == "ft_train1"
+           and c["b10_lora_1pct"]["ben.eval_role"] == "ft_valsel1",
+           f"b10_lora_1pct vs b10_lora: {d1}; b10_scratch_1pct vs b10_scratch: {d2}",
+           diff("b10_lora", "b10_scratch_1pct") != roles, f"b10_scratch_1pct vs b10_lora differs in {diff('b10_lora', 'b10_scratch_1pct')}")
 
 
 # ---------------------------------------------------------------- X9

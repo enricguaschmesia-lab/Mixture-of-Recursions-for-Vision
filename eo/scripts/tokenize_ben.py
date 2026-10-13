@@ -51,6 +51,7 @@ def main():
     ap.add_argument("--roles", required=True, help="comma-separated index columns, e.g. ft_train,test_a")
     ap.add_argument("--limit", type=int, default=None, help="dry run: only the first N rows")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--packed", type=Path, default=None, help="read this pack (default layout.PACKED; L8: layout.PACKED_L8)")
     a = ap.parse_args()
 
     gpu = torch.cuda.get_device_name(0)
@@ -64,7 +65,9 @@ def main():
     if a.limit:
         rows = rows[: a.limit]
     src = "S2" if a.modality == "S2L2A" else "S1"
-    packed, r2p = layout.load_packed(src, n)
+    packed, r2p = layout.load_packed(src, n, a.packed or layout.PACKED)
+    if a.packed is not None:                 # an extra pack: the role's rows that it holds
+        rows = rows[r2p[rows] >= 0]
     if (r2p[rows] < 0).any():
         sys.exit(f"{int((r2p[rows] < 0).sum())} selected rows are not packed ({src})")
 

@@ -132,6 +132,7 @@ def build_index(smarties_dir: Path) -> Tuple[pd.DataFrame, Dict]:
     df.loc[pick, "ft_valsel"] = True
     df["test_a"] = df.sm_val
     df["test_c"] = df.sm_none
+    df = add_l8_roles(df)
 
     prov.update({
         "index_version": INDEX_VERSION,
@@ -140,10 +141,24 @@ def build_index(smarties_dir: Path) -> Tuple[pd.DataFrame, Dict]:
         "valsel": {"size": VALSEL_SIZE, "seed": VALSEL_SEED,
                    "pool": "sm_train & ~sm_train10", "pool_size": int(len(pool))},
         "counts": {c: int(df[c].sum()) for c in
-                   list(SMARTIES_MM) + ["sm_none", "ft_train", "ft_valsel", "test_a", "test_c"]},
+                   list(SMARTIES_MM) + ["sm_none", "ft_train", "ft_valsel", "test_a", "test_c"] + list(L8_DERIVED)},
         "official_counts": df["official"].value_counts().to_dict(),
     })
     return df, prov
+
+
+#: PHASE6_PLAN L8, label efficiency (2026-10-13). SMARTIES' 1% list is kept intact as the training
+#: role; it is NOT a subset of the 10% list, and 47 of its patches fall in ft_valsel, so the 1% runs
+#: select on ft_valsel minus those (ft_valsel1). Derived from existing columns only.
+L8_DERIVED = ("ft_train1", "ft_valsel1")
+
+
+def add_l8_roles(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["ft_train1"] = out.sm_train1.astype(bool)
+    out["ft_valsel1"] = out.ft_valsel.astype(bool) & ~out.sm_train1.astype(bool)
+    assert not (out.ft_train1 & (out.test_a | out.test_c | out.ft_valsel1)).any(), "ft_train1 overlaps an eval role"
+    return out
 
 
 def attach_labels(df: pd.DataFrame, meta_s2: pd.DataFrame,
@@ -178,7 +193,7 @@ def attach_labels(df: pd.DataFrame, meta_s2: pd.DataFrame,
            "rows_with_no_19_label": int((lab.n_labels19 == 0).sum()),
            "max_labels19": int(lab.n_labels19.max()),
            "label_count_hist": lab.n_labels19.value_counts().sort_index().to_dict()}
-    for role in ("ft_train", "ft_valsel", "test_a", "test_c"):
+    for role in ("ft_train", "ft_valsel", "test_a", "test_c") + L8_DERIVED:
         if role in out.columns:
             sub = out[out[role]]
             rep[f"{role}_unlabelled"] = int((sub.labels19 < 0).sum())

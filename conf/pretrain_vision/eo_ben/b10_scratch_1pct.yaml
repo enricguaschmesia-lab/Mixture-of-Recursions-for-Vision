@@ -1,0 +1,13 @@
+# @package _global_
+#
+# L8 (PHASE6_PLAN §2b): label efficiency. b10_scratch trained on SMARTIES' 1% list (ft_train1, 3,116
+# patches, kept intact) and selected on ft_valsel1 (ft_valsel minus the 47 patches of the 1% list).
+# The budget is unchanged: 1,461 optimizer steps (~30 epochs over 1%), checkpoints at 487 / 974 /
+# 1,461, so selection on val catches overfitting. Differs from b10_scratch in the two roles only (gate X8).
+defaults:
+  - b10_scratch
+  - _self_
+
+ben:
+  train_role: ft_train1
+  eval_role: ft_valsel1

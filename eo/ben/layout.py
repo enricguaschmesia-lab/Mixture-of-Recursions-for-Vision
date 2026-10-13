@@ -42,14 +42,23 @@ assert sorted(b for bands, _ in S2_GROUPS.values() for b in bands) == sorted(
 
 
 PACK_ROLES = ("ft_train", "ft_valsel", "test_a", "test_c")   # what pack_ben.py packs
+#: PHASE6_PLAN L8 (2026-10-13): SMARTIES' 1% list is NOT inside the 10% list, so 2,734 of its
+#: patches were never packed. They get a pack of their own; PACKED is never rewritten.
+PACKED_L8 = ROOT / "v1_stream_l8"
+L8_ROLES = ("ft_train1",)
 
 
-def load_packed(kind: str, n_rows: int):
+def packed_dirs():
+    """Every pack that exists, main first (labels and tokens may come from any of them)."""
+    return [d for d in (PACKED, PACKED_L8) if (d / "order_S2.npy").exists() or (d / "order_S1.npy").exists()]
+
+
+def load_packed(kind: str, n_rows: int, packed: Path = PACKED):
     """({array name: memmap}, row_to_pos) for 'S2' or 'S1'. row_to_pos[row] = -1 if not packed."""
     import numpy as np
     names = list(S2_GROUPS) if kind == "S2" else ["S1"]
-    arrays = {g: np.load(PACKED / f"{g}.npy", mmap_mode="r") for g in names}
-    order = np.load(PACKED / f"order_{kind}.npy")
+    arrays = {g: np.load(packed / f"{g}.npy", mmap_mode="r") for g in names}
+    order = np.load(packed / f"order_{kind}.npy")
     r2p = np.full(n_rows, -1, dtype=np.int64)
     r2p[order] = np.arange(len(order))
     for a in arrays.values():

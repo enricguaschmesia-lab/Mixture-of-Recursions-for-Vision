@@ -37,6 +37,7 @@ def main():
     r.add_argument("--smarties", type=Path, required=True,
                    help=f"SMARTIES eval_splits/ at commit {L.SMARTIES_SHA}")
     sub.add_parser("labels")
+    sub.add_parser("roles", help="add the derived L8 roles to the existing index (every other column unchanged)")
     a = ap.parse_args()
 
     prov_path = layout.INDEX.with_suffix(".json")
@@ -53,11 +54,26 @@ def main():
         df.to_parquet(layout.INDEX)
         prov_path.write_text(json.dumps(prov, indent=2) + "\n")
         print(json.dumps(prov, indent=2))
+    elif a.cmd == "roles":
+        df = pd.read_parquet(layout.INDEX)
+        out = splits.add_l8_roles(df.drop(columns=[c for c in splits.L8_DERIVED if c in df.columns]))
+        for c in df.columns:
+            if c not in splits.L8_DERIVED:
+                assert out[c].equals(df[c]), f"column {c} changed"
+        tmp = layout.INDEX.with_suffix(".parquet.tmp")
+        out.to_parquet(tmp)
+        tmp.replace(layout.INDEX)
+        prov = json.loads(prov_path.read_text())
+        prov.setdefault("counts", {}).update({c: int(out[c].sum()) for c in splits.L8_DERIVED})
+        prov["l8_roles_fork_commit"] = _commit()
+        prov_path.write_text(json.dumps(prov, indent=2) + "\n")
+        print({c: int(out[c].sum()) for c in splits.L8_DERIVED})
     else:
         df = pd.read_parquet(layout.INDEX)
-        m2 = pd.read_parquet(layout.PACKED / "meta_S2.parquet")
-        m1p = layout.PACKED / "meta_S1.parquet"
-        m1 = pd.read_parquet(m1p) if m1p.exists() else None
+        dirs = layout.packed_dirs()
+        m2 = pd.concat([pd.read_parquet(d / "meta_S2.parquet") for d in dirs if (d / "meta_S2.parquet").exists()])
+        m1s = [pd.read_parquet(d / "meta_S1.parquet") for d in dirs if (d / "meta_S1.parquet").exists()]
+        m1 = pd.concat(m1s) if m1s else None
         out, rep = splits.attach_labels(df[[c for c in df.columns if c not in
                                             ("labels43", "labels19", "n_labels19", "date")]],
                                         m2, m1)
