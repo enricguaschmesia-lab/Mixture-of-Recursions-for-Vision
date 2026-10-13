@@ -103,6 +103,32 @@ def _unique_linears(model) -> List[nn.Linear]:
     return out
 
 
+def _split_vocab(model, n_old_vocab: int) -> SplitEmbedding:
+    """The tied table becomes a frozen old part + a trainable new part, shared by the head."""
+    emb = model.model.embed_tokens
+    head = model.lm_head
+    if head.weight is not emb.weight:
+        raise AssertionError("expects a tied model (lm_head.weight is embed_tokens.weight)")
+    split = SplitEmbedding(emb.weight.data, n_old_vocab, padding_idx=emb.padding_idx)
+    model.model.embed_tokens = split
+    model.lm_head = SplitLMHead(split)
+    return split
+
+
+def apply_head(model, n_old_vocab: int) -> Dict:
+    """L5's head-only regime: every pretrained weight frozen; only the new vocabulary rows train
+    (LoRA without the adapters, so the pair isolates what the adapters add)."""
+    if getattr(model.config, "_lora_applied", False) or getattr(model.config, "_head_applied", False):
+        raise RuntimeError("a regime structure is already applied")
+    for p in model.parameters():
+        p.requires_grad_(False)
+    split = _split_vocab(model, n_old_vocab)
+    model.config._head_applied = True
+    return {"new_row_params": int(split.new.numel()),
+            "trainable_params": int(sum(p.numel() for p in model.parameters() if p.requires_grad)),
+            "total_params": int(sum(p.numel() for p in model.parameters()))}
+
+
 def apply_lora(model, r: int, alpha: float, n_old_vocab: int) -> Dict:
     """In place. Freezes everything, then adds adapters and the split vocabulary."""
     if getattr(model.config, "_lora_applied", False):
@@ -119,13 +145,7 @@ def apply_lora(model, r: int, alpha: float, n_old_vocab: int) -> Dict:
                 setattr(parent, cname, wrapped[id(child)])
                 n_sites += 1
 
-    emb = model.model.embed_tokens
-    head = model.lm_head
-    if head.weight is not emb.weight:
-        raise AssertionError("LoRA expects a tied model (lm_head.weight is embed_tokens.weight)")
-    split = SplitEmbedding(emb.weight.data, n_old_vocab, padding_idx=emb.padding_idx)
-    model.model.embed_tokens = split
-    model.lm_head = SplitLMHead(split)
+    split = _split_vocab(model, n_old_vocab)
     model.config._lora_applied = True
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)

@@ -1,0 +1,12 @@
+# @package _global_
+#
+# L5 (PHASE6_PLAN §2b): head only. Every pretrained weight frozen; only the 21 new vocabulary
+# rows train (the label embeddings, shared with the output head). b10_lora's optimizer
+# settings, so b10_lora - b10_head is exactly what the adapters add. The closest analogue of
+# SMARTIES' linear probe on a frozen encoder.
+defaults:
+  - b10_lora
+  - _self_
+
+finetune:
+  regime: head

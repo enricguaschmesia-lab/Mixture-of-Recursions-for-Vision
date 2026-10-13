@@ -87,10 +87,19 @@ def init_from(model, cfg) -> Dict:
     """pretrain.py's hook: strict-load the extended checkpoint, then apply the regime."""
     from eo.data import ben_vocab as BV
     ft = cfg.finetune
-    init_dir = Path(str(ft.init_from))
     vocab = int(model.config.vocab_size)
     if vocab != BV.TOTAL_VOCAB_SIZE:
         raise RuntimeError(f"model built at vocab {vocab}, BEN registry is {BV.TOTAL_VOCAB_SIZE}")
+    if ft.regime == "scratch":
+        # L4's reference: the same architecture, randomly initialized, nothing loaded.
+        if ft.get("init_from"):
+            raise ValueError("finetune.regime=scratch takes no init_from")
+        X.assert_tied(model)
+        for p in model.parameters():
+            p.requires_grad_(True)
+        n = int(sum(p.numel() for p in model.parameters()))
+        return {"init_from": None, "regime": "scratch", "trainable_params": n, "total_params": n}
+    init_dir = Path(str(ft.init_from))
     ext = verify_extension(init_dir, vocab)
     load = strict_load(model, init_dir)
     X.assert_tied(model)
@@ -104,11 +113,13 @@ def init_from(model, cfg) -> Dict:
                 "across recursion steps and verified as the same tensor (PHASE6_PLAN §4.6). "
                 "Only the vanilla arm (B10) is wired so far.")
         report["lora"] = LR.apply_lora(model, int(ft.lora.r), float(ft.lora.alpha), BV.BASE)
+    elif ft.regime == "head":
+        report["head"] = LR.apply_head(model, BV.BASE)
     elif ft.regime == "full":
         for p in model.parameters():
             p.requires_grad_(True)
     else:
-        raise ValueError(f"finetune.regime must be 'full' or 'lora', got {ft.regime!r}")
+        raise ValueError(f"finetune.regime must be 'full', 'lora', 'head' or 'scratch', got {ft.regime!r}")
     report["trainable_params"] = int(sum(p.numel() for p in model.parameters() if p.requires_grad))
     report["total_params"] = int(sum(p.numel() for p in model.parameters()))
     return report
@@ -129,11 +140,13 @@ def build_finetuned(config_name: str, checkpoint: Optional[str], device: str = "
         strict_load(model, Path(str(ft.init_from)))
         X.assert_tied(model)
     else:
+        from eo.data import ben_vocab as BV
         if ft.regime == "lora":
-            from eo.data import ben_vocab as BV
             LR.apply_lora(model, int(ft.lora.r), float(ft.lora.alpha), BV.BASE)
+        elif ft.regime == "head":
+            LR.apply_head(model, BV.BASE)
         strict_load(model, Path(checkpoint))
-        if ft.regime != "lora":
+        if ft.regime not in ("lora", "head"):
             X.assert_tied(model)
     model.to(device).eval()
     return model, cfg

@@ -350,10 +350,15 @@ def main(argv=None) -> int:
             ("BEN: EO vocab size on a BEN run",  "config",    ben(str(ext), ov={"model_config.vocab_size": 87556})),
             ("BEN: eval role never tokenized",   "BEN data",  ben(str(ext), ov={"ben.eval_role": "sm_train"})),
             ("BEN: role not in the index",       "BEN data",  ben(str(ext), ov={"ben.train_role": "nope"})),
+            ("BEN: scratch with an init_from",   "init from", dict(env=GOOD_ENV, config=REPO / "conf/pretrain_vision/eo_ben/b10_scratch.yaml",
+                                                               overrides={"finetune.init_from": str(ext)})),
         ]
         ben_pos = [
             (f"BEN: {c} from the extended B10", chk, _results(**ben(str(ext)) | {"config": REPO / f"conf/pretrain_vision/eo_ben/{c}.yaml"}))
-            for c in ("b10_full", "b10_lora") for chk in ("config", "BEN data", "init from")
+            for c in ("b10_full", "b10_lora", "b10_head", "b10_lora_lr1e4") for chk in ("config", "BEN data", "init from")
+        ] + [
+            ("BEN: b10_scratch, no init_from", chk, _results(env=GOOD_ENV, config=REPO / "conf/pretrain_vision/eo_ben/b10_scratch.yaml"))
+            for chk in ("config", "BEN data", "init from")
         ]
     else:
         print("\n(Phase 6 controls skipped: no extended checkpoint or BEN tokens on this machine)")

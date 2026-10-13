@@ -1,0 +1,13 @@
+# @package _global_
+#
+# L4 (PHASE6_PLAN §2b): the from-scratch reference. B10's architecture at the BEN vocabulary,
+# RANDOMLY initialized (nothing loaded), with b10_full's recipe: the same data, budget, LR and
+# weight decay. It answers whether TerraMesh pretraining helps on BEN at all. Same recipe, not
+# retuned: a scratch model may prefer another LR, and the write-up says so.
+defaults:
+  - b10_full
+  - _self_
+
+finetune:
+  init_from: null
+  regime: scratch

@@ -529,7 +529,13 @@ def check_init_from(ctx: PreflightContext) -> CheckResult:
         return CheckResult("init from", True, "skipped (no config)")
     cfg = _load_config(ctx.config_path, ctx.overrides)
     init = (cfg.get("finetune") or {}).get("init_from")
+    regime = (cfg.get("finetune") or {}).get("regime")
     is_ben = cfg.get("dataset") == "ben_multimodal"
+    if regime == "scratch":
+        if init not in (None, "???"):
+            return CheckResult("init from", False, f"regime scratch with init_from {init}",
+                               "The from-scratch reference loads nothing; drop --init-from.")
+        return CheckResult("init from", True, "regime scratch: random init, deliberately (PHASE6_PLAN L4)")
     if init in (None, "???"):
         if is_ben:
             return CheckResult("init from", False, "a BEN run has no finetune.init_from",

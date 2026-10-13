@@ -78,6 +78,7 @@ if [[ $RESUME -eq 1 && -z "$RUN_ID" ]]; then
 fi
 
 PHASE_DIR="phase3"
+[[ "$CONFIG" == eo_ben/* ]] && PHASE_DIR="phase6"      # every BEN run, the from-scratch reference included
 if [[ -n "$INIT_FROM" ]]; then
   if [[ $RESUME -eq 1 ]]; then
     echo "ERROR: --init-from and --resume do not combine: a fine-tune is rerun, not resumed." >&2; exit 2

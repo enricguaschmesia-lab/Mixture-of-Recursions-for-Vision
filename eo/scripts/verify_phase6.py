@@ -14,6 +14,8 @@ that must FIRE, so a pass means something.
   X5  splits disjoint at the patch level                     | a duplicated patch caught
   X6  LoRA: identity at init, frozen tensors bit-identical after training
                                                              | masked-grad + AdamW moves rows
+  X6h head only (L5): identity at init, only the 21 new rows trainable, frozen tensors bit-identical
+      after training                                         | the LoRA structure exposes more
   X7  test controls: wrong input collapses toward the prior  | own inputs via the same path do not
   X8  the S6.b overlay differs from b10_full in exactly ben.loss_on | b10_lora is flagged
       L6's overlay b10_lora_lr1e4 differs from b10_lora in exactly learning_rate | b10_full is flagged
@@ -320,6 +322,46 @@ def x6(run_dir):
     record("X6 LoRA", ok, detail, moved > 0, f"masked-grad + AdamW(wd 0.1) moved 'frozen' rows by {moved:.2e}")
 
 
+def x6h(run_dir):
+    """L5's head-only regime: identity at init, only the 21 new rows trainable, and after training
+    every frozen tensor bit-identical. Control: X6's masked-grad + AdamW trap, on a head run's
+    shape (the old rows must stay put only because they are a separate frozen Parameter)."""
+    from eo.finetune import lora as LR
+    from eo.finetune.init import strict_load
+    from eo.generate.conditional import build_model
+    if not (EXT / "extension.json").exists():
+        return record("X6h head only", None, "no extended checkpoint")
+    base, _ = build_model("eo_ben/b10_head", None, device="cpu", overrides=[f"finetune.init_from={EXT}"])
+    strict_load(base, EXT)
+    hm, _ = build_model("eo_ben/b10_head", None, device="cpu", overrides=[f"finetune.init_from={EXT}"])
+    strict_load(hm, EXT)
+    rep = LR.apply_head(hm, BV.BASE)
+    x = torch.randint(0, BV.TOTAL_VOCAB_SIZE, (2, 48))
+    with torch.no_grad():
+        d0 = float((base(input_ids=x).logits - hm(input_ids=x).logits).abs().max())
+    trainable = [n for n, p in hm.named_parameters() if p.requires_grad]
+    frozen_names = [n for n, p in hm.named_parameters() if not p.requires_grad]
+    ok = d0 < 1e-4 and trainable == ["model.embed_tokens.new"] and rep["trainable_params"] == 21 * 576
+    detail = f"init identity max |dlogit| {d0:.1e}; trainable {trainable} ({rep['trainable_params']:,})"
+    if run_dir is not None:
+        cks = sorted(Path(run_dir).glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[1]))
+        if not cks:
+            return record("X6h head only", False, f"no checkpoint in {run_dir}")
+        ref = {n: p.detach().clone() for n, p in hm.named_parameters() if not p.requires_grad}
+        strict_load(hm, cks[-1])
+        cur = dict(hm.named_parameters())
+        diff = [n for n in frozen_names if not torch.equal(ref[n], cur[n].detach())]
+        moved_new = float((cur["model.embed_tokens.new"].detach() - base.model.embed_tokens.weight.detach()[BV.BASE:]).abs().max())
+        ok = ok and not diff and moved_new > 0
+        detail += (f"; after {cks[-1].name}: {len(frozen_names) - len(diff)}/{len(frozen_names)} frozen "
+                   f"tensors bit-identical, new rows moved {moved_new:.2e}")
+    # control: the same model with the LoRA structure instead must expose more than the new rows
+    lm, _ = build_model("eo_ben/b10_lora", None, device="cpu", overrides=[f"finetune.init_from={EXT}"])
+    LR.apply_lora(lm, 16, 32, BV.BASE)
+    n_lora = sum(p.requires_grad for p in lm.parameters())
+    record("X6h head only", ok, detail, n_lora > 1, f"the LoRA structure exposes {n_lora} trainable tensors, not 1")
+
+
 # ---------------------------------------------------------------- X7
 def x7(tag, ckpt, role):
     from eo.eval import ben as E
@@ -449,6 +491,7 @@ def main():
     ap.add_argument("--full-x4", action="store_true", help="every train row, not 1 in 7")
     ap.add_argument("--lora-run", default=None, help="a finished B10 LoRA run dir, for X6's trained half")
     ap.add_argument("--x7", nargs=3, default=None, metavar=("TAG", "CKPT", "ROLE"))
+    ap.add_argument("--head-run", default=None, help="a finished B10 head-only run dir, for X6h's trained half")
     ap.add_argument("--chain-root", type=Path, default=REPORTS / "chain", help="ben_chain.py's --out-root (X9)")
     a = ap.parse_args()
     want = lambda x: a.only is None or x in a.only
@@ -467,6 +510,7 @@ def main():
         x5()
     if want("X6"):
         x6(a.lora_run)
+        x6h(a.head_run)
     if want("X7") and a.x7:
         x7(*a.x7)
     if want("X8"):

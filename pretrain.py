@@ -148,7 +148,7 @@ def main(cfg: DictConfig):
     # the fine-tuning regime (full / LoRA). Not a resume: fresh optimizer and scheduler, a
     # strict load, and the extension's identity artifact verified (eo/finetune/init.py).
     finetune_report = None
-    if cfg.get("finetune") and cfg.finetune.get("init_from"):
+    if cfg.get("finetune") and (cfg.finetune.get("init_from") or cfg.finetune.get("regime") == "scratch"):
         from eo.finetune.init import init_from
         finetune_report = init_from(model, cfg)
         print(f"finetune: {finetune_report}")
