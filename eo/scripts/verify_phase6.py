@@ -16,6 +16,7 @@ that must FIRE, so a pass means something.
                                                              | masked-grad + AdamW moves rows
   X7  test controls: wrong input collapses toward the prior  | own inputs via the same path do not
   X8  the S6.b overlay differs from b10_full in exactly ben.loss_on | b10_lora is flagged
+      L6's overlay b10_lora_lr1e4 differs from b10_lora in exactly learning_rate | b10_full is flagged
   X9  Step 5b chained generation (artifacts of ben_chain.py, plus a CPU re-check):
       a  the chain's prompt with the real blocks = the dataset's S1+S2 prompt | another patch's S2 differs
       b  a generated body becomes BO body EO in its own slot             | S2 codes in the S1 slot differ
@@ -377,11 +378,15 @@ def x8():
         return o
     with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
         c = {n: flat(OmegaConf.to_container(compose(f"eo_ben/{n}", overrides=["finetune.init_from=/x"]), resolve=False))
-             for n in ("b10_full", "b10_full_li", "b10_lora")}
+             for n in ("b10_full", "b10_full_li", "b10_lora", "b10_lora_lr1e4")}
     diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
     d_li, d_lora = diff("b10_full", "b10_full_li"), diff("b10_full", "b10_lora")
     record("X8 S6.b overlay", d_li == ["ben.loss_on"], f"b10_full_li vs b10_full: {d_li}",
            d_lora != ["ben.loss_on"], f"b10_lora vs b10_full differs in {d_lora}")
+    d_lr, d_ctl = diff("b10_lora", "b10_lora_lr1e4"), diff("b10_lora", "b10_full")
+    record("X8 L6 overlay", d_lr == ["learning_rate"] and c["b10_lora_lr1e4"]["learning_rate"] == c["b10_full"]["learning_rate"],
+           f"b10_lora_lr1e4 vs b10_lora: {d_lr}; lr {c['b10_lora_lr1e4']['learning_rate']} = full's {c['b10_full']['learning_rate']}",
+           d_ctl != ["learning_rate"], f"b10_full vs b10_lora differs in {d_ctl}")
 
 
 # ---------------------------------------------------------------- X9

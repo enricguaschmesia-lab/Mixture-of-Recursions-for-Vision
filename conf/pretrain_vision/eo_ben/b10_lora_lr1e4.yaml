@@ -1,0 +1,11 @@
+# @package _global_
+#
+# L6 / worklog §4 item 39: B10 LoRA at the FULL fine-tune's learning rate (1e-4), so that
+# "LoRA vs full" is not also "1e-3 vs 1e-4". Differs from b10_lora in learning_rate only
+# (gate X8). Weight decay stays 0, as for b10_lora: the regime keeps its own optimizer setting
+# and only the step size is matched.
+defaults:
+  - b10_lora
+  - _self_
+
+learning_rate: 1.0e-4
