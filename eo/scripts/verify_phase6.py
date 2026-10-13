@@ -57,8 +57,8 @@ def record(check, ok, detail, ctrl_ok=None, ctrl_detail=""):
 def x0():
     r = subprocess.run([sys.executable, str(REPO / "eo/scripts/verify_phase3.py"), "--skip-forward"],
                        capture_output=True, text=True)
-    tail = (r.stdout + r.stderr).strip().splitlines()[-1:] or [""]
-    record("X0 verify_phase3 --skip-forward", r.returncode == 0, tail[0][:120])
+    verdict = [ln.strip() for ln in r.stdout.splitlines() if "PHASE 3 GATE" in ln] or ["(no verdict line)"]
+    record("X0 verify_phase3 --skip-forward", r.returncode == 0 and "PASSED" in verdict[-1], verdict[-1][:120])
 
 
 # ---------------------------------------------------------------- X1
