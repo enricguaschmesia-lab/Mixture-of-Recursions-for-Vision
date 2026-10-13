@@ -146,6 +146,10 @@ class BenTokenDataset(Dataset):
         body = torch.from_numpy(np.asarray(raw, dtype=np.int64)) + info.codebook_offset  # int64 FIRST
         return torch.cat([torch.tensor([info.bo_id]), body, torch.tensor([info.eo_id])])
 
+    def chunk(self, src: str, row: int) -> torch.Tensor:
+        """`BO body EO` of input `src` ("S1" | "S2") for index row `row`, in global ids."""
+        return self._chunk(src, row)
+
     def classes(self, row: int) -> List[int]:
         return L.from_mask(int(self.labels19[row]))
 

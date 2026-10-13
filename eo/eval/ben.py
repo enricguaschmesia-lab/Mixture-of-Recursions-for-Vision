@@ -34,6 +34,22 @@ import torch
 
 from eo.data import ben_vocab as V
 
+#: max |cached - uncached| next-token logit difference accepted per autocast mode (eval_ben, ben_chain)
+CACHE_TOL = {"none": 1e-3, "fp16": 5e-2, "bf16": 2e-1}
+
+
+def derangement(n: int, seed: int) -> np.ndarray:
+    """A fixed permutation with no fixed point: patch i gets the inputs of patch d[i] != i."""
+    rng = np.random.default_rng(seed)
+    p = rng.permutation(n)
+    fixed = np.flatnonzero(p == np.arange(n))
+    for i in fixed:                      # swap each fixed point with its neighbour
+        j = (i + 1) % n
+        p[i], p[j] = p[j], p[i]
+    assert not (p == np.arange(n)).any()
+    return p
+
+
 ALLOWED = V.CLASS_IDS + [V.EO_BEN]            # the 20 ids the block can contain after BO_BEN
 _EO_POS = V.N_CLASSES                        # EO_BEN's column in the 20-way restricted logits
 

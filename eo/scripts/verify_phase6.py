@@ -16,6 +16,14 @@ that must FIRE, so a pass means something.
                                                              | masked-grad + AdamW moves rows
   X7  test controls: wrong input collapses toward the prior  | own inputs via the same path do not
   X8  the S6.b overlay differs from b10_full in exactly ben.loss_on | b10_lora is flagged
+  X9  Step 5b chained generation (artifacts of ben_chain.py, plus a CPU re-check):
+      a  the chain's prompt with the real blocks = the dataset's S1+S2 prompt | another patch's S2 differs
+      b  a generated body becomes BO body EO in its own slot             | S2 codes in the S1 slot differ
+      c  KV cache: cached = uncached logits on real continuations (each generation's json)
+                                                                         | shift 1 disagrees
+      d  every generated token lies inside its target's codebook slot    | the same tokens one slot up are caught
+      e  plumbing on the A100: the real-block chain prompt reproduces eval_ben's stored S1+S2 outputs
+                                                                         | another patch's S2 does not
       + average precision equals sklearn's (run in the `mor` env) | a broken AP is caught
 
 Artifacts it reads are named in each check. A check whose artifact does not exist yet is
@@ -376,6 +384,59 @@ def x8():
            d_lora != ["ben.loss_on"], f"b10_lora vs b10_full differs in {d_lora}")
 
 
+# ---------------------------------------------------------------- X9
+def x9(root: Path):
+    from eo.data.ben_dataset import BenTokenDataset, load_index
+    from eo.eval import ben as E
+    from eo.eval import ben_chain as C
+    ds = BenTokenDataset(role="test_a", condition="S1S2", index=load_index())
+    rr = ds.rows[:256]
+    real = lambda i, r, o: C.cls_prompt({"S1": ds.chunk("S1", int(r)), "S2": ds.chunk("S2", int(o))})
+    same = sum(torch.equal(real(i, r, r), ds.prompt(i, "S1S2")) for i, r in enumerate(rr))
+    other = sum(torch.equal(real(i, r, o), ds.prompt(i, "S1S2")) for i, (r, o) in enumerate(zip(rr, np.roll(rr, 1))))
+    record("X9a chain prompt = dataset S1+S2 prompt", same == len(rr), f"{same}/{len(rr)} rows identical",
+           other == 0, f"another patch's S2: {other}/{len(rr)} identical")
+    raw = lambda src, r: ds._arrays()[src][int(r)]
+    blk = sum(torch.equal(C.block(src, raw(src, r)), ds.chunk(src, int(r))) for r in rr[:64] for src in ("S1", "S2"))
+    wrong_slot = sum(torch.equal(C.block("S1", raw("S2", r)), ds.chunk("S2", int(r))) for r in rr[:64])
+    record("X9b generated-block builder", blk == 128, f"{blk}/128 blocks = the dataset's chunk",
+           wrong_slot == 0, f"S2 codes put in the S1 slot: {wrong_slot}/64 equal")
+    gens = sorted(root.glob("gen/*/*_T*.json"))
+    if not gens:
+        record("X9c-e chained generation", None, f"no generations under {root} yet")
+        return
+    bad_cache, bad_ctl, bad_slot, ctl_slot = [], [], [], []
+    for f in gens:
+        d = json.loads(f.read_text())
+        tol = E.CACHE_TOL[d["autocast"]]
+        if not d["cache_check"] <= tol:
+            bad_cache.append(f.name)
+        if not d["cache_check_control_shift1"] > 10 * tol:
+            bad_ctl.append(f.name)
+        tok = np.load(f.with_suffix(".npz"))["tokens"].astype(np.int64)
+        size = C.slot(C.DIRECTIONS[d["direction"]][1])[1]
+        in_slot = lambda t: bool(t.min() >= 0 and t.max() < size)
+        if not in_slot(tok):
+            bad_slot.append(f.name)
+        if in_slot(tok + size):
+            ctl_slot.append(f.name)
+    record("X9c KV cache (generation)", not bad_cache, f"{len(gens) - len(bad_cache)}/{len(gens)} within tolerance",
+           not bad_ctl, f"shift-1 control disagreed in {len(gens) - len(bad_ctl)}/{len(gens)}")
+    record("X9d generated tokens in the target slot", not bad_slot, f"{len(gens) - len(bad_slot)}/{len(gens)} files",
+           not ctl_slot, f"one slot up flagged in {len(gens) - len(ctl_slot)}/{len(gens)}")
+    pls = sorted(root.glob("cls/*/plumbing.json"))
+    if not pls:
+        record("X9e plumbing on the A100", None, "no classifier runs yet")
+        return
+    ok = [json.loads(f.read_text()) for f in pls]
+    record("X9e plumbing on the A100",
+           all(p["prompts_equal_dataset"] and p["greedy_equal"] and p["marginal_max_abs_diff"] < 1e-4 for p in ok),
+           "; ".join(f"{f.parent.name}: max |dmarginal| {p['marginal_max_abs_diff']:.1e}, greedy equal {p['greedy_equal']}"
+                     for f, p in zip(pls, ok)),
+           all(p["control_marginal_max_abs_diff"] > 0.05 for p in ok),
+           "; ".join(f"{f.parent.name}: {p['control_marginal_max_abs_diff']:.3f}" for f, p in zip(pls, ok)))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", default=None)
@@ -383,6 +444,7 @@ def main():
     ap.add_argument("--full-x4", action="store_true", help="every train row, not 1 in 7")
     ap.add_argument("--lora-run", default=None, help="a finished B10 LoRA run dir, for X6's trained half")
     ap.add_argument("--x7", nargs=3, default=None, metavar=("TAG", "CKPT", "ROLE"))
+    ap.add_argument("--chain-root", type=Path, default=REPORTS / "chain", help="ben_chain.py's --out-root (X9)")
     a = ap.parse_args()
     want = lambda x: a.only is None or x in a.only
     print("verify_phase6")
@@ -404,6 +466,8 @@ def main():
         x7(*a.x7)
     if want("X8"):
         x8()
+    if want("X9"):
+        x9(a.chain_root)
     fails = [r for r in RESULTS if r[1] is False or r[3] is False]
     skips = [r for r in RESULTS if r[1] is None]
     print(f"\n{len(RESULTS) - len(fails) - len(skips)} pass, {len(fails)} fail, {len(skips)} skipped")
