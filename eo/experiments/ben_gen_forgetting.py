@@ -44,7 +44,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 P6 = "/data/enric/runs/pretrain/phase6"
-CELLS = {"S2L2A": ["DEM", "S1GRD", "none"], "LULC": ["S2L2A"]}
+CELLS = {"S2L2A": ["DEM", "S1GRD", "none"], "LULC": ["S2L2A"],
+         # 6.2a, regime-balanced (2026-10-13): 12.6b's rows hold only 2 offset scenes in 64, so this
+         # column takes 32 offset + 32 clean held-out majortom scenes (clean.load_labels, seed 0)
+         "S2L2A_regime": ["DEM", "none"]}
+#: column -> the modality generated and decoded
+MOD = {"S2L2A": "S2L2A", "LULC": "LULC", "S2L2A_regime": "S2L2A"}
+
+
+def regime_rows(ds, eval_rows, root, n_each=32, seed=0):
+    from eo.terramesh_tok import clean as CL
+    lab = CL.load_labels(CL.clean_root(Path(root))).set_index("row")
+    ok = [int(r) for r in eval_rows if lab.at[int(r), "corpus"] == "majortom"
+          and {"S2L2A", "DEM"} <= set(ds.present_modalities(int(r)))]
+    off = np.array([r for r in ok if bool(lab.at[r, "offset"])])
+    cln = np.array([r for r in ok if not bool(lab.at[r, "offset"])])
+    rng = np.random.default_rng(seed)
+    return sorted(int(r) for r in np.concatenate([rng.choice(off, n_each, replace=False),
+                                                  rng.choice(cln, n_each, replace=False)]))
 ROWS, SEED = 64, 42
 MODELS = {"base": ("eo_ben/b10_full", None),
           "b10_full": ("eo_ben/b10_full", "b10full_20261012_214747/checkpoint-1461"),
@@ -77,16 +94,18 @@ def generate(a):
     ac = torch.float16 if a.autocast == "fp16" else None
     commit = subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "--short", "HEAD"],
                             capture_output=True, text=True).stdout.strip()
-    for ti, (T, cells) in enumerate(CELLS.items()):
-        out = Path(a.gen_root) / tag / T
+    for ti, (col, cells) in enumerate(CELLS.items()):
+        T = MOD[col]
+        out = Path(a.gen_root) / tag / col
         if (out / "manifest.json").exists():
-            print(f"[skip] {tag} {T}")
+            print(f"[skip] {tag} {col}")
             continue
         out.mkdir(parents=True, exist_ok=True)
-        R = TF.stratified_target_rows(ds, eval_rows, corpus, T, a.rows)
+        R = (regime_rows(ds, eval_rows, root) if col == "S2L2A_regime"
+             else TF.stratified_target_rows(ds, eval_rows, corpus, T, a.rows))
         off, size, _, eo = C.slot(T)
         arrays = {"column_rows": np.array(R)}
-        man = {"arm_tag": tag, "arm_config": cfg_name, "checkpoint": ck, "token_set": "original", "target": T,
+        man = {"arm_tag": tag, "arm_config": cfg_name, "checkpoint": ck, "token_set": "original", "target": T, "column": col,
                "seed": SEED, "temperature": 1.0, "slot_masked": True, "kv_cache": True, "autocast": a.autocast,
                "gpu": gpu, "fork_commit": commit, "cells": {}}
         for si, S in enumerate(cells):
@@ -131,12 +150,13 @@ def report(a):
         tdir = root / T
         if not (tdir / "errors_base.npz").exists():
             continue
+        modality = MOD[T]
         tags = sorted(p.stem[len("errors_"):] for p in tdir.glob("errors_*.npz") if p.stem not in ("errors_ceiling",))
         tags = ["base"] + [t for t in tags if t != "base"]
         E = {t: np.load(tdir / f"errors_{t}.npz") for t in tags}
         ceil = np.load(tdir / "errors_ceiling.npz")
-        metric = "err" if T == "LULC" else "err_ml7"
-        md += [f"## {T} ({'misclassified share' if T == 'LULC' else 'MSE after 7x7 multilook, z units'}; "
+        metric = "err" if modality == "LULC" else "err_ml7"
+        md += [f"## {T} ({'misclassified share' if modality == 'LULC' else 'MSE after 7x7 multilook, z units'}; "
                f"decoded true tokens = {ceil[f'ceiling|{T}|{metric}'].mean():.4f})", "",
                "| cell | n | " + " | ".join(tags) + " | " + " | ".join(f"{t} − base [95% CI]" for t in tags[1:]) + " |",
                "|" + "---|" * (2 + 2 * len(tags) - 1)]
@@ -147,13 +167,13 @@ def report(a):
             diffs = {t: vals[t] - vals["base"] for t in tags[1:]}
             doc[f"{T}/{S}"] = {"n": int(len(base_rows)), "mean": {t: float(v.mean()) for t, v in vals.items()},
                                "minus_base": {t: {"mean": float(d.mean()), "ci95": ci(d)} for t, d in diffs.items()}}
-            md.append(f"| {S} → {T} | {len(base_rows)} | " + " | ".join(f"{vals[t].mean():.4f}" for t in tags) + " | "
+            md.append(f"| {S} → {modality} | {len(base_rows)} | " + " | ".join(f"{vals[t].mean():.4f}" for t in tags) + " | "
                       + " | ".join(f"{diffs[t].mean():+.4f} [{ci(diffs[t])[0]:+.4f}, {ci(diffs[t])[1]:+.4f}]" for t in tags[1:]) + " |")
-            if T == "LULC":
+            if modality == "LULC":
                 miou = {t: float(E[t][f"{t}|{S}|miou"]) for t in tags}
                 doc[f"{T}/{S}"]["miou"] = miou
                 md.append(f"| mIoU | | " + " | ".join(f"{miou[t]:.4f}" for t in tags) + " | |")
-        if T == "S2L2A":
+        if modality == "S2L2A":
             # 6.2a: by the real scene's offset regime, and the generated-offset rate
             R = ceil[f"ceiling|{T}|rows"]
             cp = ceil[f"ceiling|{T}|p1min"]
@@ -161,7 +181,7 @@ def report(a):
             calib = {"decoded_truth_offset_like_if_offset": float((cp[ro] > 900).mean()),
                      "decoded_truth_offset_like_if_clean": float((cp[~ro] > 900).mean()),
                      "n_offset": int(ro.sum()), "n_clean": int((~ro).sum())}
-            doc["S2L2A/offset_rule_on_decoded_truth"] = calib
+            doc[f"{T}/offset_rule_on_decoded_truth"] = calib
             md += ["", f"**6.2a.** Offset rule on the decoded TRUE tokens: offset scenes flagged {calib['decoded_truth_offset_like_if_offset']:.2f}, "
                        f"clean scenes flagged {calib['decoded_truth_offset_like_if_clean']:.2f} ({calib['n_offset']} offset / {calib['n_clean']} clean rows).", "",
                    "| cell | regime | n | " + " | ".join(tags) + " | generated offset-like rate: " + " / ".join(tags) + " |",
@@ -174,7 +194,7 @@ def report(a):
                         continue
                     m = {t: float(E[t][f"{t}|{S}|{metric}"][sel].mean()) for t in tags}
                     g = {t: float((E[t][f"{t}|{S}|p1min"][sel] > 900).mean()) for t in tags}
-                    doc[f"S2L2A/{S}/{name}"] = {"n": int(sel.sum()), "mean": m, "generated_offset_rate": g}
+                    doc[f"{T}/{S}/{name}"] = {"n": int(sel.sum()), "mean": m, "generated_offset_rate": g}
                     md.append(f"| {S} → S2L2A | {name} | {int(sel.sum())} | " + " | ".join(f"{m[t]:.4f}" for t in tags)
                               + " | " + " / ".join(f"{g[t]:.2f}" for t in tags) + " |")
         md.append("")

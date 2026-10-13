@@ -27,7 +27,7 @@ sys.path.insert(0, str(HERE.parent))
 import s12_decoded_eval as S12  # noqa: E402  (sets up terratorch, decode_eo, clamp_test)
 import numpy as np  # noqa: E402
 
-CELLS = {"S2L2A": ["DEM", "S1GRD", "none"], "LULC": ["S2L2A"]}
+from ben_gen_forgetting import CELLS, MOD  # noqa: E402  (columns and their modalities)
 
 
 def p1min(target, out):
@@ -65,12 +65,13 @@ def main():
     gen, outr = pathlib.Path(a.gen_root), pathlib.Path(a.out_root)
     gpu = S12.D.assert_gpu(a.allow_titanv)
     print(f"gpu {gpu}", flush=True)
-    for T, cells in CELLS.items():
-        odir = outr / T
+    for col, cells in CELLS.items():
+        T = MOD[col]
+        odir = outr / col
         odir.mkdir(parents=True, exist_ok=True)
-        R = np.load(gen / a.tags[0] / T / "cells.npz")["column_rows"]
+        R = np.load(gen / a.tags[0] / col / "cells.npz")["column_rows"]
         for t in a.tags:
-            assert np.array_equal(np.load(gen / t / T / "cells.npz")["column_rows"], R), f"{t} {T}: other rows"
+            assert np.array_equal(np.load(gen / t / col / "cells.npz")["column_rows"], R), f"{t} {col}: other rows"
         tok = S12.TK.build(T, device=S12.TK.DEVICE)
         sched = S12.CT.scheduler_like(tok, **S12.CT.VARIANTS["noclip"]) if S12.SETTING[T] == "unclamped" else None
         refs = [S12.P.center_crop(x[0] if x.ndim == 4 else x).astype(np.float32) for x in S12.D.read_rasters(T, R, "original")]
@@ -78,18 +79,18 @@ def main():
         if not (odir / "errors_ceiling.npz").exists():
             out = S12.decode(tok, T, S12.D.read_tokens(T, R, "original"), sched)
             e, eml, _ = S12.score(T, out, refs)
-            extra = {f"ceiling|{T}|p1min": p1min(T, out),
-                     f"ceiling|{T}|ref_p1min": np.array([float(np.nanpercentile(r.reshape(r.shape[0], -1), 1, axis=1).min()) for r in refs])} \
-                if T == "S2L2A" else {f"ceiling|{T}|miou": np.float64(miou(lulc_conf(out, refs)))}
-            np.savez(odir / "errors_ceiling.npz", **{f"ceiling|{T}|rows": R, f"ceiling|{T}|err": e,
-                                                     f"ceiling|{T}|err_ml7": eml, **extra})
-            print(f"ceiling {T}: error {e.mean():.4f} ml7 {eml.mean():.4f}", flush=True)
+            extra = {f"ceiling|{col}|p1min": p1min(T, out),
+                     f"ceiling|{col}|ref_p1min": np.array([float(np.nanpercentile(r.reshape(r.shape[0], -1), 1, axis=1).min()) for r in refs])} \
+                if T == "S2L2A" else {f"ceiling|{col}|miou": np.float64(miou(lulc_conf(out, refs)))}
+            np.savez(odir / "errors_ceiling.npz", **{f"ceiling|{col}|rows": R, f"ceiling|{col}|err": e,
+                                                     f"ceiling|{col}|err_ml7": eml, **extra})
+            print(f"ceiling {col}: error {e.mean():.4f} ml7 {eml.mean():.4f}", flush=True)
         for t in a.tags:
             f = odir / f"errors_{t}.npz"
             if f.exists():
                 print(f"[skip] {f}")
                 continue
-            z = np.load(gen / t / T / "cells.npz")
+            z = np.load(gen / t / col / "cells.npz")
             arrays, t0 = {}, time.time()
             for S in cells:
                 rows, grids = z[f"{S}|rows"], z[f"{S}|grids"]
@@ -103,7 +104,7 @@ def main():
                 else:
                     c = lulc_conf(out, rr)
                     arrays[f"{t}|{S}|confusion"], arrays[f"{t}|{S}|miou"] = c, np.float64(miou(c))
-                print(f"  {t} {S:>6}->{T:<5} n {len(rows):3d} error {e.mean():.4f} ml7 {eml.mean():.4f} "
+                print(f"  {t} {S:>6}->{col:<5} n {len(rows):3d} error {e.mean():.4f} ml7 {eml.mean():.4f} "
                       f"({time.time() - t0:.0f} s)", flush=True)
             tmp = odir / f"errors_{t}.tmp.npz"
             np.savez(tmp, **arrays)
