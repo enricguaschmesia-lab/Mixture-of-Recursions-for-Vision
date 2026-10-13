@@ -72,6 +72,22 @@ A fine-tune starts through the same entry point, from an EXTENDED checkpoint:
 `--init-from` is not a resume: a strict load, fresh optimizer and scheduler, and preflight
 verifies the extension's identity artifact first.
 
+Regimes (`finetune.regime`, one overlay each under `conf/pretrain_vision/eo_ben/`):
+
+    full      every weight trains                         b10_full, b10_full_li (loss on inputs too)
+    lora      rank-16 adapters + the 21 new rows          b10_lora (lr 1e-3), b10_lora_lr1e4
+    head      only the 21 new rows (frozen B10)           b10_head
+    scratch   random init, nothing loaded (no --init-from) b10_scratch
+    *_1pct    SMARTIES' 1% list (ft_train1, val ft_valsel1) b10_lora_1pct, b10_scratch_1pct
+
+Evaluation beyond the test (PHASE6_PLAN §2b):
+
+    eval/ben_chain.py + scripts/ben_chain.py      chained generation: impute S1 or S2, classify (.venv)
+    experiments/ben_test_analysis.py               per class, calibration, cardinality, confusions (`mor`)
+    experiments/ben_spatial.py                     spatial leakage of the patch-random split (`mor`)
+    experiments/ben_gen_forgetting{,_decode}.py    generation forgetting on TerraMesh (.venv, then `mor`)
+    experiments/ben_summary.py, ben_figures.py     every model's selected checkpoint, paired comparisons
+
 ## Starting a training run
 
 **`eo/scripts/train_eo.sh` is the only supported entry point.** Not `scripts/pretrain.sh`,
