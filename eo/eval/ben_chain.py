@@ -38,7 +38,8 @@ LAYOUT = ("S2", "S1")                                              # Step 5's fi
 
 
 def slot(src: str):
-    info = V.get_modality(V.INPUT_MODALITIES[src])
+    """(offset, size, bo, eo) of a BEN input ("S1" | "S2") or of any EO modality by name."""
+    info = V.get_modality(V.INPUT_MODALITIES.get(src, src))
     return info.codebook_offset, info.codebook_size, info.bo_id, info.eo_id
 
 
