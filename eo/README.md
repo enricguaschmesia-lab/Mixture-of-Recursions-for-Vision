@@ -87,6 +87,7 @@ Evaluation beyond the test (PHASE6_PLAN §2b):
     experiments/ben_spatial.py                     spatial leakage of the patch-random split (`mor`)
     experiments/ben_gen_forgetting{,_decode}.py    generation forgetting on TerraMesh (.venv, then `mor`)
     experiments/ben_summary.py, ben_figures.py     every model's selected checkpoint, paired comparisons
+    experiments/ben_slide_figures.py, ben_examples.py   the BEN deck's figures and random examples (.venv; `mor` + GPU for the decoded chain)
 
 ## Starting a training run
 
