@@ -32,6 +32,13 @@ cls (one classifier), Step 5's decoding (K = 16, Rao-Blackwellized marginals, gr
   -> <R>/cls/<classifier>/<condition>.{npz,json}   (eval_ben's format)
 
 report: f against f*, paired bootstrap CIs, per-class deltas -> <R>/report.{json,md}
+
+L10 (PHASE6_PLAN §2c, 2026-10-18), the classifier trained on generated S2, reuses both stages:
+  gen    --role ft_train|ft_valsel --n 0 (all rows) --directions S1toS2 --settings T1:1.0:1 --skip-tf
+         then `todir` stores the samples as a token dir (BEN_ROOT/S2L2A_gen_l10) for the dataset;
+  cls    --classifier custom --cls-name b10_lora_l10 --cls-config eo_ben/b10_lora_l10
+         --cls-checkpoint <run>/<ckpt> --ref-npz <its eval_ben test_a S1S2.npz> --gen-root <5b's R>
+         --no-self: the same 10,000 rows and 5b's own base samples, so it pairs with 5b.
 """
 from __future__ import annotations
 
@@ -58,6 +65,8 @@ def commit():
 
 
 def model_spec(a, name):
+    if name == "custom":
+        return a.cls_config, a.cls_checkpoint
     return {"base": ("eo_ben/b10_full", None),
             "b10_full": ("eo_ben/b10_full", f"{a.runs_root}/b10full_20261012_214747/checkpoint-1461"),
             "b10_lora": ("eo_ben/b10_lora", f"{a.runs_root}/b10lora_20261012_221451/checkpoint-1461")}[name]
@@ -73,8 +82,8 @@ def setup(a):
     gpu = torch.cuda.get_device_name(0)
     if "TITAN V" in gpu:
         sys.exit("refusing the TITAN V: it stalls within seconds under load (worklog 2026-10-12)")
-    ds = BenTokenDataset(role="test_a", condition="S1S2", index=load_index())
-    pos = subsample(len(ds), a.n)
+    ds = BenTokenDataset(role=a.role, condition="S1S2", index=load_index())
+    pos = subsample(len(ds), a.n) if a.n else np.arange(len(ds))     # --n 0: every row of the role
     return ds, pos, gpu
 
 
@@ -97,7 +106,11 @@ def run_gen(a):
     out.mkdir(parents=True, exist_ok=True)
     model = load_model(a, a.generator)
     settings = GEN_SETTINGS["base" if a.generator == "base" else "self"]
+    if a.settings:                                   # e.g. "T1:1.0:1" = name:temperature:samples
+        settings = [(n, float(t), int(m)) for n, t, m in (x.split(":") for x in a.settings.split(","))]
     for direction, (given, target) in C.DIRECTIONS.items():
+        if a.directions and direction not in a.directions.split(","):
+            continue
         truth = torch.from_numpy(np.stack([np.asarray(ds._arrays()[target][int(r)], dtype=np.int64) for r in rows]))
         # cache check and its control, on real continuations, before anything is kept
         probe = torch.stack([C.gen_prompt(ds, int(r), given, target) for r in rows[:4]]).cuda()
@@ -107,7 +120,7 @@ def run_gen(a):
             sys.exit(f"{direction}: cache check {cc:.3g} (tol {E.CACHE_TOL[a.autocast]}), control {cc_ctl:.3g}")
         # first-leg fidelity
         tf_file = out / f"{direction}_tf.json"
-        if not tf_file.exists():
+        if not tf_file.exists() and not a.skip_tf:
             t0, acc = time.time(), {"ce_ctx": [], "acc_ctx": [], "ce_none": [], "acc_none": []}
             for b0 in range(0, len(rows), 32):
                 br, tb = rows[b0:b0 + 32], truth[b0:b0 + 32]
@@ -188,11 +201,13 @@ def run_cls(a):
     ds, pos, gpu = setup(a)
     ac = {"none": None, "fp16": torch.float16}[a.autocast]
     rows = ds.rows[pos]
-    out = a.out_root / "cls" / a.classifier
+    cname = a.cls_name or a.classifier
+    out = a.out_root / "cls" / cname
     out.mkdir(parents=True, exist_ok=True)
     gens, need = {}, []
-    for gen, tname in [("base", "T1"), ("base", "T05"), ("self", "T1")]:
-        src = a.out_root / "gen" / (a.classifier if gen == "self" else gen)
+    gen_root = a.gen_root or a.out_root
+    for gen, tname in [("base", "T1"), ("base", "T05")] + ([] if a.no_self else [("self", "T1")]):
+        src = gen_root / "gen" / (a.classifier if gen == "self" else gen)
         need += [(gen, tname, d, src / f"{d}_{tname}.npz", src / f"{d}_{tname}.json") for d in C.DIRECTIONS]
     t_wait = time.time()
     while not all(j.exists() for *_, j in need):          # the json is written after its npz
@@ -209,7 +224,7 @@ def run_cls(a):
     pl_file = out / "plumbing.json"
     PLUMB = 8 if a.local_smoke else PLUMB_N          # eval_ben's first batch of 128 needs an A100's memory
     if not pl_file.exists():
-        ref = np.load(a.ref_root / a.classifier / "checkpoint-1461" / "test_a" / "S1S2.npz")
+        ref = np.load(a.ref_npz or a.ref_root / a.classifier / "checkpoint-1461" / "test_a" / "S1S2.npz")
         rr = ds.rows[:PLUMB]
         assert (ref["rows"][:PLUMB] == rr).all()
         p_real = torch.stack([C.cls_prompt({"S1": ds.chunk("S1", int(r)), "S2": ds.chunk("S2", int(r))}) for r in rr])
@@ -246,14 +261,49 @@ def run_cls(a):
                 acc[k].append(r[k])
         res = {k: np.concatenate(v) for k, v in acc.items()}
         np.savez_compressed(npz, rows=rows, truth=truth, **res)
-        m = {"condition": name, "n": int(len(rows)), "k": CLS_K, "classifier": a.classifier,
+        m = {"condition": name, "n": int(len(rows)), "k": CLS_K, "classifier": cname,
+             "cls_config": model_spec(a, a.classifier)[0], "cls_checkpoint": model_spec(a, a.classifier)[1],
              **{f"greedy_{k}": v for k, v in E.f1_scores(truth, res["greedy"]).items() if k != "per_class_f1"},
              **{k: v for k, v in E.map_scores(truth, res["marginal"]).items() if k != "per_class_ap"},
              "mean_slot_mass": float(res["slot_mass"].mean()), "seconds": round(time.time() - t0, 1),
              "gpu": gpu, "autocast": a.autocast, "fork_commit": commit()}
         (out / f"{name}.json").write_text(json.dumps(m, indent=2) + "\n")
-        print(f"{a.classifier} {name}: micro-mAP {m['micro_map']:.4f}  micro-F1 {m['greedy_micro_f1']:.4f}  "
+        print(f"{cname} {name}: micro-mAP {m['micro_map']:.4f}  micro-F1 {m['greedy_micro_f1']:.4f}  "
               f"({m['seconds']} s)", flush=True)
+
+
+# ------------------------------------------------------------------ todir
+def run_todir(a):
+    """L10: generated S1 -> S2 samples (sample 0 of each gen npz) as a token dir the dataset can read:
+    <BEN_ROOT>/<a.todir>/{tokens.npy (N_index, 196) uint16, present.npy, metadata.json}."""
+    from eo.data.ben_dataset import DEFAULT_ROOT, load_index
+    from eo.terramesh_tok.contract import CROP, TOKENS_PER_SAMPLE
+    n_rows = len(load_index())
+    out = Path(DEFAULT_ROOT) / a.todir
+    out.mkdir(parents=True, exist_ok=True)
+    tokens = np.zeros((n_rows, TOKENS_PER_SAMPLE), np.uint16)
+    present = np.zeros(n_rows, bool)
+    srcs = []
+    for f in a.sources:
+        z = np.load(f)
+        meta = json.loads(Path(f).with_suffix(".json").read_text())
+        assert meta["direction"] == "S1toS2", f"{f}: {meta['direction']}"
+        rows = z["rows"].astype(np.int64)
+        if present[rows].any():
+            sys.exit(f"{f}: {int(present[rows].sum())} rows already filled by another source")
+        tokens[rows] = z["tokens"][:, 0]
+        present[rows] = True
+        srcs.append({"file": str(f), "n": int(len(rows)), "temperature": meta["temperature"],
+                     "generator": meta["generator"], "fork_commit": meta.get("fork_commit")})
+    np.save(out / "tokens.npy", tokens)
+    np.save(out / "present.npy", present)
+    doc = {"generated": True, "what": "S1 -> S2 samples (sample 0), raw S2L2A codebook indices, for the dataset's "
+                                      "S1G2 condition (PHASE6_PLAN §2c L10)",
+           "tokenizer_modality": "S2L2A", "crop": CROP, "tokens_per_sample": TOKENS_PER_SAMPLE,
+           "n_rows": n_rows, "n_present": int(present.sum()), "sources": srcs, "fork_commit": commit(),
+           "written": time.strftime("%Y-%m-%d %H:%M:%S")}
+    (out / "metadata.json").write_text(json.dumps(doc, indent=2) + "\n")
+    print(json.dumps(doc, indent=2))
 
 
 # ------------------------------------------------------------------ report
@@ -329,10 +379,22 @@ def run_report(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["gen", "cls", "report"])
+    ap.add_argument("stage", choices=["gen", "cls", "report", "todir"])
     ap.add_argument("--generator", choices=["base", "b10_full", "b10_lora"])
-    ap.add_argument("--classifier", choices=["b10_full", "b10_lora"])
-    ap.add_argument("--n", type=int, default=10000)
+    ap.add_argument("--classifier", choices=["b10_full", "b10_lora", "custom"])
+    ap.add_argument("--cls-name", default=None, help="custom classifier: its output dir name")
+    ap.add_argument("--cls-config", default=None)
+    ap.add_argument("--cls-checkpoint", default=None)
+    ap.add_argument("--role", default="test_a")
+    ap.add_argument("--n", type=int, default=10000, help="seeded subsample of the role; 0 = every row")
+    ap.add_argument("--directions", default=None, help="gen: e.g. S1toS2 (default both)")
+    ap.add_argument("--settings", default=None, help="gen: name:temperature:samples,... (default 5b's)")
+    ap.add_argument("--skip-tf", action="store_true", help="gen: skip the first-leg teacher-forced fidelity")
+    ap.add_argument("--gen-root", type=Path, default=None, help="cls: read generations here (default --out-root)")
+    ap.add_argument("--no-self", action="store_true", help="cls: not the classifier's own generations")
+    ap.add_argument("--ref-npz", type=Path, default=None, help="cls: eval_ben's test_a S1S2.npz for the plumbing check")
+    ap.add_argument("--todir", default="S2L2A_gen_l10", help="todir: the token dir under BEN_ROOT")
+    ap.add_argument("--sources", nargs="*", default=[], help="todir: gen npz files (S1toS2)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gen-batch", type=int, default=128)
     ap.add_argument("--cls-batch", type=int, default=128)
@@ -351,7 +413,11 @@ def main():
         run_gen(a)
     elif a.stage == "cls":
         assert a.classifier, "--classifier"
+        assert a.classifier != "custom" or (a.cls_name and a.cls_config and a.cls_checkpoint and a.ref_npz), \
+            "--classifier custom needs --cls-name, --cls-config, --cls-checkpoint and --ref-npz"
         run_cls(a)
+    elif a.stage == "todir":
+        run_todir(a)
     else:
         run_report(a)
 

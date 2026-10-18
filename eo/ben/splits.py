@@ -5,7 +5,8 @@ token array under `/data/enric/data/BigEarthNet/`, exactly as `tok_index.parquet
 TerraMesh. Rows are the official S1/S2 mapping minus the official cloud/shadow and
 seasonal-snow lists, sorted by S2 name.
 
-Splits (PHASE6_PLAN.md §4.1, worklog §4 item 28, still open with the supervisor):
+Splits (PHASE6_PLAN.md §4.1; worklog item 28, decided 2026-10-18: option (a), test_a is THE test,
+test_c a replication that agrees within 0.001):
 
   sm_train / sm_train10 / sm_train1 / sm_val   the SMARTIES MM lists (pinned SHA)
   sm_none     clean, but in no SMARTIES list: presumably SMARTIES' unreleased test
@@ -20,6 +21,8 @@ Fine-tuning roles, chosen so that the fine-tunes do NOT depend on item 28's answ
                 under option (a) AND option (c).
   test_a      = sm_val                               option (a)
   test_c      = sm_none                              option (c)
+  ft_unlab    = sm_train \\ (sm_train10 | ft_valsel | sm_train1)   L11b's UNLABELLED pool (272,767):
+                never given labels (attach_labels refuses), see add_l11_roles
 
 ⚠ All of these are patch-level random splits, so neighbouring patches of one S2 tile sit on
 both sides of every boundary. A spatial-autocorrelation CAVEAT (plan 3.6), not fixed here.
@@ -133,6 +136,7 @@ def build_index(smarties_dir: Path) -> Tuple[pd.DataFrame, Dict]:
     df["test_a"] = df.sm_val
     df["test_c"] = df.sm_none
     df = add_l8_roles(df)
+    df = add_l11_roles(df)
 
     prov.update({
         "index_version": INDEX_VERSION,
@@ -141,7 +145,8 @@ def build_index(smarties_dir: Path) -> Tuple[pd.DataFrame, Dict]:
         "valsel": {"size": VALSEL_SIZE, "seed": VALSEL_SEED,
                    "pool": "sm_train & ~sm_train10", "pool_size": int(len(pool))},
         "counts": {c: int(df[c].sum()) for c in
-                   list(SMARTIES_MM) + ["sm_none", "ft_train", "ft_valsel", "test_a", "test_c"] + list(L8_DERIVED)},
+                   list(SMARTIES_MM) + ["sm_none", "ft_train", "ft_valsel", "test_a", "test_c"]
+                   + list(L8_DERIVED) + list(L11_DERIVED)},
         "official_counts": df["official"].value_counts().to_dict(),
     })
     return df, prov
@@ -161,15 +166,44 @@ def add_l8_roles(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+#: PHASE6_PLAN §2c L11b (2026-10-18): distillation from S1 + S2 into S1 on SMARTIES train pairs used
+#: WITHOUT their labels. The 1% list is excluded too: L8 packed and labelled 2,734 of its patches, and
+#: the pool must hold no labelled row at all, so "no labels" holds by construction, not by promise.
+L11_DERIVED = ("ft_unlab",)
+#: the roles a patch of ft_unlab must not be in (by row, S2 name and S1 name; gate X10)
+L11_DISJOINT = ("ft_train", "ft_valsel", "test_a", "test_c", "ft_train1", "ft_valsel1")
+
+
+def add_l11_roles(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["ft_unlab"] = (out.sm_train.astype(bool) & ~out.sm_train10.astype(bool)
+                       & ~out.ft_valsel.astype(bool) & ~out.sm_train1.astype(bool))
+    for r in L11_DISJOINT:
+        if r in out.columns:
+            assert not (out.ft_unlab & out[r].astype(bool)).any(), f"ft_unlab overlaps {r}"
+    if "labels19" in out.columns:
+        assert (out.labels19[out.ft_unlab] < 0).all(), "ft_unlab rows carry labels"
+    return out
+
+
 def attach_labels(df: pd.DataFrame, meta_s2: pd.DataFrame,
                   meta_s1: Optional[pd.DataFrame]) -> Tuple[pd.DataFrame, Dict]:
     """Add the 19-class labels (from the S2 metadata, as SMARTIES does) and check S1 agrees.
 
     Only PACKED rows have metadata (pack.py packs layout.PACK_ROLES); every other row gets
     labels19 = -1, which BenTokenDataset refuses to serve.
+
+    ft_unlab (L11b) is unlabelled BY CONSTRUCTION: its pack is written without labels
+    (pack_ben.py --no-labels) and is not in layout.packed_dirs(); and if label metadata for any
+    of its rows reaches this function anyway, it refuses rather than label them.
     """
     m2 = meta_s2.set_index("row")
     assert m2.index.is_unique
+    if "ft_unlab" in df.columns:
+        leak = np.intersect1d(df.row[df.ft_unlab.astype(bool)].to_numpy(), m2.index.to_numpy())
+        if len(leak):
+            raise RuntimeError(f"label metadata for {len(leak)} ft_unlab rows (e.g. {leak[:3].tolist()}): "
+                               f"the L11b pool must stay unlabelled")
     have = df.row.isin(m2.index).to_numpy()
     labels43 = [None] * len(df)
     masks = np.full(len(df), -1, dtype=np.int64)
@@ -193,7 +227,7 @@ def attach_labels(df: pd.DataFrame, meta_s2: pd.DataFrame,
            "rows_with_no_19_label": int((lab.n_labels19 == 0).sum()),
            "max_labels19": int(lab.n_labels19.max()),
            "label_count_hist": lab.n_labels19.value_counts().sort_index().to_dict()}
-    for role in ("ft_train", "ft_valsel", "test_a", "test_c") + L8_DERIVED:
+    for role in ("ft_train", "ft_valsel", "test_a", "test_c") + L8_DERIVED + L11_DERIVED:
         if role in out.columns:
             sub = out[out[role]]
             rep[f"{role}_unlabelled"] = int((sub.labels19 < 0).sum())

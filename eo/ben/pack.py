@@ -69,7 +69,9 @@ class _Appender:
 
 
 def pack(kind: str, index: pd.DataFrame, wanted: np.ndarray, out: Path = layout.PACKED,
-         log_every: int = 20000) -> Dict:
+         log_every: int = 20000, labels: bool = True) -> Dict:
+    """labels=False (L11b's unlabelled pool) writes meta_<kind>.parquet WITHOUT the label column:
+    the rasters, dates and coordinates are kept, the labels are never stored."""
     assert kind in ("S2", "S1")
     out.mkdir(parents=True, exist_ok=True)
     name_col = "s2" if kind == "S2" else "s1"
@@ -109,9 +111,11 @@ def pack(kind: str, index: pd.DataFrame, wanted: np.ndarray, out: Path = layout.
             stats["incomplete"] += 1
             return
         md = json.loads(files["labels_metadata.json"])
-        rec = {"row": row, "pos": len(order), "patch": patch, "labels": json.dumps(md["labels"]),
+        rec = {"row": row, "pos": len(order), "patch": patch,
                "ulx": md["coordinates"].get("ulx"), "uly": md["coordinates"].get("uly"),
                "utm": _utm(md.get("projection"))}
+        if labels:
+            rec["labels"] = json.dumps(md["labels"])
         if kind == "S2":
             for g, (bands, s) in layout.S2_GROUPS.items():
                 app[g].write(np.stack([tifffile.imread(io.BytesIO(files[b])) for b in bands]))
@@ -156,6 +160,8 @@ def pack(kind: str, index: pd.DataFrame, wanted: np.ndarray, out: Path = layout.
         missing = sorted(want_rows - done_rows)
         raise RuntimeError(f"{kind}: {len(missing)} wanted rows never appeared, e.g. {missing[:5]}")
     np.save(out / f"order_{kind}.npy", np.asarray(order, dtype=np.int64))
-    pd.DataFrame(meta).to_parquet(out / f"meta_{kind}.parquet")
-    stats.update({"wanted": m_total, "minutes": round((time.time() - t0) / 60, 2)})
+    meta_df = pd.DataFrame(meta)
+    assert labels or "labels" not in meta_df.columns
+    meta_df.to_parquet(out / f"meta_{kind}.parquet")
+    stats.update({"wanted": m_total, "minutes": round((time.time() - t0) / 60, 2), "labels_stored": labels})
     return stats

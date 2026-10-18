@@ -352,6 +352,13 @@ def main(argv=None) -> int:
             ("BEN: role not in the index",       "BEN data",  ben(str(ext), ov={"ben.train_role": "nope"})),
             ("BEN: scratch with an init_from",   "init from", dict(env=GOOD_ENV, config=REPO / "conf/pretrain_vision/eo_ben/b10_scratch.yaml",
                                                                overrides={"finetune.init_from": str(ext)})),
+            # PHASE6_PLAN §2c (2026-10-18): L11b's pool must carry no label; L10 needs its generated S2
+            ("BEN: distillation pool labelled",  "BEN data",  ben(str(ext), ov={"ben.unlab.role": "ft_train"})
+                                                              | {"config": REPO / "conf/pretrain_vision/eo_ben/b10_lora_l11b.yaml"}),
+            ("BEN: teacher blocks missing",      "BEN data",  ben(str(ext), ov={"ben.unlab.teacher": "teacher/nope"})
+                                                              | {"config": REPO / "conf/pretrain_vision/eo_ben/b10_lora_l11b.yaml"}),
+            ("BEN: S1G2 without generated S2",   "BEN data",  ben(str(ext), ov={"ben.gen_s2": "nope_gen"})
+                                                              | {"config": REPO / "conf/pretrain_vision/eo_ben/b10_lora_l10.yaml"}),
         ]
         ben_pos = [
             (f"BEN: {c} from the extended B10", chk, _results(**ben(str(ext)) | {"config": REPO / f"conf/pretrain_vision/eo_ben/{c}.yaml"}))
@@ -360,6 +367,16 @@ def main(argv=None) -> int:
             ("BEN: b10_scratch, no init_from", chk, _results(env=GOOD_ENV, config=REPO / "conf/pretrain_vision/eo_ben/b10_scratch.yaml"))
             for chk in ("config", "BEN data", "init from")
         ]
+        # the L11b / L10 overlays pass once their artifacts exist (teacher blocks; generated S2)
+        bn = Path("/data/enric/data/BigEarthNet")
+        for c, art in (("b10_lora_l11b", bn / "teacher/l11b_b10lora1461_S1S2_K4.json"),
+                       ("b10_lora_l10", bn / "S2L2A_gen_l10/metadata.json")):
+            if art.is_file():
+                ben_pos += [(f"BEN: {c} from the extended B10", chk,
+                             _results(**ben(str(ext)) | {"config": REPO / f"conf/pretrain_vision/eo_ben/{c}.yaml"}))
+                            for chk in ("config", "BEN data", "init from")]
+            else:
+                print(f"\n({c} positive controls skipped: {art} not built yet)")
     else:
         print("\n(Phase 6 controls skipped: no extended checkpoint or BEN tokens on this machine)")
     cases += ben_cases

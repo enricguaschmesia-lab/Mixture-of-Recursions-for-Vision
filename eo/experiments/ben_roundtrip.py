@@ -16,6 +16,12 @@ Also reported: the share of reference pixels with |z| < 1, because the DiVAE dec
 its output there (CLAUDE.md); `rmse_z_in` is the error on those pixels only.
 
     python eo/experiments/ben_roundtrip.py --n 24 --out /data/enric/reports/ben/step1_roundtrip.json
+    # L11b.2 (2026-10-18): the same check on the unlabelled pool's own pack, before tokenizing it
+    python eo/experiments/ben_roundtrip.py --n 24 --packed <ROOT>/v1_stream_l11 --role ft_unlab \
+        --out /data/enric/reports/ben/l11b_roundtrip.json
+
+Reads packs in stream order through layout.load_packed (2026-10-18; the first version read a
+row-order pack's filled_*.npy, which the stream-order pack replaced on 2026-10-12).
 """
 from __future__ import annotations
 
@@ -70,20 +76,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=24)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--packed", type=Path, default=layout.PACKED)
+    ap.add_argument("--role", default="ft_train")
     a = ap.parse_args()
     dev = "cuda:0"
     gpu = torch.cuda.get_device_name(0)
     idx = pd.read_parquet(layout.INDEX)
-    f2 = np.load(layout.PACKED / "filled_S2.npy")
-    f1 = np.load(layout.PACKED / "filled_S1.npy")
-    pool = np.flatnonzero(idx.ft_train.values & f2 & f1)
+    a2, r2p2 = layout.load_packed("S2", len(idx), a.packed)
+    a1, r2p1 = layout.load_packed("S1", len(idx), a.packed)
+    pool = np.flatnonzero(idx[a.role].values & (r2p2 >= 0) & (r2p1 >= 0))
     rows = np.sort(np.random.default_rng(0).choice(pool, a.n, replace=False))
-    res = {"n": a.n, "ben_rows": rows.tolist(), "gpu": gpu, "timesteps": TIMESTEPS, "seed": SEED}
+    res = {"n": a.n, "ben_rows": rows.tolist(), "gpu": gpu, "timesteps": TIMESTEPS, "seed": SEED,
+           "packed": str(a.packed), "role": a.role}
 
     # ---- BEN S2 -----------------------------------------------------------
-    p10 = np.load(layout.PACKED / "S2_10m.npy", mmap_mode="r")[rows]
-    p20 = np.load(layout.PACKED / "S2_20m.npy", mmap_mode="r")[rows]
-    p60 = np.load(layout.PACKED / "S2_60m.npy", mmap_mode="r")[rows]
+    p10 = np.asarray(a2["S2_10m"][r2p2[rows]])
+    p20 = np.asarray(a2["S2_20m"][r2p2[rows]])
+    p60 = np.asarray(a2["S2_60m"][r2p2[rows]])
     tok = T.build("S2L2A", dev)
     s2 = {}
     for mode in ("bilinear", "bicubic"):
@@ -117,7 +126,7 @@ def main():
     torch.cuda.empty_cache()
 
     # ---- BEN S1 -----------------------------------------------------------
-    s1raw = np.load(layout.PACKED / "S1.npy", mmap_mode="r")[rows]
+    s1raw = np.asarray(a1["S1"][r2p1[rows]])
     s1 = {}
     for tk in ("S1GRD", "S1RTC"):
         tok = T.build(tk, dev)

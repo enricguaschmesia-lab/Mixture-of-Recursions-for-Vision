@@ -1,0 +1,14 @@
+# @package _global_
+#
+# L10 (PHASE6_PLAN §2c, 2026-10-18; run once): the classifier trained on GENERATED S2. b10_lora's recipe
+# and budget, with a fourth condition in the draw: S1 plus the extended base's S1 -> S2 sample (T = 1,
+# one per patch) in S2's own slot, unmarked. Each condition at 1/4. Ŝ2 exists for ft_train and
+# ft_valsel (the teacher-forced eval draws the same four); the test reuses Step 5b's samples on its
+# 10,000 rows (ben_chain.py cls). Differs from b10_lora in ben.conditions and ben.gen_s2 only (X11c).
+defaults:
+  - b10_lora
+  - _self_
+
+ben:
+  conditions: [S1, S2, S1S2, S1G2]
+  gen_s2: S2L2A_gen_l10       # under BEN_ROOT, a token dir (tokens.npy, present.npy, metadata.json)

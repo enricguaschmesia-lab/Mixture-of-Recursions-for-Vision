@@ -1,0 +1,13 @@
+# @package _global_
+#
+# L11b.6 (PHASE6_PLAN §2c): the attribution control, run only if L11b gains. b10_lora_l11b with the
+# teacher given S1 ONLY, so its blocks carry no S2 knowledge: what is left is self-training (extra
+# data plus soft pseudo-labels). L11b's gain is S2's knowledge only by its margin over this run.
+# Differs from b10_lora_l11b in ben.unlab.teacher only (gate X10d).
+defaults:
+  - b10_lora_l11b
+  - _self_
+
+ben:
+  unlab:
+    teacher: teacher/l11b_b10lora1461_S1_K4

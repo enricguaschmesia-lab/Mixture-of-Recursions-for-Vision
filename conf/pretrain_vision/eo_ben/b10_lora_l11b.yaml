@@ -1,0 +1,21 @@
+# @package _global_
+#
+# L11b (PHASE6_PLAN §2c, 2026-10-18): sequence-level distillation from S1 + S2 into S1.
+# b10_lora's labelled run is unchanged: ft_train with its true labels and the {S1} / {S2} / {S1, S2}
+# draw, 1,461 steps, the same LR schedule, a checkpoint per epoch, selection on ft_valsel. ON TOP, as
+# many UNLABELLED S1-only examples per epoch (ratio 1): ft_unlab patches (no true label exists for them,
+# by construction), each with one of the K = 4 label blocks that b10_lora checkpoint-1461 sampled given
+# S1 + S2, drawn per epoch. The batch doubles to 128 so the labelled data keeps 64 per step and 3
+# epochs (487 steps per epoch); epoch e uses the e-th disjoint slice of 31,166 pool patches.
+# Differs from b10_lora in ben.unlab.* and total_batch_size only (gate X10d).
+defaults:
+  - b10_lora
+  - _self_
+
+ben:
+  unlab:
+    role: ft_unlab
+    teacher: teacher/l11b_b10lora1461_S1S2_K4     # under BEN_ROOT, .npz + .json (eo/scripts/ben_teacher.py)
+    condition: S1
+    ratio: 1.0
+total_batch_size: 128

@@ -77,11 +77,13 @@ def _expand_cache(cache, k: int):
 
 @torch.no_grad()
 def decode_labels(model, prompts: torch.Tensor, *, k_samples: int = 0, greedy: bool = True,
-                  seed: int = 0, autocast: Optional[torch.dtype] = None) -> Dict[str, np.ndarray]:
+                  seed: int = 0, autocast: Optional[torch.dtype] = None,
+                  return_samples: bool = False) -> Dict[str, np.ndarray]:
     """prompts: (B, L) equal-length prompts ending in BO_BEN, on the model's device.
 
     Returns greedy multi-hot sets (B, 19), RB marginals (B, 19) averaged over k_samples paths,
-    the first-step slot mass (B,), and the greedy path length.
+    the first-step slot mass (B,), and the greedy path length. return_samples adds every sampled
+    set, (B, k_samples, 19) bool: the teacher blocks of L11b (`sample_freq` is their mean).
     """
     dev = prompts.device
     B = prompts.shape[0]
@@ -134,6 +136,8 @@ def decode_labels(model, prompts: torch.Tensor, *, k_samples: int = 0, greedy: b
         ch, rb, _ = run(cache, first.repeat_interleave(k_samples, 0), B * k_samples, True, g)
         res["marginal"] = rb.view(B, k_samples, -1).mean(1).cpu().numpy()
         res["sample_freq"] = ch.view(B, k_samples, -1).float().mean(1).cpu().numpy()
+        if return_samples:
+            res["samples"] = ch.view(B, k_samples, -1).cpu().numpy()
     return res
 
 

@@ -46,10 +46,15 @@ PACK_ROLES = ("ft_train", "ft_valsel", "test_a", "test_c")   # what pack_ben.py 
 #: patches were never packed. They get a pack of their own; PACKED is never rewritten.
 PACKED_L8 = ROOT / "v1_stream_l8"
 L8_ROLES = ("ft_train1",)
+#: PHASE6_PLAN §2c L11b (2026-10-18): the unlabelled pool ft_unlab, packed WITHOUT label metadata
+#: (pack_ben.py --no-labels) and deliberately NOT in packed_dirs(), the list labels are read from.
+PACKED_L11 = ROOT / "v1_stream_l11"
+L11_ROLES = ("ft_unlab",)
 
 
 def packed_dirs():
-    """Every pack that exists, main first (labels and tokens may come from any of them)."""
+    """Every LABELLED pack that exists, main first: build_ben_index.py labels reads its metadata.
+    PACKED_L11 is never listed (it has no labels, and ft_unlab must get none)."""
     return [d for d in (PACKED, PACKED_L8) if (d / "order_S2.npy").exists() or (d / "order_S1.npy").exists()]
 
 

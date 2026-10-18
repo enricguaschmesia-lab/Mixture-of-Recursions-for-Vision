@@ -37,10 +37,11 @@ def main():
     r.add_argument("--smarties", type=Path, required=True,
                    help=f"SMARTIES eval_splits/ at commit {L.SMARTIES_SHA}")
     sub.add_parser("labels")
-    sub.add_parser("roles", help="add the derived L8 roles to the existing index (every other column unchanged)")
+    sub.add_parser("roles", help="add the derived L8 and L11 roles to the existing index (every other column unchanged)")
     a = ap.parse_args()
 
     prov_path = layout.INDEX.with_suffix(".json")
+    derived = splits.L8_DERIVED + splits.L11_DERIVED
     if a.cmd == "rows":
         if layout.INDEX.exists():
             sys.exit(f"{layout.INDEX} exists; the row order is a one-way door. Remove it by hand.")
@@ -56,18 +57,21 @@ def main():
         print(json.dumps(prov, indent=2))
     elif a.cmd == "roles":
         df = pd.read_parquet(layout.INDEX)
-        out = splits.add_l8_roles(df.drop(columns=[c for c in splits.L8_DERIVED if c in df.columns]))
+        out = splits.add_l11_roles(splits.add_l8_roles(df.drop(columns=[c for c in derived if c in df.columns])))
         for c in df.columns:
-            if c not in splits.L8_DERIVED:
+            if c not in derived:
                 assert out[c].equals(df[c]), f"column {c} changed"
+        # keep the labels and date columns last, where `labels` puts them
+        lab = [c for c in ("labels43", "labels19", "n_labels19", "date") if c in out.columns]
+        out = out[[c for c in out.columns if c not in lab] + lab]
         tmp = layout.INDEX.with_suffix(".parquet.tmp")
         out.to_parquet(tmp)
         tmp.replace(layout.INDEX)
         prov = json.loads(prov_path.read_text())
-        prov.setdefault("counts", {}).update({c: int(out[c].sum()) for c in splits.L8_DERIVED})
-        prov["l8_roles_fork_commit"] = _commit()
+        prov.setdefault("counts", {}).update({c: int(out[c].sum()) for c in derived})
+        prov["derived_roles_fork_commit"] = _commit()
         prov_path.write_text(json.dumps(prov, indent=2) + "\n")
-        print({c: int(out[c].sum()) for c in splits.L8_DERIVED})
+        print({c: int(out[c].sum()) for c in derived})
     else:
         df = pd.read_parquet(layout.INDEX)
         dirs = layout.packed_dirs()

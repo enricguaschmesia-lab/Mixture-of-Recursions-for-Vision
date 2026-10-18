@@ -513,6 +513,46 @@ def check_ben_data(ctx: PreflightContext) -> CheckResult:
                 problems.append(f"{d}: {len(pres)} rows, index has {len(idx)}")
             elif not pres[rows].all():
                 problems.append(f"{role}: {int((~pres[rows]).sum())} rows not tokenized in {mod}")
+    # L10 (PHASE6_PLAN §2c): a generated-S2 token dir covering every train and eval row
+    conds = list(bcfg.get("conditions") or ["S1", "S2", "S1S2"])
+    if "S1G2" in conds:
+        g = bcfg.get("gen_s2")
+        d = root / str(g)
+        if not g or not (d / "present.npy").is_file() or not (d / "metadata.json").is_file():
+            problems.append(f"condition S1G2 without a generated S2 dir ({d})")
+        else:
+            meta = _json.loads((d / "metadata.json").read_text())
+            pres = _np.load(d / "present.npy")
+            if not meta.get("generated") or meta.get("tokenizer_modality") != "S2L2A":
+                problems.append(f"{d}: not a generated S2L2A dir")
+            for role in roles:
+                if role in idx.columns and not pres[idx[role].to_numpy(bool)].all():
+                    problems.append(f"{d}: {int((~pres[idx[role].to_numpy(bool)]).sum())} {role} rows not generated")
+    # L11b (PHASE6_PLAN §2c): the unlabelled pool carries NO true label, and the teacher covers it
+    unl = bcfg.get("unlab")
+    if unl:
+        role = unl.get("role")
+        if role not in idx.columns:
+            problems.append(f"no unlabelled role {role!r} in the index")
+        else:
+            rows = _np.flatnonzero(idx[role].to_numpy(bool))
+            counts[role] = len(rows)
+            lab = idx.labels19.to_numpy()[rows]
+            if (lab >= 0).any():
+                problems.append(f"{role}: {int((lab >= 0).sum())} rows carry TRUE labels (a distillation pool must not)")
+            t = root / str(unl.get("teacher"))
+            if not t.with_suffix(".npz").is_file() or not t.with_suffix(".json").is_file():
+                problems.append(f"teacher blocks {t}.npz/.json missing (eo/scripts/ben_teacher.py)")
+            else:
+                tz = _np.load(t.with_suffix(".npz"))
+                tm = _json.loads(t.with_suffix(".json").read_text())
+                if not _np.array_equal(_np.sort(tz["rows"]), rows):
+                    problems.append(f"{t.name}: its rows are not {role}'s")
+                if tm.get("plumbing") is None or not tm["plumbing"].get("passed") or not tm["plumbing"].get("control_fired"):
+                    problems.append(f"{t.name}: no passing plumbing check")
+            d = root / tok_dir_name(BV.INPUT_MODALITIES["S1"])
+            if (d / "present.npy").is_file() and len(rows) and not _np.load(d / "present.npy")[rows].all():
+                problems.append(f"{role}: rows not tokenized in S1GRD")
     if problems:
         return CheckResult("BEN data", False, "; ".join(problems[:3]))
     return CheckResult("BEN data", True, f"{root.name}: " + ", ".join(f"{k} {v}" for k, v in counts.items()))

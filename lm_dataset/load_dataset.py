@@ -102,18 +102,34 @@ def _build_ben(cfg, want="train"):
     Train draws its input set per example and epoch; eval uses the same RANDOM policy with a
     fixed epoch (0), so the teacher-forced eval loss is a fixed mix of the three conditions.
     The per-condition test is not run here (eo/scripts/eval_ben.py).
+
+    PHASE6_PLAN §2c (2026-10-18), both absent from every earlier overlay:
+      ben.conditions / ben.gen_s2   L10: the random draw's conditions, and the generated-S2 token dir
+      ben.unlab                     L11b: {role, teacher, condition, ratio}; training only, the
+                                    teacher-block examples on top of the labelled ones (BenMixDataset)
     """
-    from eo.data.ben_dataset import BenTokenDataset
+    from eo.data.ben_dataset import BenMixDataset, BenTokenDataset, CONDITIONS
 
     bcfg = cfg.get("ben", {})
     role = bcfg.get("train_role", "ft_train") if want == "train" else bcfg.get("eval_role", None)
     if role is None:
         return None
-    ds = BenTokenDataset(root=MULTIMODAL_DATASETS["ben_multimodal"]["root_dir"], role=role,
+    root = MULTIMODAL_DATASETS["ben_multimodal"]["root_dir"]
+    ds = BenTokenDataset(root=root, role=role,
                          condition="random", seed=cfg.get("seed", 42),
-                         max_length=cfg.max_length, loss_on=bcfg.get("loss_on", "labels"))
-    print(f"BEN {want}: role {role}, {len(ds)} patches, loss on {ds.loss_on}, "
+                         max_length=cfg.max_length, loss_on=bcfg.get("loss_on", "labels"),
+                         conditions=tuple(bcfg.get("conditions", None) or CONDITIONS),
+                         gen_s2=bcfg.get("gen_s2", None))
+    print(f"BEN {want}: role {role}, {len(ds)} patches, loss on {ds.loss_on}, conditions {ds.conditions}, "
           f"max_length {ds.max_length} (required {ds.required_length})")
+    unl = bcfg.get("unlab", None)
+    if want == "train" and unl:
+        u = BenTokenDataset(root=root, role=unl["role"], condition=unl.get("condition", "S1"),
+                            seed=cfg.get("seed", 42), max_length=cfg.max_length,
+                            loss_on=bcfg.get("loss_on", "labels"), teacher=unl["teacher"])
+        ds = BenMixDataset(ds, u, ratio=float(unl.get("ratio", 1.0)), seed=cfg.get("seed", 42))
+        print(f"BEN train + unlabelled: {unl['role']} ({len(u)} patches, condition {u.condition}, teacher "
+              f"{unl['teacher']}, K {u._tmasks.shape[1]}): {ds.n_unlab} per epoch on top of {ds.n_lab} labelled")
     return ds
 
 

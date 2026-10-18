@@ -28,6 +28,26 @@ that must FIRE, so a pass means something.
       e  plumbing on the A100: the real-block chain prompt reproduces eval_ben's stored S1+S2 outputs
                                                                          | another patch's S2 does not
       + average precision equals sklearn's (run in the `mor` env) | a broken AP is caught
+  X10 L11b, distillation on the unlabelled pool (PHASE6_PLAN §2c, 2026-10-18):
+      a  ft_unlab: 272,767 rows, disjoint from every role by row, S2 and S1 name; no row labelled;
+         its pack stores no labels                     | the pool through the labelled dataset, teacher
+         blocks on a labelled role, and label metadata for a pool row in attach_labels are all refused
+      b  the mixed dataset: its labelled half = b10_lora's examples bit for bit (3 epochs); ratio 0 =
+         b10_lora's dataset; unlabelled examples are S1-only, five keys, carry this epoch's teacher
+         block; epoch slices disjoint                  | another patch's teacher block is caught
+      c  the teacher file: rows = ft_unlab, K blocks, valid masks, plumbing passed on the A100
+                                                       | its control fired; shifted rows are refused
+      d  overlays: b10_lora_l11b vs b10_lora differs in ben.unlab.* and total_batch_size only;
+         b10_lora_l11b_s1t vs b10_lora_l11b in the teacher only | b10_lora_1pct is flagged
+  X11 L10, the classifier trained on generated S2:
+      a  with the REAL S2 in the generated slot, S1G2 examples and prompts = S1S2's bit for bit; the
+         four-way draw at 1/4 each                     | another patch's S2 in the slot differs
+      b  the generated dir: every ft_train / ft_valsel row, tokens inside S2L2A's codebook, the
+         sources' cache checks passed                  | the same tokens one slot up are caught
+      c  overlay: b10_lora_l10 vs b10_lora differs in ben.conditions and ben.gen_s2 only
+                                                       | b10_lora_l11b is flagged
+      d  plumbing on the A100 (ben_chain cls): the real-block chain prompt reproduces the L10 run's
+         eval_ben S1+S2 outputs                        | another patch's S2 does not
 
 Artifacts it reads are named in each check. A check whose artifact does not exist yet is
 SKIPPED and reported as such, never passed.
@@ -74,9 +94,13 @@ def x0():
 
 # ---------------------------------------------------------------- X1
 def x1():
-    f = REPORTS / "step1_roundtrip.json"
+    x1_file(REPORTS / "step1_roundtrip.json", "X1 round trip")
+    x1_file(REPORTS / "l11b_roundtrip.json", "X1 round trip (L11b pool)")
+
+
+def x1_file(f, name):
     if not f.exists():
-        return record("X1 round trip", None, f"{f} missing")
+        return record(name, None, f"{f} missing")
     d = json.loads(f.read_text())
     med = lambda m, k: d[m][k]["rmse_z_ml7"]["median"]
     s2, s2_tm = med("S2", "bilinear"), med("S2", "terramesh_reference")
@@ -85,7 +109,7 @@ def x1():
     ctrls = {f"S2 {k}": med("S2", k) / s2 for k in ("ctrl_reversed_bands", "ctrl_no_standardization")}
     ctrls.update({f"S1 {k}": med("S1", k) / s1 for k in ("ctrl_swapped_vv_vh", "ctrl_no_standardization")})
     c_ok = all(v >= 2.0 for v in ctrls.values())
-    record("X1 round trip", ok, f"rmse_z_ml7 S2 {s2:.3f} (TerraMesh {s2_tm:.3f}), S1GRD {s1:.3f} "
+    record(name, ok, f"rmse_z_ml7 S2 {s2:.3f} (TerraMesh {s2_tm:.3f}), S1GRD {s1:.3f} "
            f"(TerraMesh {s1_tm:.3f}); bilinear {s2:.3f} vs bicubic {med('S2', 'bicubic'):.3f}; "
            f"S1RTC {med('S1', 'S1RTC'):.3f}",
            c_ok, "worsening x" + ", ".join(f"{v:.1f}" for v in ctrls.values()) + " (each must be >= 2)")
@@ -499,6 +523,210 @@ def x9(root: Path):
            "; ".join(f"{f.parent.name}: {p['control_marginal_max_abs_diff']:.3f}" for f, p in zip(pls, ok)))
 
 
+# ---------------------------------------------------------------- X10 / X11 (PHASE6_PLAN §2c)
+L11_TEACHER = "teacher/l11b_b10lora1461_S1S2_K4"
+L10_GEN = "S2L2A_gen_l10"
+
+
+def _flat_configs(names):
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+
+    def flat(d, p=""):
+        o = {}
+        for k, v in d.items():
+            o.update(flat(v, p + k + ".") if isinstance(v, dict) else {p + k: v})
+        return o
+    with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
+        return {n: flat(OmegaConf.to_container(compose(f"eo_ben/{n}", overrides=["finetune.init_from=/x"]), resolve=False))
+                for n in names}
+
+
+def x10(teacher: str = L11_TEACHER):
+    import pandas as pd
+    from eo.ben import splits as S
+    from eo.data.ben_dataset import BenMixDataset, BenTokenDataset, load_index
+    idx = load_index()
+    # (a) the pool
+    u = idx.ft_unlab.to_numpy(bool)
+    clash = {r: int((u & idx[r].to_numpy(bool)).sum()) + len(set(idx.s2[u]) & set(idx.s2[idx[r]]))
+             + len(set(idx.s1[u]) & set(idx.s1[idx[r]])) for r in S.L11_DISJOINT}
+    n_lab = int((idx.labels19.to_numpy()[u] >= 0).sum())
+    meta = BEN_ROOT / "v1_stream_l11" / "meta_S2.parquet"
+    pack_labels = None
+    if meta.exists():
+        pack_labels = [c for c in ("labels",) if c in pd.read_parquet(meta).columns
+                       or c in pd.read_parquet(BEN_ROOT / "v1_stream_l11" / "meta_S1.parquet").columns]
+    ok = int(u.sum()) == 272767 and not any(clash.values()) and n_lab == 0 and pack_labels in (None, [])
+    refused = {}
+    try:
+        BenTokenDataset(role="ft_unlab", condition="S1", index=idx)
+        refused["pool, no teacher"] = False
+    except RuntimeError:
+        refused["pool, no teacher"] = True
+    if (BEN_ROOT / f"{teacher}.npz").exists():
+        try:
+            BenTokenDataset(role="ft_train", condition="S1", index=idx, teacher=teacher)
+            refused["teacher on ft_train"] = False
+        except RuntimeError:
+            refused["teacher on ft_train"] = True
+    leak_row = int(np.flatnonzero(u)[0])
+    fake_meta = pd.DataFrame({"row": [leak_row], "labels": ['["Pastures"]'], "date": ["2017-01-01"]})
+    try:
+        S.attach_labels(idx[[c for c in idx.columns if c not in ("labels43", "labels19", "n_labels19", "date")]],
+                        fake_meta, None)
+        refused["attach_labels on a pool row"] = False
+    except RuntimeError:
+        refused["attach_labels on a pool row"] = True
+    record("X10a ft_unlab", ok, f"{int(u.sum())} rows; overlaps {clash}; labelled {n_lab}; "
+           f"pack label columns {pack_labels if pack_labels is not None else '(not packed yet)'}",
+           all(refused.values()), ", ".join(f"{k}: {'refused' if v else 'SERVED'}" for k, v in refused.items()))
+    # (c) the teacher file
+    if not (BEN_ROOT / f"{teacher}.npz").exists():
+        record("X10b mixed dataset", None, f"{teacher}.npz not built yet")
+        return record("X10c teacher blocks", None, f"{teacher}.npz not built yet")
+    from eo.data.ben_dataset import load_teacher
+    t_rows, t_masks, t_meta = load_teacher(BEN_ROOT, teacher)
+    pl = t_meta.get("plumbing") or {}
+    ok_c = (np.array_equal(t_rows, np.flatnonzero(u)) and t_masks.shape == (int(u.sum()), 4)
+            and t_meta["condition"] == "S1S2" and "checkpoint-1461" in t_meta["checkpoint"]
+            and bool(pl.get("passed")) and "A100" in t_meta.get("gpu", ""))
+    lab_ft = idx.labels19.to_numpy()[idx.ft_train.to_numpy(bool)]
+    mean_true = float(np.mean([bin(int(m)).count("1") for m in lab_ft]))
+    record("X10c teacher blocks", ok_c, f"{len(t_rows)} rows = ft_unlab, K {t_masks.shape[1]}, condition "
+           f"{t_meta['condition']}, {Path(t_meta['checkpoint']).parent.name}/{Path(t_meta['checkpoint']).name}, "
+           f"{t_meta['gpu']}; plumbing passed {pl.get('passed')} (max |dmarginal| {pl.get('marginal_max_abs_diff', float('nan')):.1e}); "
+           f"labels per block {t_meta['stats']['mean_labels_per_block']:.2f} (ft_train truth {mean_true:.2f}), "
+           f"patches with differing blocks {t_meta['stats']['blocks_differing_within_patch']:.2f}",
+           bool(pl.get("control_fired")), f"another patch's S2: max |dmarginal| {pl.get('control_marginal_max_abs_diff', float('nan')):.3f}")
+    # (b) the mixed dataset
+    lab = BenTokenDataset(role="ft_train", condition="random", index=idx)
+    ref = BenTokenDataset(role="ft_train", condition="random", index=idx)
+    un = BenTokenDataset(role="ft_unlab", condition="S1", index=idx, teacher=teacher)
+    mix = BenMixDataset(lab, un, ratio=1.0)
+    zero = BenMixDataset(BenTokenDataset(role="ft_train", condition="random", index=idx), un, ratio=0.0)
+    same_lab, same_zero, n_l, bad_u, n_u, n_ctl, ctl_caught, slices = 0, 0, 0, 0, 0, 0, 0, []
+    for ep in (0, 1, 2):
+        for d in (mix, zero, ref):
+            d.set_epoch(ep)
+        for p in range(0, mix.n_lab, 97):
+            a, b, z = mix[p], ref[p], zero[p]
+            n_l += 1
+            same_lab += all(torch.equal(a[k], b[k]) for k in b) and set(a) == set(b)
+            same_zero += all(torch.equal(z[k], b[k]) for k in b)
+        slices.append({mix.unlab_pos(j) for j in range(mix.n_unlab)})
+        for j in range(0, mix.n_unlab, 211):
+            item = mix[mix.n_lab + j]
+            up = mix.unlab_pos(j)
+            n_u += 1
+            try:
+                srcs = check_sequence(item, un.block_classes(up))
+                if srcs != ["S1"]:
+                    raise AssertionError(f"inputs {srcs}")
+            except AssertionError:
+                bad_u += 1
+            # control: the next pool patch's first teacher block, wherever it is a different set
+            other = L.from_mask(int(t_masks[(un._tpos[up] + 1) % len(t_masks), 0]))
+            if other != un.block_classes(up):
+                n_ctl += 1
+                try:
+                    check_sequence(item, other)
+                except AssertionError:
+                    ctl_caught += 1
+    disjoint = not (slices[0] & slices[1]) and not (slices[1] & slices[2]) and not (slices[0] & slices[2])
+    # the block draw moves between epochs: K = 4 gives 1 - 1/4 = 0.75 of draws changing, in expectation
+    pp = range(0, len(un), 541)
+    un.set_epoch(0)
+    k0 = [un.teacher_draw(p) for p in pp]
+    un.set_epoch(1)
+    redraw = float(np.mean([a != un.teacher_draw(p) for a, p in zip(k0, pp)]))
+    un.set_epoch(0)
+    ok_b = (same_lab == n_l and same_zero == n_l and len(zero) == len(ref) and bad_u == 0 and disjoint
+            and len(mix) == 2 * len(ref) and abs(redraw - (1 - 1 / t_masks.shape[1])) < 0.05)
+    record("X10b mixed dataset", ok_b, f"labelled half = b10_lora's examples {same_lab}/{n_l} (3 epochs), ratio 0 "
+           f"{same_zero}/{n_l} and length {len(zero)}; {n_u - bad_u}/{n_u} unlabelled examples S1-only with their "
+           f"teacher block; epoch slices of {mix.n_unlab} disjoint: {disjoint}; block draw changes epoch 0->1 "
+           f"for {redraw:.3f}; length {len(mix)}",
+           n_ctl > 0 and ctl_caught == n_ctl, f"another patch's block caught {ctl_caught}/{n_ctl}")
+
+
+def x10d():
+    c = _flat_configs(("b10_lora", "b10_lora_l11b", "b10_lora_l11b_s1t", "b10_lora_1pct"))
+    diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
+    d1, d2 = diff("b10_lora", "b10_lora_l11b"), diff("b10_lora_l11b", "b10_lora_l11b_s1t")
+    want = ["ben.unlab.condition", "ben.unlab.ratio", "ben.unlab.role", "ben.unlab.teacher", "total_batch_size"]
+    ok = (d1 == want and d2 == ["ben.unlab.teacher"] and c["b10_lora_l11b"]["total_batch_size"] == 128
+          and c["b10_lora_l11b"]["num_train_steps"] == c["b10_lora"]["num_train_steps"])
+    d_ctl = diff("b10_lora", "b10_lora_1pct")
+    record("X10d L11b overlays", ok, f"b10_lora_l11b vs b10_lora: {d1}; s1t vs l11b: {d2}",
+           d_ctl != want, f"b10_lora_1pct vs b10_lora differs in {d_ctl}")
+
+
+def x11(gen_dir: str = L10_GEN, l10_root: Path = REPORTS / "l10"):
+    from eo.data.ben_dataset import BenTokenDataset, load_index, GEN_CONDITION
+    from eo.terramesh_tok.contract import tok_dir_name
+    idx = load_index()
+    real = tok_dir_name("S2L2A")
+    # (a) the S1G2 condition with the REAL S2 tokens in the generated slot
+    g = BenTokenDataset(role="test_a", condition=GEN_CONDITION, index=idx, gen_s2=real)
+    s = BenTokenDataset(role="test_a", condition="S1S2", index=idx)
+    pp = range(0, len(s), 211)
+    same_item = sum(all(torch.equal(g[p][k], s[p][k]) for k in s[p]) for p in pp)
+    same_prompt = sum(torch.equal(g.prompt(p, GEN_CONDITION), s.prompt(p, "S1S2")) for p in pp)
+    rnd = BenTokenDataset(role="ft_train", condition="random", index=idx, gen_s2=real,
+                          conditions=("S1", "S2", "S1S2", GEN_CONDITION))
+    from collections import Counter
+    cnt = Counter()
+    for p in range(len(rnd)):
+        srcs = tuple(sorted(rnd.inputs_for(p)))
+        cnt[srcs] += 1
+    freq = {k: v / len(rnd) for k, v in cnt.items()}
+    four = len(freq) == 4 and all(abs(v - 0.25) < 0.02 for v in freq.values())
+    # control: another patch's real S2 in the slot
+    g._arrays()
+    g._tokens = {**g._tokens, "G2": np.roll(np.asarray(g._tokens["G2"]), 1, axis=0)}   # row r gets row r-1's S2
+    ctl_same = sum(all(torch.equal(g[p][k], s[p][k]) for k in s[p]) for p in range(0, 200, 7))
+    n = len(list(pp))
+    record("X11a S1G2 condition", same_item == n and same_prompt == n and four,
+           f"real S2 in the generated slot: items {same_item}/{n}, prompts {same_prompt}/{n} = S1S2's; draw "
+           + ", ".join(f"{'+'.join(k)} {v:.3f}" for k, v in sorted(freq.items())),
+           ctl_same == 0, f"another patch's S2: {ctl_same}/{len(range(0, 200, 7))} identical")
+    # (b) the generated dir
+    d = BEN_ROOT / gen_dir
+    if not (d / "metadata.json").exists():
+        record("X11b generated S2 dir", None, f"{d} not built yet")
+    else:
+        meta = json.loads((d / "metadata.json").read_text())
+        pres = np.load(d / "present.npy")
+        tok = np.load(d / "tokens.npy", mmap_mode="r")
+        want = idx.ft_train.to_numpy(bool) | idx.ft_valsel.to_numpy(bool)
+        size = BV.get_modality("S2L2A").codebook_size
+        t = np.asarray(tok[pres]).astype(np.int64)
+        cc_ok = all(json.loads(Path(src["file"]).with_suffix(".json").read_text())["cache_check"] <= 5e-2
+                    for src in meta["sources"] if Path(src["file"]).with_suffix(".json").exists())
+        ok = bool(pres[want].all()) and int(pres.sum()) == int(want.sum()) and t.max() < size and cc_ok \
+            and meta.get("generated") is True
+        record("X11b generated S2 dir", ok, f"{int(pres.sum())} rows (ft_train + ft_valsel {int(want.sum())}), "
+               f"tokens in [0, {size}): {t.max() < size}; sources' cache checks: {cc_ok}",
+               (t + size).max() >= size, "the same tokens one slot up leave the codebook")
+    # (c) overlay
+    c = _flat_configs(("b10_lora", "b10_lora_l10", "b10_lora_l11b"))
+    diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
+    d1, d_ctl = diff("b10_lora", "b10_lora_l10"), diff("b10_lora", "b10_lora_l11b")
+    record("X11c L10 overlay", d1 == ["ben.conditions", "ben.gen_s2"], f"b10_lora_l10 vs b10_lora: {d1}",
+           d_ctl != d1, f"b10_lora_l11b vs b10_lora differs in {d_ctl}")
+    # (d) plumbing of the L10 classifier's chain test, on the A100
+    pls = sorted(l10_root.glob("cls/*l10*/plumbing.json"))
+    if not pls:
+        return record("X11d plumbing on the A100", None, f"no L10 classifier run under {l10_root}")
+    p = [json.loads(f.read_text()) for f in pls]
+    record("X11d plumbing on the A100",
+           all(q["prompts_equal_dataset"] and q["greedy_equal"] and q["marginal_max_abs_diff"] < 1e-4 for q in p),
+           "; ".join(f"{f.parent.name}: max |dmarginal| {q['marginal_max_abs_diff']:.1e}" for f, q in zip(pls, p)),
+           all(q["control_marginal_max_abs_diff"] > 0.05 for q in p),
+           "; ".join(f"{q['control_marginal_max_abs_diff']:.3f}" for q in p))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", default=None)
@@ -532,6 +760,11 @@ def main():
         x8()
     if want("X9"):
         x9(a.chain_root)
+    if want("X10"):
+        x10()
+        x10d()
+    if want("X11"):
+        x11()
     fails = [r for r in RESULTS if r[1] is False or r[3] is False]
     skips = [r for r in RESULTS if r[1] is None]
     print(f"\n{len(RESULTS) - len(fails) - len(skips)} pass, {len(fails)} fail, {len(skips)} skipped")
