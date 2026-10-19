@@ -7,6 +7,9 @@ One row per B10 model, every number read from the files the runs wrote (never re
 Paired bootstrap CIs (over test_a patches, same rows) for the comparisons that answer §2b's questions:
   pretraining (full vs scratch; LoRA-1% vs scratch-1%), adapters (LoRA vs head), the LR confound
   (LoRA 1e-3 vs LoRA 1e-4; full vs LoRA at the same LR 1e-4), label budget (LoRA 10% vs 1%).
+PHASE6_PLAN §2c (2026-10-18) adds L11b (distillation on the unlabelled pool), its attribution control,
+and L10 (trained on generated S2), each against b10_lora; models whose files do not exist yet are
+skipped. The location-only kNN (L2, no pixels) is printed beside every result as a reference (item 41).
 
     python eo/experiments/ben_summary.py --out /data/enric/reports/ben/summary_b10
 """
@@ -35,13 +38,19 @@ MODELS = [
     ("b10_full_li", "S6.b: full, loss on labels + inputs", "ft_valsel", "10%"),
     ("b10_scratch_1pct", "L8: from scratch, SMARTIES 1% list", "ft_valsel1", "1%"),
     ("b10_lora_1pct", "L8: LoRA lr 1e-3, SMARTIES 1% list", "ft_valsel1", "1%"),
+    ("b10_lora_l11b", "L11b: b10_lora + distillation from S1+S2 into S1 on 272,767 unlabelled pairs", "ft_valsel", "10% + unlab."),
+    ("b10_lora_l11b_s1t", "L11b.6: the same, teacher given S1 only (self-training control)", "ft_valsel", "10% + unlab."),
+    ("b10_lora_l10", "L10: b10_lora + a fourth condition, S1 with a generated S2", "ft_valsel", "10%"),
 ]
 PAIRS = [("b10_full", "b10_scratch", "pretraining, 10% (full vs scratch)"),
          ("b10_lora_1pct", "b10_scratch_1pct", "pretraining, 1% (LoRA vs scratch)"),
          ("b10_lora", "b10_head", "what the adapters add (LoRA vs head, both lr 1e-3)"),
          ("b10_lora", "b10_lora_lr1e4", "the LR confound (LoRA 1e-3 vs 1e-4)"),
          ("b10_full", "b10_lora_lr1e4", "full vs LoRA at the same LR 1e-4"),
-         ("b10_lora", "b10_lora_1pct", "label budget (LoRA 10% vs 1%)")]
+         ("b10_lora", "b10_lora_1pct", "label budget (LoRA 10% vs 1%)"),
+         ("b10_lora_l11b", "b10_lora", "L11b: distillation from S1+S2 on the unlabelled pool"),
+         ("b10_lora_l11b", "b10_lora_l11b_s1t", "L11b.6: S2's knowledge beyond self-training"),
+         ("b10_lora_l10", "b10_lora", "L10: the classifier also trained on generated S2 (real inputs here)")]
 
 
 def jl(p):
@@ -73,6 +82,8 @@ def main():
     base_f = jl(REP / "forgetting/b10_base/extended_base/forgetting.json")
     prior = jl(REP / "report_b10_test_a/report.json") if (REP / "report_b10_test_a/report.json").exists() else None
     rows, sel, md = {}, {}, []
+    l2 = REP / "analysis_b10" / "l2.json"
+    loc = jl(l2)["location_knn"]["10"]["micro_map"] if l2.exists() else None
     for tag, what, val, lab in MODELS:
         ck, scores = select(tag, val)
         r = {"what": what, "val_role": val, "labels": lab, "val_mean_micro_map": scores, "selected": ck}
@@ -91,7 +102,8 @@ def main():
                 r["forgetting_ce_all"] = f["ce_all_body_tokens"] - base_f["ce_all_body_tokens"]
                 r["forgetting_per_modality"] = {m: f["per_modality"][m]["ce"] - base_f["per_modality"][m]["ce"]
                                                 for m in f["per_modality"]}
-        rows[tag] = r
+        if ck or (REP / tag).exists():
+            rows[tag] = r
     # paired comparisons on test_a
     comps = {}
     for x, y, what in PAIRS:
@@ -108,16 +120,20 @@ def main():
             comps[f"{x} - {y}"][c] = {"diff": d, "ci95": ci}
         print(x, "-", y, {c: round(v["diff"], 4) for c, v in comps[f"{x} - {y}"].items() if c != "what"}, flush=True)
     doc = {"models": rows, "comparisons": comps, "forgetting_reference": "extended base (b10_ext_ckpt3300)",
+           "location_only_knn10_micro_map": loc,
            "test": "test_a = SMARTIES MM val, 103,944 patches"}
     (a.out / "summary.json").write_text(json.dumps(doc, indent=1) + "\n")
 
     g = lambda r, k: f"{r[k]['micro_map']:.3f}" if k in r else "—"
     md += ["# Phase 6 Part 1 on B10: every model on BigEarthNet (test_a, micro-mAP)", "",
            "Class prior 0.311 (micro-F1 0.415). Checkpoint selected on each model's val role. Forgetting: teacher-forced CE "
-           "on TerraMesh's 4,416 held-out rows, minus the extended base's (nats; + = forgot).", "",
+           "on TerraMesh's 4,416 held-out rows, minus the extended base's (nats; + = forgot)."
+           + (f" Reference, no pixels: location-only kNN (k = 10, L2) {loc:.3f}." if loc is not None else ""), "",
            "| model | labels | selected | S1 | S2 | S1+S2 | macro-mAP S1+S2 | micro-F1 S1+S2 | wrong input | forgetting, all tokens |",
            "|---|---|---|---|---|---|---|---|---|---|"]
     for tag, what, val, lab in MODELS:
+        if tag not in rows:
+            continue
         r = rows[tag]
         fo = f"{r['forgetting_ce_all']:+.3f}" if "forgetting_ce_all" in r else "—"
         ms = f"{r['test_S1S2']['macro_map']:.3f}" if "test_S1S2" in r else "—"
@@ -133,7 +149,7 @@ def main():
     md += ["", "## Forgetting per modality (CE minus the extended base's)", "",
            "| model | " + " | ".join(base_f["per_modality"]) + " |", "|" + "---|" * (1 + len(base_f["per_modality"]))]
     for tag, *_ in MODELS:
-        r = rows[tag]
+        r = rows.get(tag, {})
         if "forgetting_per_modality" in r:
             md.append(f"| {tag} | " + " | ".join(f"{r['forgetting_per_modality'][m]:+.3f}" for m in base_f["per_modality"]) + " |")
     (a.out / "summary.md").write_text("\n".join(md) + "\n")
