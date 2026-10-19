@@ -1,6 +1,6 @@
 """Phase 6 Part 1 on B10: the slide deck's figures, in one house style. `.venv`, CPU. Reads only result files:
-summary_b10/summary.json (ben_summary.py), chain/report.json (ben_chain.py report), analysis_b10/{l1,l2}.json
-(ben_test_analysis.py, ben_spatial.py), gen_forgetting/report.json (ben_gen_forgetting.py report).
+summary_b10/summary.json (ben_summary.py), chain/report.json and l10/report.json (ben_chain.py report),
+analysis_b10/{l1,l2}.json (ben_test_analysis.py, ben_spatial.py), gen_forgetting/report.json (ben_gen_forgetting.py report).
 Writes <out>/deck/*.png. The one-off figures of ben_figures.py stay as they were.
 
 A model keeps its colour in every figure (scratch grey, head light blue, LoRA greens, full orange).
@@ -259,6 +259,87 @@ def chain(C, out):
     save(fig, out, "chain.png")
 
 
+def l10(C, out):
+    """L10 (PHASE6_PLAN §2c): S1 -> Ŝ2 -> labels, for b10_lora and for the classifier also trained on Ŝ2."""
+    kinds = [("floor", "S1 + another patch's real S2", "#c9c9c9"), ("single", "S1 alone", "#3b6ea5"),
+             ("chain_mean4", "S1 + generated Ŝ2 (mean of 4)", "#c44e52"), ("ceiling", "S1 + real S2", "#1f8a4c")]
+    groups = [("b10_lora", "trained on real inputs\n(b10_lora, Step 5b)"), ("b10_lora_l10", "also trained on generated Ŝ2\n(L10)")]
+    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    hgrid(ax)
+    w = 0.18
+    for g, (c, _) in enumerate(groups):
+        r = C[c]["S1toS2/base"]
+        for i, (k, lab, col) in enumerate(kinds):
+            x = g + (i - 1.5) * (w + 0.02)
+            ax.bar(x, r[k], w, color=col, zorder=3, label=lab if g == 0 else None)
+            ax.text(x, r[k] + 0.01, f"{r[k]:.2f}", ha="center", fontsize=12)
+        d, (lo, hi) = r["chain_minus_single"], r["chain_minus_single_ci95"]
+        txt = f"{d:+.2f}".replace("-", "−") if abs(d) >= 0.005 else "0.00"
+        ax.text(g, 0.97, txt, ha="center", fontsize=20, fontweight="bold", color="#c44e52" if d < -0.005 else INK)
+        ax.text(g, 0.915, f"Ŝ2 vs S1 alone  [{lo:+.3f}, {hi:+.3f}]".replace("-", "−"), ha="center", fontsize=11.5, color=MUTED)
+    ax.axhline(PRIOR, color=MUTED, lw=1.2, ls=":", zorder=2)
+    ax.text(-0.5, PRIOR + 0.008, "prior", fontsize=11.5, color=MUTED, ha="left")
+    ax.set_xticks([0, 1], [t for _, t in groups], fontsize=13.5)
+    ax.tick_params(axis="x", length=0)
+    ax.set_ylim(0, 1.03); ax.set_xlim(-0.52, 1.52); ax.set_ylabel("micro-mAP (10,000 test_a patches)")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=2, fontsize=12, columnspacing=1.4, handlelength=1.2)
+    save(fig, out, "l10.png")
+
+
+L11 = {"b10_lora": ("no distillation (b10_lora)", COL["b10_lora"]),
+       "b10_lora_l11b_s1t": ("teacher sees S1 only (control)", "#c3b4e8"),
+       "b10_lora_l11b": ("teacher sees S1 + S2 (L11b)", "#6a4fb3")}
+
+
+def distill_setup(out):
+    """L11b's recipe as one row: unlabelled pairs -> teacher -> sampled label sets -> S1-only student."""
+    fig, ax = plt.subplots(figsize=(12.4, 2.05))
+    ax.set_xlim(0, 12.4); ax.set_ylim(0, 2.05); ax.axis("off")
+    w, gap = 2.72, 0.49                                         # four boxes and three equal arrows across 12.4
+    steps = [(0.05 + i * (w + gap), t, fc, ec) for i, (t, fc, ec) in enumerate([
+        ("272,767 patches\nS1 + S2, no labels", "#f3f3f1", "#8d8d8d"),
+        ("teacher: b10_lora\nsees S1 + S2", "#ece6f8", "#6a4fb3"),
+        ("4 label sets\nsampled per patch", "#ece6f8", "#6a4fb3"),
+        ("student: new LoRA\nsees S1 only", "#ece6f8", "#6a4fb3")])]
+    steps = [(x, w, t, fc, ec) for x, t, fc, ec in steps]
+    y, h = 0.55, 1.3
+    for i, (x, w, t, fc, ec) in enumerate(steps):
+        box(ax, x, w, y, h, fc, ec, t, fs=14, bold=(i == 3))
+        if i < len(steps) - 1:
+            x2 = steps[i + 1][0]
+            ax.annotate("", (x2 - 0.05, y + h / 2), (x + w + 0.05, y + h / 2),
+                        arrowprops=dict(arrowstyle="-|>", color=INK, lw=1.8, mutation_scale=18))
+    ax.text(steps[-1][0] + w, 0.2, "+ the 31,166 labelled patches, as before", ha="right", va="center", fontsize=12.5, color=MUTED)
+    ax.text(0.05, 0.2, "SMARTIES train, outside the 10% list", ha="left", va="center", fontsize=12.5, color=MUTED)
+    save(fig, out, "distill_setup.png")
+
+
+def distill_results(S, out):
+    m, comp = S["models"], S["comparisons"]
+    fig, ax = plt.subplots(figsize=(12.4, 3.45))
+    hgrid(ax)
+    w, keys = 0.22, list(L11)
+    for g, key in enumerate(("S1", "S2", "S1S2")):
+        for i, k in enumerate(keys):
+            v = m[k][f"test_{key}"]["micro_map"]
+            x = g + (i - 1) * (w + 0.02)
+            ax.bar(x, v, w, color=L11[k][1], zorder=3, label=L11[k][0] if g == 0 else None)
+            ax.text(x, 0.612, f"{v:.3f}", ha="center", va="bottom", fontsize=12, fontweight="bold",
+                    color=INK if k == "b10_lora_l11b_s1t" else "white", zorder=5)          # at the base: clear of the reference line
+    d = comp["b10_lora_l11b - b10_lora"]["S1"]
+    ax.text(0, 0.86, f"+{d['diff']:.3f}", ha="center", fontsize=20, fontweight="bold", color=L11["b10_lora_l11b"][1])
+    ax.text(0, 0.835, f"[{d['ci95'][0]:+.3f}, {d['ci95'][1]:+.3f}]", ha="center", fontsize=11.5, color=MUTED)
+    loc = S.get("location_only_knn10_micro_map")
+    if loc:
+        ax.plot([-0.45, 2.45], [loc, loc], color="#c44e52", lw=1.6, ls=(0, (4, 3)), zorder=2)    # behind the bars
+        ax.text(-0.43, loc - 0.006, f"location only {loc:.2f} (no pixels)", ha="left", va="top", fontsize=11.5, color="#c44e52")
+    ax.set_xticks(range(3), ["S1  (radar)", "S2  (optical)", "S1 + S2"], fontsize=15)
+    ax.tick_params(axis="x", length=0)
+    ax.set_xlim(-0.5, 2.5); ax.set_ylim(0.6, 0.9); ax.set_ylabel("micro-mAP, test_a")
+    ax.legend(loc="upper center", ncol=3, fontsize=12.5, bbox_to_anchor=(0.5, 1.2), columnspacing=1.6, handlelength=1.4)
+    save(fig, out, "distill_results.png")
+
+
 def genforget(G, out):
     models = ["b10_head", "b10_lora_lr1e4", "b10_full", "b10_lora"]
     cells = [("S2L2A/none", "no condition → S2", "decoded S2 error (MSE)"), ("S2L2A/DEM", "DEM → S2", "decoded S2 error (MSE)"),
@@ -315,6 +396,8 @@ def main():
     print("perclass", perclass(L, out))
     spatial(jl(REP / "analysis_b10/l2.json"), out)
     chain(jl(REP / "chain/report.json"), out)
+    l10(jl(REP / "l10/report.json"), out)                       # PHASE6_PLAN §2c (2026-10-19)
+    distill_setup(out); distill_results(S, out)
     genforget(jl(REP / "gen_forgetting/report.json"), out)
     print("calibration", calibration(L, out))
     print(sorted(p.name for p in out.glob("*.png")))
