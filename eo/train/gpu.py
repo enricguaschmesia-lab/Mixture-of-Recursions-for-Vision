@@ -37,6 +37,14 @@ assertions below work unchanged. What differs is WHERE large outputs may live:
 there is no /data on RCP, and the private project root is named by the alias's
 `large_output_env` (`MOR_EO_RCP`). Preflight enforces that root on RCP, and
 /data on the workstation, so the remote setting can never relax the local guard.
+
+SEVERAL GPUS (2026-10-20). `resolve_n(alias, n)` picks n cards of one alias for a
+multi-GPU (DDP) run, and `assert_selected(alias, n)` proves the process sees exactly
+those. The n cards must be the SAME card (name, capability and memory): DDP runs at
+the slowest rank's pace, and a model split across an A100-80GB and an A100-40GB is
+the RCP version of the workstation's TITAN V + Titan X. Among identical cards the
+lowest PCI indices are taken, since any of them is right. On this workstation an
+alias matches one card, so n > 1 always refuses here.
 """
 from __future__ import annotations
 
@@ -132,9 +140,31 @@ def list_gpus() -> List[GpuInfo]:
 def resolve(alias: str, gpus: Optional[List[GpuInfo]] = None) -> GpuInfo:
     """The single GPU matching `alias`, or a hard error naming what is there.
 
-    Raises rather than guessing on zero or multiple matches: silently picking
-    one of two candidates is the class of bug this whole module exists to stop.
+    Raises rather than guessing when nothing matches, or when the matches are
+    not all the same card: silently picking one of two DIFFERENT candidates is
+    the class of bug this whole module exists to stop. Among identical cards
+    (an RCP node's A100s) the lowest index is as good as any other.
     """
+    return resolve_n(alias, 1, gpus)[0]
+
+
+def _inventory(gpus: List[GpuInfo]) -> str:
+    return "\n".join(
+        f"    nvidia-smi index {g.index}: {g.name} "
+        f"(sm_{g.compute_capability[0]}{g.compute_capability[1]}, {g.memory_total_mib} MiB)"
+        for g in gpus
+    ) or "    (no GPUs reported by nvidia-smi)"
+
+
+def resolve_n(alias: str, n: int, gpus: Optional[List[GpuInfo]] = None) -> List[GpuInfo]:
+    """`n` GPUs matching `alias`, all the same card, lowest indices first.
+
+    Refuses when fewer than n cards match, and when the matching cards differ
+    in name or memory (an A100-80GB next to an A100-40GB both contain "A100"
+    at sm_80): DDP across unequal cards runs at the slow one's pace, silently.
+    """
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
     key = alias.strip().lower()
     if key not in GPU_ALIASES:
         raise KeyError(
@@ -146,40 +176,43 @@ def resolve(alias: str, gpus: Optional[List[GpuInfo]] = None) -> GpuInfo:
     if gpus is None:
         gpus = list_gpus()
 
-    matches = [
-        g for g in gpus
-        if spec.name_contains.lower() in g.name.lower()
-        and g.compute_capability == spec.compute_capability
-    ]
-    if len(matches) == 1:
-        return matches[0]
+    matches = sorted(
+        (g for g in gpus
+         if spec.name_contains.lower() in g.name.lower()
+         and g.compute_capability == spec.compute_capability),
+        key=lambda g: g.index,
+    )
+    kinds = {(g.name, g.memory_total_mib) for g in matches}
+    if len(matches) >= n and len(kinds) == 1:
+        return matches[:n]
 
-    inventory = "\n".join(
-        f"    nvidia-smi index {g.index}: {g.name} "
-        f"(sm_{g.compute_capability[0]}{g.compute_capability[1]}, {g.memory_total_mib} MiB)"
-        for g in gpus
-    ) or "    (no GPUs reported by nvidia-smi)"
+    why = (f"matched {len(matches)} GPUs, {n} needed" if len(matches) < n else
+           f"matched {len(matches)} GPUs that are not the same card: {sorted(kinds)}")
     raise RuntimeError(
-        f"Alias {alias!r} matched {len(matches)} GPUs, expected exactly 1.\n"
+        f"Alias {alias!r} {why}.\n"
         f"  Looking for a device whose name contains {spec.name_contains!r} at "
         f"compute capability sm_{spec.compute_capability[0]}{spec.compute_capability[1]}.\n"
-        f"  Present:\n{inventory}\n"
+        f"  Present:\n{_inventory(gpus)}\n"
         f"  If the hardware changed, update GPU_ALIASES in eo/train/gpu.py. Do not "
         f"fall back to an index -- the two index orderings disagree on this box."
     )
 
 
-def assert_selected(alias: str) -> "GpuInfo":
-    """Confirm, from inside the process, that CUDA handed us the right card.
+def assert_selected(alias: str, n: int = 1) -> "GpuInfo":
+    """Confirm, from inside the process, that CUDA handed us the right card(s).
 
     `resolve()` decides; this proves the decision survived `CUDA_VISIBLE_DEVICES`,
     the device ordering, and any ambient environment. Call it after CUDA is
     available and before anything expensive happens.
 
-    Also asserts `device_count() == 1`. With both cards visible, HF `Trainer`
-    wraps the model in `nn.DataParallel` across a sm_70 and a sm_52 card -- the
-    slow one sets the pace -- and `preprocess_config` computes
+    Also asserts `device_count() == n` (1 unless the run is launched for DDP).
+    With more cards visible than the run asked for, HF `Trainer` wraps the model
+    in `nn.DataParallel` -- on the workstation across a sm_70 and a sm_52 card,
+    the slow one setting the pace -- and `preprocess_config` computes
     `gradient_accumulation_steps` from the wrong device count. Neither is an error.
+    With n > 1, EVERY visible device must be the alias's card, and all the same.
+
+    Returns cuda:0's info (the n cards are identical).
     """
     import torch  # deliberately lazy: importing torch initializes CUDA
 
@@ -188,32 +221,39 @@ def assert_selected(alias: str) -> "GpuInfo":
     if not torch.cuda.is_available():
         raise RuntimeError("torch reports no CUDA device. Is CUDA_VISIBLE_DEVICES empty?")
 
-    n = torch.cuda.device_count()
-    if n != 1:
+    seen = torch.cuda.device_count()
+    if seen != n:
         raise RuntimeError(
-            f"torch sees {n} CUDA devices; exactly 1 must be visible.\n"
+            f"torch sees {seen} CUDA devices; exactly {n} must be visible.\n"
             f"  CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')!r}\n"
-            f"  With more than one visible, HF Trainer silently uses nn.DataParallel "
-            f"across two unequal cards and gradient_accumulation_steps is computed "
-            f"from the wrong device count. Both are silent."
+            f"  With more visible than the run is launched for, HF Trainer silently uses "
+            f"nn.DataParallel and gradient_accumulation_steps is computed from the wrong "
+            f"device count. Both are silent."
         )
+
+    kinds = set()
+    for i in range(n):
+        props = torch.cuda.get_device_properties(i)
+        got = (props.major, props.minor)
+        if spec.name_contains.lower() not in props.name.lower() or got != spec.compute_capability:
+            raise RuntimeError(
+                f"Wrong GPU. Asked for {alias!r} "
+                f"({spec.name_contains}, sm_{spec.compute_capability[0]}{spec.compute_capability[1]}); "
+                f"cuda:{i} is {props.name!r} (sm_{got[0]}{got[1]}).\n"
+                f"  CUDA_DEVICE_ORDER={os.environ.get('CUDA_DEVICE_ORDER', '<unset>')!r} "
+                f"(must be {DEVICE_ORDER!r}), "
+                f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')!r}"
+            )
+        kinds.add((props.name, props.total_memory))
+    if len(kinds) != 1:
+        raise RuntimeError(f"The {n} visible devices are not the same card: {sorted(kinds)}. "
+                           f"DDP would run at the slowest one's pace.")
 
     props = torch.cuda.get_device_properties(0)
-    got = (props.major, props.minor)
-    if spec.name_contains.lower() not in props.name.lower() or got != spec.compute_capability:
-        raise RuntimeError(
-            f"Wrong GPU. Asked for {alias!r} "
-            f"({spec.name_contains}, sm_{spec.compute_capability[0]}{spec.compute_capability[1]}); "
-            f"cuda:0 is {props.name!r} (sm_{got[0]}{got[1]}).\n"
-            f"  CUDA_DEVICE_ORDER={os.environ.get('CUDA_DEVICE_ORDER', '<unset>')!r} "
-            f"(must be {DEVICE_ORDER!r}), "
-            f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')!r}"
-        )
-
     return GpuInfo(
         index=int(os.environ.get("CUDA_VISIBLE_DEVICES", "-1").split(",")[0]),
         name=props.name,
-        compute_capability=got,
+        compute_capability=(props.major, props.minor),
         memory_total_mib=props.total_memory // (1024 * 1024),
     )
 
@@ -223,11 +263,13 @@ def _main(argv=None) -> int:
 
     Exists so the shell launcher can resolve an alias without duplicating the
     matching rules in bash. Prints the index and nothing else, so it is safe to
-    use in a command substitution; diagnostics go to stderr.
+    use in a command substitution; diagnostics go to stderr. With `--count N`
+    it prints N comma-separated indices (`0,1`), ready for CUDA_VISIBLE_DEVICES.
     """
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("alias", nargs="?", choices=sorted(GPU_ALIASES))
+    ap.add_argument("--count", type=int, default=1, help="how many cards (DDP); default 1")
     ap.add_argument("--list", action="store_true", help="show every GPU and exit")
     args = ap.parse_args(argv)
 
@@ -242,8 +284,8 @@ def _main(argv=None) -> int:
         return 0
 
     try:
-        print(resolve(args.alias).index)
-    except (KeyError, RuntimeError) as exc:
+        print(",".join(str(g.index) for g in resolve_n(args.alias, args.count)))
+    except (KeyError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     return 0

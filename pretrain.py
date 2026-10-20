@@ -60,6 +60,14 @@ from util.misc import print_trainable_parameters, get_latest_checkpoint_path, pr
 
 @hydra.main(config_path="conf/pretrain_vision", config_name="rgb_single_training/smoke_50steps", version_base=None)
 def main(cfg: DictConfig):
+    # EO runs: one process seeing several cards would get nn.DataParallel and a batch
+    # divided for the wrong device count, silently. Multi-GPU is torchrun only
+    # (train_eo.sh --gpus N); see eo/train/distributed.py. Before preprocess_config,
+    # which divides the batch by torch.cuda.device_count().
+    if is_eo(cfg):
+        from eo.train.distributed import check_launch
+        check_launch(torch.cuda.device_count(), os.environ)
+
     # Resolve derived config fields and normalize Hydra config before use.
     cfg = preprocess_config(cfg)
 

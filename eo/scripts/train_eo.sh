@@ -24,6 +24,12 @@
 #   --arm NAME        required. Names the run, the W&B run, and the output dir.
 #   --gpu ALIAS       titanv (default, the training card) | titanx
 #                     | a100 (EPFL RCP only, inside a Run:AI job; no --detach)
+#   --gpus N          cards to train on (default 1). N > 1 launches pretrain.py under
+#                     torchrun (DDP, one process per card) and needs N identical
+#                     cards on one node: an RCP pod submitted with `-g N`. Not on the
+#                     workstation, not for a BEN fine-tune (preflight refuses both).
+#                     The batch must divide: total_batch_size % (per-device x N) == 0.
+#                     A resume must use the --gpus (and per-device batch) it was saved with.
 #   --config NAME     Hydra config name under conf/pretrain_vision/
 #                     (default: eo_terramesh/terramesh_mor_token)
 #   --detach          run in tmux, logging to /data/enric/logs/<run>.log
@@ -40,6 +46,8 @@
 #   bash eo/scripts/train_eo.sh --arm smoke stop_steps=30 total_batch_size=4 wandb=false
 #   bash eo/scripts/train_eo.sh --arm mor --detach
 #   bash eo/scripts/train_eo.sh --arm mor --resume --run-id mor_20260921_143000
+#   bash eo/scripts/train_eo.sh --arm v360 --config eo_terramesh/arm_b10c_vanilla \
+#        --gpu a100 --gpus 2 per_device_train_batch_size=16        (inside a `-g 2` pod)
 #   bash eo/scripts/train_eo.sh --arm b10full --config eo_ben/b10_full --gpu titanx \
 #        --init-from /data/enric/runs/pretrain/phase6/base/b10_ext_ckpt3300 --detach
 #
@@ -50,7 +58,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 
-ARM=""; GPU="titanv"; CONFIG="eo_terramesh/terramesh_mor_token"
+ARM=""; GPU="titanv"; NGPU=1; CONFIG="eo_terramesh/terramesh_mor_token"
 DETACH=0; RESUME=0; FORCE=0; RUN_ID=""; INIT_FROM=""
 HYDRA_ARGS=()
 
@@ -58,6 +66,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --arm)     ARM="$2"; shift 2 ;;
     --gpu)     GPU="$2"; shift 2 ;;
+    --gpus)    NGPU="$2"; shift 2 ;;
     --config)  CONFIG="$2"; shift 2 ;;
     --run-id)  RUN_ID="$2"; shift 2 ;;
     --init-from) INIT_FROM="$2"; shift 2 ;;
@@ -70,6 +79,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$ARM" ]] || { echo "ERROR: --arm is required (it names the run)." >&2; exit 2; }
+[[ "$NGPU" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: --gpus must be a positive integer, got '$NGPU'." >&2; exit 2; }
 if [[ $RESUME -eq 1 && -z "$RUN_ID" ]]; then
   echo "ERROR: --resume needs --run-id: which run directory should it continue?" >&2
   echo "       Available under \$MOR_SAVE_DIR/pretrain/phase3/:" >&2
@@ -116,8 +126,8 @@ if [[ "$GPU" == "a100" && $DETACH -eq 1 ]]; then
   echo "ERROR: --detach is for the workstation. On RCP, submit the run as a Run:AI job." >&2; exit 2
 fi
 
-if ! GPU_INDEX="$("$PY" -m eo.train.gpu "$GPU")"; then
-  echo "ERROR: could not resolve --gpu '$GPU'." >&2
+if ! GPU_INDEX="$("$PY" -m eo.train.gpu "$GPU" --count "$NGPU")"; then
+  echo "ERROR: could not resolve --gpu '$GPU' x $NGPU." >&2
   exit 2
 fi
 export CUDA_VISIBLE_DEVICES="$GPU_INDEX"
@@ -143,12 +153,20 @@ done
 # --- 4. preflight: refuse to start if anything is wrong ----------------------
 "$PY" -m eo.train.preflight \
     --gpu "$GPU" \
+    --gpus "$NGPU" \
     --run-dir "$RUN_DIR" \
     --config "conf/pretrain_vision/${CONFIG}.yaml" \
     "${PRE_FLAGS[@]+"${PRE_FLAGS[@]}"}"
 
 # --- 5. launch ---------------------------------------------------------------
-CMD=("$PY" pretrain.py
+# One card: plain python, as every run before 2026-10-20. N cards: torchrun, one process
+# per card on this node; not `accelerate launch`, which would change what pretrain.py
+# derives from the launcher (save_safetensors). See eo/train/distributed.py.
+LAUNCH=("$PY")
+if [[ $NGPU -gt 1 ]]; then
+  LAUNCH=("$PY" -m torch.distributed.run --standalone --nproc_per_node "$NGPU")
+fi
+CMD=("${LAUNCH[@]}" pretrain.py
      --config-path conf/pretrain_vision
      --config-name "$CONFIG"
      "name=${RUN_ID}"
@@ -160,7 +178,7 @@ CMD+=("${HYDRA_ARGS[@]+"${HYDRA_ARGS[@]}"}")
 echo
 echo "run      : $RUN_ID"
 echo "arm      : $ARM"
-echo "gpu      : $GPU (CUDA_VISIBLE_DEVICES=$GPU_INDEX, order $CUDA_DEVICE_ORDER)"
+echo "gpu      : $GPU x $NGPU (CUDA_VISIBLE_DEVICES=$GPU_INDEX, order $CUDA_DEVICE_ORDER)"
 echo "config   : $CONFIG"
 echo "run dir  : $RUN_DIR"
 echo "wandb    : ${WANDB_ENTITY:-?}/${WANDB_PROJECT:-?} (${WANDB_MODE:-online})"

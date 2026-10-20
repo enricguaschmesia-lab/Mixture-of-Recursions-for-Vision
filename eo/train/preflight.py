@@ -7,6 +7,11 @@ raises; each one produces a run that trains happily and is worthless:
   * the wrong GPU              -- 2.4x slower, no error                (gpu.py)
   * both GPUs visible          -- nn.DataParallel across unequal cards, and
                                   gradient_accumulation_steps computed wrong
+                                  (with --gpus N: exactly N identical cards)
+  * a batch that does not divide -- preprocess_config rounds the accumulation,
+                                  so 256 on 3 GPUs trains at 240
+  * a resume at another GPU split -- no RNG state restored, data resharded,
+                                  or a different total batch
   * MOR_SAVE_DIR unset         -- paths.py falls back to <repo>/results, i.e.
                                   ~1.5 GB checkpoints on /home, which the
                                   project forbids for large outputs. (They would
@@ -46,6 +51,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from eo.train import gpu as gpu_mod
+from eo.train.distributed import checkpoint_world_size
 
 #: Repo root, for resolving repo-relative paths named in a config.
 REPO = Path(__file__).resolve().parents[2]
@@ -116,6 +122,7 @@ class PreflightContext:
     env: dict = field(default_factory=lambda: dict(os.environ))
     check_torch: bool = True              # off in tests that must not init CUDA
     min_free_gpu_mib: Optional[int] = None   # None -> MIN_FREE_GPU_MIB
+    n_gpus: int = 1                       # train_eo.sh --gpus; > 1 means a torchrun DDP launch
 
 
 # --------------------------------------------------------------------------
@@ -136,28 +143,120 @@ def check_device_order(ctx: PreflightContext) -> CheckResult:
     )
 
 
-def check_single_visible_device(ctx: PreflightContext) -> CheckResult:
+def check_visible_devices(ctx: PreflightContext) -> CheckResult:
+    """Exactly as many devices visible as the run is launched for (1 unless --gpus N).
+
+    More visible than launched for => nn.DataParallel (on the workstation across a
+    sm_70 and a sm_52 card) and the wrong device count in preprocess_config.
+    Fewer => a DDP launch whose ranks share a card.
+    """
     raw = ctx.env.get("CUDA_VISIBLE_DEVICES")
     if raw is None or raw == "":
-        return CheckResult("one visible device", False, "CUDA_VISIBLE_DEVICES is unset",
+        return CheckResult("visible devices", False, "CUDA_VISIBLE_DEVICES is unset",
                            "Both cards visible => nn.DataParallel across a sm_70 and a "
                            "sm_52 card, and the wrong device count in preprocess_config.")
     n = len([p for p in raw.split(",") if p.strip() != ""])
-    return CheckResult("one visible device", n == 1, f"CUDA_VISIBLE_DEVICES={raw!r}",
-                       "" if n == 1 else "Exactly one device must be visible.")
+    ok = n == ctx.n_gpus
+    return CheckResult("visible devices", ok, f"CUDA_VISIBLE_DEVICES={raw!r} (--gpus {ctx.n_gpus})",
+                       "" if ok else f"Exactly {ctx.n_gpus} device(s) must be visible.")
+
+
+def check_multi_gpu(ctx: PreflightContext) -> CheckResult:
+    """--gpus N > 1 only where it has been verified: TerraMesh pretraining, identical cards.
+
+    The workstation's aliases each match ONE card (and its two cards differ, so DDP
+    would run at the Titan X's pace). A BEN fine-tune adds per-epoch input draws and
+    the distillation sampler, neither verified across processes; at ~40 A100-minutes
+    a fine-tune gains nothing from more GPUs.
+    """
+    n = ctx.n_gpus
+    if n < 1:
+        return CheckResult("multi-gpu", False, f"--gpus {n}", "Must be at least 1.")
+    if n == 1:
+        return CheckResult("multi-gpu", True, "single GPU (the default)")
+    spec = gpu_mod.GPU_ALIASES.get(ctx.gpu_alias.strip().lower())
+    if spec is not None and spec.large_output_env is None:
+        return CheckResult("multi-gpu", False, f"--gpus {n} on the workstation alias {ctx.gpu_alias!r}",
+                           "The workstation has one card per alias, and its two cards differ. "
+                           "Multi-GPU is for an RCP pod with identical cards (--gpu a100).")
+    cfg = _load_config(ctx.config_path, ctx.overrides) if ctx.config_path and ctx.config_path.is_file() else {}
+    if cfg.get("dataset") == "ben_multimodal" or (cfg.get("finetune") or {}).get("init_from"):
+        return CheckResult("multi-gpu", False, f"--gpus {n} on a BEN fine-tune",
+                           "Verified for TerraMesh pretraining only (eo/train/distributed.py).")
+    return CheckResult("multi-gpu", True, f"{n} GPUs, torchrun DDP on one node")
+
+
+def check_batch_division(ctx: PreflightContext) -> CheckResult:
+    """The batch must split EXACTLY over the GPUs; the eval set too when N > 1.
+
+    `util.config.preprocess_config` ROUNDS gradient_accumulation_steps =
+    total_batch_size / (per_device x n_gpus), and only prints the batch that
+    results. So 256 on 3 GPUs at per-device 16 trains at 240 (3 x 16 x 5), and at
+    per-device 4 at 252: a different recipe from every single-GPU run, exit 0.
+
+    With N > 1 the held-out rows must also split over N x per_device_eval_batch_size.
+    Otherwise the distributed eval loader fills the last round by repeating rows;
+    HF drops them from eval_loss, but the per-modality eval CE is accumulated inside
+    compute_loss and would count them.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("batch division", True, "skipped (config missing; check_config reports it)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    n = max(ctx.n_gpus, 1)
+    total, per = cfg.get("total_batch_size"), cfg.get("per_device_train_batch_size")
+    notes = []
+    if total is not None and per:
+        if total % (per * n):
+            actual = per * n * max(round(total / (per * n)), 0)
+            return CheckResult(
+                "batch division", False,
+                f"total_batch_size {total} is not a multiple of per-device {per} x {n} GPU(s)",
+                f"preprocess_config rounds the accumulation, so the run would train at batch "
+                f"{actual}, not {total}. Pick a per-device batch or GPU count that divides it.")
+        notes.append(f"{total} = {per} x {n} GPU(s) x {total // (per * n)}")
+    if n > 1:
+        ref = (cfg.get("multimodal") or {}).get("eval_split")
+        if ref is not None and cfg.get("dataset") != "ben_multimodal":
+            rows = _eval_row_count(ref, ctx.env.get("TERRAMESH_TOK_ROOT"))
+            ev = cfg.get("per_device_eval_batch_size") or per
+            if rows is None:
+                return CheckResult("batch division", False, f"eval split {ref!r} unreadable",
+                                   "check_eval_split says why.")
+            if rows % (ev * n):
+                return CheckResult(
+                    "batch division", False,
+                    f"{rows} held-out rows do not split over per-device eval {ev} x {n} GPUs",
+                    "The distributed eval loader would repeat rows to fill the last round, and "
+                    "the per-modality eval CE would count them.")
+            notes.append(f"eval {rows} = {ev} x {n} x {rows // (ev * n)}")
+    return CheckResult("batch division", True, "; ".join(notes) or "no total_batch_size (nothing rounded)")
+
+
+def _eval_row_count(ref, root) -> Optional[int]:
+    from eo.data.eval_split import default_split_path, load_eval_rows
+    p = Path(str(ref))
+    if not p.suffix:
+        p = default_split_path(str(ref))
+    elif not p.is_absolute():
+        p = REPO / p
+    try:
+        return len(load_eval_rows(path=p, root_dir=root))
+    except (FileNotFoundError, RuntimeError):
+        return None
 
 
 def check_gpu_identity(ctx: PreflightContext) -> CheckResult:
     if not ctx.check_torch:
         return CheckResult("gpu identity", True, "skipped (check_torch=False)")
     try:
-        info = gpu_mod.assert_selected(ctx.gpu_alias)
+        info = gpu_mod.assert_selected(ctx.gpu_alias, ctx.n_gpus)
     except Exception as exc:
         return CheckResult("gpu identity", False, str(exc).splitlines()[0],
                            "\n".join(str(exc).splitlines()[1:]))
     cc = f"sm_{info.compute_capability[0]}{info.compute_capability[1]}"
+    which = "cuda:0 is" if ctx.n_gpus == 1 else f"cuda:0..{ctx.n_gpus - 1} are each"
     return CheckResult("gpu identity", True,
-                       f"cuda:0 is {info.name} ({cc}, {info.memory_total_mib} MiB) "
+                       f"{which} {info.name} ({cc}, {info.memory_total_mib} MiB) "
                        f"= alias {ctx.gpu_alias!r}")
 
 
@@ -182,19 +281,22 @@ def check_gpu_free_memory(ctx: PreflightContext) -> CheckResult:
 
     import subprocess
     want = ctx.min_free_gpu_mib if ctx.min_free_gpu_mib is not None else MIN_FREE_GPU_MIB
+    free_by = []                                   # (index, free, total), every card the run uses
     try:
-        idx = gpu_mod.resolve(ctx.gpu_alias).index
-        q = subprocess.run(
-            ["nvidia-smi", f"--id={idx}", "--query-gpu=memory.used,memory.total",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10, check=True)
-        used, total = (int(x) for x in q.stdout.strip().split(","))
+        for g in gpu_mod.resolve_n(ctx.gpu_alias, max(ctx.n_gpus, 1)):
+            q = subprocess.run(
+                ["nvidia-smi", f"--id={g.index}", "--query-gpu=memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10, check=True)
+            used, total = (int(x) for x in q.stdout.strip().split(","))
+            free_by.append((g.index, total - used, total))
     except Exception as exc:                       # noqa: BLE001
         return CheckResult("gpu free memory", False, f"could not query nvidia-smi: {exc}")
 
-    free = total - used
+    idx, free, total = min(free_by, key=lambda t: t[1])
     if free >= want:
-        return CheckResult("gpu free memory", True, f"{free} MiB free of {total} (need {want})")
+        on = "" if len(free_by) == 1 else f" on the fullest of {len(free_by)} cards"
+        return CheckResult("gpu free memory", True, f"{free} MiB free of {total}{on} (need {want})")
 
     who = ""
     try:
@@ -805,8 +907,11 @@ def check_resume_checkpoint(ctx: PreflightContext) -> CheckResult:
         return CheckResult("resume checkpoint", False, f"no checkpoint-* under {ctx.run_dir}",
                            "Nothing to resume from. HF would start from scratch.")
 
-    required = ["optimizer.pt", "scheduler.pt", "trainer_state.json", "rng_state.pth"]
+    required = ["optimizer.pt", "scheduler.pt", "trainer_state.json"]
     missing = [f for f in required if not (ckpt / f).is_file()]
+    world, why = checkpoint_world_size(ckpt)
+    if world is None:
+        missing.append(f"rng_state ({why})")
     if missing:
         return CheckResult(
             "resume checkpoint", False, f"{ckpt.name} is missing {missing}",
@@ -814,12 +919,37 @@ def check_resume_checkpoint(ctx: PreflightContext) -> CheckResult:
             "-- no warning, exit 0. Missing scheduler/rng state loses the LR position and "
             "the data order.")
 
+    # ⚠ The GPU split must be the one the checkpoint was written with. HF looks for
+    # rng_state_<rank>.pth (N GPUs) or rng_state.pth (one), and a missing file is
+    # logged at INFO and skipped; the data are also resharded. And on resume HF takes
+    # the per-device batch from the checkpoint's trainer_state (`train_batch_size`)
+    # while the accumulation comes from the new config, so a changed per-device batch
+    # trains at a different total batch. All exit 0.
+    if world != ctx.n_gpus:
+        return CheckResult(
+            "resume checkpoint", False,
+            f"{ckpt.name} was written by {world} GPU(s); this run uses {ctx.n_gpus}",
+            "Resume with the same --gpus. Another count restores no RNG state and reshards "
+            "the data, silently.")
+    import json
+    cfg = _load_config(ctx.config_path, ctx.overrides) if ctx.config_path else {}
+    try:
+        saved_per = json.loads((ckpt / "trainer_state.json").read_text()).get("train_batch_size")
+    except (ValueError, OSError):
+        saved_per = None
+    per = cfg.get("per_device_train_batch_size")
+    if saved_per is not None and per is not None and int(saved_per) != int(per):
+        return CheckResult(
+            "resume checkpoint", False,
+            f"{ckpt.name} trained at per-device batch {saved_per}; the config says {per}",
+            "On resume HF keeps the checkpoint's per-device batch but the config's "
+            "accumulation, so the total batch would change silently.")
+
     keys = _checkpoint_param_keys(ckpt)
     if keys is None:
         return CheckResult("resume checkpoint", False,
                            f"{ckpt.name} has neither pytorch_model.bin nor model.safetensors")
 
-    cfg = _load_config(ctx.config_path, ctx.overrides) if ctx.config_path else {}
     want_recursive = bool((cfg.get("recursive") or {}).get("enable"))
     want_mor = bool((cfg.get("mor") or {}).get("enable"))
     want_rand = want_mor and bool((cfg.get("mor") or {}).get("rand_router"))
@@ -839,14 +969,16 @@ def check_resume_checkpoint(ctx: PreflightContext) -> CheckResult:
     step = ckpt.name[11:]
     fmt = "safetensors" if (ckpt / "model.safetensors").is_file() else "bin"
     return CheckResult("resume checkpoint", True,
-                       f"{ckpt.name} complete ({fmt}, step {step}, {len(keys)} tensors)")
+                       f"{ckpt.name} complete ({fmt}, step {step}, {len(keys)} tensors, "
+                       f"{world} GPU(s), per-device {saved_per})")
 
 
 #: Evaluated in order. Environment checks come first so a misconfigured shell
 #: fails before torch is imported and CUDA is initialized.
 CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_device_order,
-    check_single_visible_device,
+    check_visible_devices,
+    check_multi_gpu,
     check_save_dir,
     check_data_root,
     check_hf_home,
@@ -854,6 +986,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_run_dir,
     check_disk,
     check_config,
+    check_batch_division,
     check_eval_split,
     check_token_set,
     check_ben_data,
@@ -889,6 +1022,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Environment preflight for an EO training run.")
     ap.add_argument("--gpu", required=True, choices=sorted(gpu_mod.GPU_ALIASES),
                     help="GPU alias. Never an index -- see eo/train/gpu.py.")
+    ap.add_argument("--gpus", type=int, default=1,
+                    help="Cards the run is launched for (train_eo.sh --gpus); > 1 is torchrun DDP.")
     ap.add_argument("--run-dir", required=True, type=Path)
     ap.add_argument("--config", type=Path, default=None)
     ap.add_argument("--allow-existing", action="store_true",
@@ -921,6 +1056,7 @@ def main(argv=None) -> int:
         resuming=args.resuming,
         overrides=overrides,
         check_torch=not args.no_torch,
+        n_gpus=args.gpus,
     )
     results = run_checks(ctx)
     print("Preflight ".ljust(70, "-"))

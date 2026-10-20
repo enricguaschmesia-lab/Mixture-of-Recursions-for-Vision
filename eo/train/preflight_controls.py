@@ -20,9 +20,15 @@ Exit code is 0 only if the baseline passes and every control fires. Step 9's
 initializing CUDA per case would be slow and would couple them to whichever GPU
 happens to be free. The two checks that need real CUDA -- wrong card, and both
 cards visible -- are exercised by `verify_phase3.py` in a subprocess.
+
+Multi-GPU (2026-10-20, `--gpus N`): the visible-device count, the scope (RCP,
+pretraining only), the batch and eval division, a resume at another GPU split or
+per-device batch, `resolve_n` on fake inventories, and `distributed.check_launch`
+(the DataParallel guard in pretrain.py), each with a case that must fire.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -59,7 +65,8 @@ def _env(drop: Tuple[str, ...] = (), **override) -> Dict[str, str]:
 
 
 def _fake_checkpoint(parent: Path, arm: str, *, drop: Tuple[str, ...] = (),
-                     step: int = 20) -> Path:
+                     step: int = 20, world: int = 1, ranks: Optional[Tuple[int, ...]] = None,
+                     per_device: Optional[int] = 4) -> Path:
     """A minimal checkpoint with a real arm fingerprint, built from 2x2 tensors.
 
     Synthetic on purpose: the controls must be runnable on any machine, years
@@ -88,9 +95,14 @@ def _fake_checkpoint(parent: Path, arm: str, *, drop: Tuple[str, ...] = (),
         sd["model.layers.1.mor_router.router.0.weight"] = torch.zeros(2, 2)
     torch.save(sd, d / "pytorch_model.bin")
 
-    for f in ("optimizer.pt", "scheduler.pt", "trainer_state.json", "rng_state.pth"):
+    # One GPU writes rng_state.pth, N write rng_state_<rank>.pth; trainer_state.json
+    # records the per-device batch HF restores on resume (default config: 4).
+    rng = (["rng_state.pth"] if world == 1 else
+           [f"rng_state_{r}.pth" for r in (ranks if ranks is not None else range(world))])
+    state = json.dumps({"train_batch_size": per_device}) if per_device is not None else "{}"
+    for f in ["optimizer.pt", "scheduler.pt", "trainer_state.json"] + rng:
         if f not in drop:
-            (d / f).write_text("{}")
+            (d / f).write_text(state if f == "trainer_state.json" else "{}")
     if "pytorch_model.bin" in drop:
         (d / "pytorch_model.bin").unlink()
     return d
@@ -99,7 +111,8 @@ def _fake_checkpoint(parent: Path, arm: str, *, drop: Tuple[str, ...] = (),
 def _results(env, *, run_dir: Optional[Path] = None, config: Optional[Path] = None,
              allow_existing: bool = False, resuming: bool = False,
              overrides: Optional[dict] = None, check_torch: bool = False,
-             min_free_gpu_mib: Optional[int] = None, gpu_alias: str = "titanv") -> Dict[str, bool]:
+             min_free_gpu_mib: Optional[int] = None, gpu_alias: str = "titanv",
+             n_gpus: int = 1) -> Dict[str, bool]:
     ctx = PreflightContext(
         gpu_alias=gpu_alias,
         run_dir=run_dir or (Path(tempfile.mkdtemp()) / "fresh"),
@@ -110,6 +123,7 @@ def _results(env, *, run_dir: Optional[Path] = None, config: Optional[Path] = No
         env=env,
         check_torch=check_torch,
         min_free_gpu_mib=min_free_gpu_mib,
+        n_gpus=n_gpus,
     )
     results = run_checks(ctx)
     out = _Res({r.name: r.ok for r in results})
@@ -189,8 +203,13 @@ def main(argv=None) -> int:
     cases: List[Tuple[str, str, dict]] = [
         ("CUDA_DEVICE_ORDER unset",             "device order",       dict(env=_env(("CUDA_DEVICE_ORDER",)))),
         ("CUDA_DEVICE_ORDER=FASTEST_FIRST",     "device order",       dict(env=_env(CUDA_DEVICE_ORDER="FASTEST_FIRST"))),
-        ("both GPUs visible",                   "one visible device", dict(env=_env(CUDA_VISIBLE_DEVICES="0,1"))),
-        ("CUDA_VISIBLE_DEVICES unset",          "one visible device", dict(env=_env(("CUDA_VISIBLE_DEVICES",)))),
+        ("both GPUs visible",                   "visible devices",    dict(env=_env(CUDA_VISIBLE_DEVICES="0,1"))),
+        ("CUDA_VISIBLE_DEVICES unset",          "visible devices",    dict(env=_env(("CUDA_VISIBLE_DEVICES",)))),
+        ("--gpus 2, one card visible",          "visible devices",    dict(env=_env(CUDA_VISIBLE_DEVICES="0"), n_gpus=2)),
+        ("--gpus 0",                            "multi-gpu",          dict(env=GOOD_ENV, n_gpus=0)),
+        ("--gpus 2 on the workstation (titanv)", "multi-gpu",         dict(env=_env(CUDA_VISIBLE_DEVICES="0,1"), n_gpus=2)),
+        # preprocess_config ROUNDS the accumulation: 250 / 4 -> 62 -> batch 248
+        ("batch: 250 on one GPU x 4 (-> 248)",  "batch division",     dict(env=GOOD_ENV, overrides={"total_batch_size": 250})),
         ("MOR_SAVE_DIR unset",                  "MOR_SAVE_DIR",       dict(env=_env(("MOR_SAVE_DIR",)))),
         ("MOR_SAVE_DIR on /home",               "MOR_SAVE_DIR",       dict(env=_env(MOR_SAVE_DIR="/home/enric/results"))),
         ("MOR_SAVE_DIR relative",               "MOR_SAVE_DIR",       dict(env=_env(MOR_SAVE_DIR="results"))),
@@ -288,6 +307,36 @@ def main(argv=None) -> int:
         ("a100: WANDB_DIR outside RCP root",    "W&B",          dict(env={**rcp_env, "WANDB_DIR": "/data/enric/runs/wandb"}, gpu_alias="a100")),
         ("titanv: MOR_EO_RCP cannot relax /data", "MOR_SAVE_DIR", dict(env={**rcp_env}, gpu_alias="titanv")),
         ("MOR_SAVE_DIR on /data2 (not /data)",  "MOR_SAVE_DIR", dict(env=_env(MOR_SAVE_DIR="/data2/runs"))),
+    ]
+
+    # --- multi-GPU (2026-10-20, --gpus N): an RCP pod with N identical cards. Each
+    # case is a way a DDP run trains a different recipe, or resumes wrongly, with
+    # exit 0: a rounded batch, a padded eval, a resume that restores no RNG state or
+    # changes the total batch, a fine-tune nobody verified across processes. ---
+    rcp2 = {**rcp_env, "CUDA_VISIBLE_DEVICES": "0,1"}
+    rcp3 = {**rcp_env, "CUDA_VISIBLE_DEVICES": "0,1,2"}
+    on_a100 = dict(gpu_alias="a100")
+    ben_cfg = REPO / "conf/pretrain_vision/eo_ben/b10_lora.yaml"
+    resume_kw = dict(resuming=True, overrides=ARMS["vanilla"], allow_existing=True)
+    ck2 = tmp / "run_world_2"
+    _fake_checkpoint(ck2, "vanilla", world=2)
+    ck_gap = tmp / "run_world_gap"
+    _fake_checkpoint(ck_gap, "vanilla", world=2, ranks=(0, 2))
+    ck_both = tmp / "run_world_both"
+    _fake_checkpoint(ck_both, "vanilla")
+    (ck_both / "checkpoint-20" / "rng_state_0.pth").write_text("{}")
+    cases += [
+        ("--gpus 2 on a BEN fine-tune",          "multi-gpu",         dict(env=rcp2, n_gpus=2, config=ben_cfg, **on_a100)),
+        ("batch: 256 on 3 GPUs x 16 (-> 240)",   "batch division",    dict(env=rcp3, n_gpus=3, overrides={"per_device_train_batch_size": 16}, **on_a100)),
+        ("batch: 256 on 3 GPUs x 4 (-> 252)",    "batch division",    dict(env=rcp3, n_gpus=3, **on_a100)),
+        ("eval: 4416 rows over 2 GPUs x 5",      "batch division",    dict(env=rcp2, n_gpus=2, overrides={"per_device_eval_batch_size": 5}, **on_a100)),
+        ("resume: 2-GPU ckpt on 1 GPU",          "resume checkpoint", dict(env=rcp_env, n_gpus=1, run_dir=ck2, **on_a100, **resume_kw)),
+        ("resume: 1-GPU ckpt on 2 GPUs",         "resume checkpoint", dict(env=rcp2, n_gpus=2, run_dir=ck["vanilla"], **on_a100, **resume_kw)),
+        ("resume: rng ranks 0, 2 (1 lost)",      "resume checkpoint", dict(env=rcp2, n_gpus=2, run_dir=ck_gap, **on_a100, **resume_kw)),
+        ("resume: rng_state.pth and _0.pth",     "resume checkpoint", dict(env=rcp_env, n_gpus=1, run_dir=ck_both, **on_a100, **resume_kw)),
+        ("resume: per-device 4 ckpt, config 16", "resume checkpoint",
+         dict(env=GOOD_ENV, run_dir=ck["vanilla"], resuming=True, allow_existing=True,
+              overrides={**ARMS["vanilla"], "per_device_train_batch_size": 16})),
     ]
 
     # --- token set (2026-10-11). The config must be the record of which tokens a
@@ -414,6 +463,12 @@ def main(argv=None) -> int:
     ] + [
         ("token set: clean resolves to val_clean", "token set", _results(env=GOOD_ENV, config=clean_cfg)),
     ] + [
+        ("--gpus 2, two cards visible",          "visible devices",   _results(env=rcp2, n_gpus=2, **on_a100)),
+        ("--gpus 2 on a100 pretraining",         "multi-gpu",         _results(env=rcp2, n_gpus=2, **on_a100)),
+        ("batch: 256 on 2 GPUs x 16, eval /8",   "batch division",
+         _results(env=rcp2, n_gpus=2, overrides={"per_device_train_batch_size": 16}, **on_a100)),
+        ("resume: 2-GPU ckpt as a 2-GPU run",    "resume checkpoint", _results(env=rcp2, n_gpus=2, run_dir=ck2, **on_a100, **resume_kw)),
+    ] + [
         (f"token set: {arm} (Hydra overlay)", "token set",
          _results(env=GOOD_ENV, config=arm_cfg / f"{arm}.yaml"))
         for arm in ("arm_b10c_vanilla", "arm_a10c_mor")
@@ -427,7 +482,7 @@ def main(argv=None) -> int:
     # --- GPU alias resolution on fake inventories (gpu.resolve, no nvidia-smi). The
     # compute capability is what disambiguates names: an A10 (sm_86) contains "A10"
     # but not "A100"; a card NAMED A100 at the wrong capability must still refuse. ---
-    from eo.train.gpu import GpuInfo, resolve
+    from eo.train.gpu import GpuInfo, resolve, resolve_n
     a100 = GpuInfo(0, "NVIDIA A100-SXM4-80GB", (8, 0), 81920)
     res_cases = [
         ("resolve a100 on an RCP pod",            [a100], "a100", 0),
@@ -435,7 +490,9 @@ def main(argv=None) -> int:
                                                    GpuInfo(1, "NVIDIA TITAN V", (7, 0), 12288)], "titanv", 1),
         ("a100 alias on an A10 (sm_86) refuses",  [GpuInfo(0, "NVIDIA A10", (8, 6), 24576)], "a100", None),
         ("a100 alias at the wrong capability",    [GpuInfo(0, "NVIDIA A100-SXM4-80GB", (7, 5), 81920)], "a100", None),
-        ("a100 alias with two A100s visible",     [a100, GpuInfo(1, "NVIDIA A100-SXM4-80GB", (8, 0), 81920)], "a100", None),
+        # identical cards: any is right, so the lowest index (2026-10-20; refused before)
+        ("a100 alias, two A100s: the lowest",     [GpuInfo(1, "NVIDIA A100-SXM4-80GB", (8, 0), 81920), a100], "a100", 0),
+        ("a100 alias, A100 80 GB + 40 GB refuses", [a100, GpuInfo(1, "NVIDIA A100-SXM4-40GB", (8, 0), 40960)], "a100", None),
         ("a100 alias on the workstation refuses", [GpuInfo(1, "NVIDIA TITAN V", (7, 0), 12288)], "a100", None),
     ]
     print("\nalias resolution (fake inventories):")
@@ -449,10 +506,54 @@ def main(argv=None) -> int:
         res_ok += ok
         print(f"  {'OK    ' if ok else 'WRONG '}  {label:<36} -> {got}")
 
-    total_ok = fired == len(cases) and pos_ok == len(positives) and res_ok == len(res_cases)
+    # --- several cards (resolve_n, --gpus N): N of ONE card, lowest indices first ---
+    a100_b, a100_c = (GpuInfo(i, "NVIDIA A100-SXM4-80GB", (8, 0), 81920) for i in (1, 2))
+    ws = [GpuInfo(0, "NVIDIA GeForce GTX TITAN X", (5, 2), 12288), GpuInfo(1, "NVIDIA TITAN V", (7, 0), 12288)]
+    n_cases = [
+        ("a100 x2 on two A100s",                  [a100_b, a100], "a100", 2, [0, 1]),
+        ("a100 x2 on three A100s",                [a100_c, a100, a100_b], "a100", 2, [0, 1]),
+        ("a100 x2 on one A100 refuses",           [a100], "a100", 2, None),
+        ("a100 x2 on 80 GB + 40 GB refuses",      [a100, GpuInfo(1, "NVIDIA A100-SXM4-40GB", (8, 0), 40960)], "a100", 2, None),
+        ("titanv x2 on the workstation refuses",  ws, "titanv", 2, None),
+    ]
+    for label, inv, alias, n, want in n_cases:
+        try:
+            got = [g.index for g in resolve_n(alias, n, inv)]
+        except RuntimeError:
+            got = None
+        ok = got == want
+        res_ok += ok
+        print(f"  {'OK    ' if ok else 'WRONG '}  {label:<36} -> {got}")
+    res_total = len(res_cases) + len(n_cases)
+
+    # --- the launch guard pretrain.py runs for every EO run (distributed.check_launch):
+    # a process seeing more cards than its launch accounts for gets nn.DataParallel. ---
+    from eo.train.distributed import check_launch
+    launch_cases = [
+        ("plain launch, 1 card",                  1, {}, True),
+        ("plain launch, 2 cards (DataParallel)",  2, {"CUDA_VISIBLE_DEVICES": "0,1"}, False),
+        ("torchrun 2, 2 cards each",              2, {"WORLD_SIZE": "2", "LOCAL_WORLD_SIZE": "2"}, True),
+        ("torchrun 2, 4 cards each",              4, {"WORLD_SIZE": "2", "LOCAL_WORLD_SIZE": "2"}, False),
+        ("torchrun 4 over two nodes",             2, {"WORLD_SIZE": "4", "LOCAL_WORLD_SIZE": "2"}, False),
+    ]
+    print("\nlaunch guard (distributed.check_launch, fake device counts):")
+    launch_ok = 0
+    for label, count, env, want in launch_cases:
+        try:
+            check_launch(count, env)
+            got = True
+        except RuntimeError:
+            got = False
+        ok = got == want
+        launch_ok += ok
+        print(f"  {'OK    ' if ok else 'WRONG '}  {label:<36} -> {'allowed' if got else 'refused'}")
+
+    total_ok = (fired == len(cases) and pos_ok == len(positives) and res_ok == res_total
+                and launch_ok == len(launch_cases))
     print(f"\n{fired}/{len(cases)} negative controls fired, "
           f"{pos_ok}/{len(positives)} positive controls passed, "
-          f"{res_ok}/{len(res_cases)} alias resolutions right")
+          f"{res_ok}/{res_total} alias resolutions right, "
+          f"{launch_ok}/{len(launch_cases)} launch-guard cases right")
     print("PREFLIGHT CONTROLS PASSED" if total_ok else "PREFLIGHT CONTROLS FAILED")
     return 0 if total_ok else 1
 
