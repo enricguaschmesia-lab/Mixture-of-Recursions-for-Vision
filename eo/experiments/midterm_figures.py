@@ -51,7 +51,7 @@ NICE = {"S2L2A": "S2", "S1GRD": "S1 GRD", "S1RTC": "S1 RTC", "DEM": "DEM", "NDVI
         "Coords": "location", "all": "all others", "none": "nothing"}
 BEN = {"b10_scratch": "#8d8d8d", "b10_head": "#eda100", "b10_lora": "#1f8a4c", "b10_full": "#3d3c39"}
 FULL = BEN["b10_full"]
-BENNAME = {"b10_scratch": "from scratch", "b10_head": "head only", "b10_lora": "LoRA", "b10_full": "full fine-tune"}
+BENNAME = {"b10_scratch": "from scratch", "b10_head": "new tokens only", "b10_lora": "LoRA", "b10_full": "full fine-tune"}
 MODS = ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC", "Coords"]
 TARGETS = ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC"]
 EPOCH = 84672 / 256                       # optimizer steps per epoch
@@ -824,6 +824,34 @@ def fig_ben_labels():
     return {k: round(x_, 3) for k, x_ in v.items()}
 
 
+def fig_tradeoff():
+    """Appendix: accuracy against forgetting. ben_slide_figures.tradeoff's data, in this deck's names and colours."""
+    m = jl(REP / "ben/summary_b10/summary.json")["models"]
+    col = {"b10_head": BEN["b10_head"], "b10_lora_lr1e4": tint(BEN["b10_lora"], 0.55), "b10_full": BEN["b10_full"],
+           "b10_lora": BEN["b10_lora"]}
+    name = {"b10_head": BENNAME["b10_head"], "b10_lora_lr1e4": "LoRA, lr 1e-4", "b10_full": "full, lr 1e-4",
+            "b10_lora": "LoRA, lr 1e-3"}
+    pt = {k: (m[k]["forgetting_ce_all"], m[k]["test_S1S2"]["micro_map"]) for k in col}
+    fig, ax = plt.subplots(figsize=(7.2, 5.2))
+    ygrid(ax); xgrid(ax)
+    off = {"b10_head": (-12, 0), "b10_lora_lr1e4": (14, -2), "b10_full": (-14, 0), "b10_lora": (-14, 4)}
+    for k, (x, y) in pt.items():
+        ax.scatter(x, y, s=170, color=col[k], zorder=4, edgecolor="white", lw=1.5)
+        ax.annotate(f"{name[k]}  {y:.3f}", (x, y), xytext=off[k], textcoords="offset points",
+                    ha="left" if k == "b10_lora_lr1e4" else "right", va="center", fontsize=14,
+                    fontweight="bold" if k == "b10_lora" else "normal")
+    sc = m["b10_scratch"]["test_S1S2"]["micro_map"]
+    ax.axhline(sc, color=BEN["b10_scratch"], lw=2, ls="--", zorder=2)
+    ax.text(0.298, sc - 0.002, f"from scratch {sc:.3f}", ha="right", va="top", fontsize=14, color=INK2)
+    (x1, y1), (x2, y2) = pt["b10_lora_lr1e4"], pt["b10_full"]
+    ax.plot([x1, x2], [y1, y2], color=MUTED, lw=1.3, ls=":", zorder=3)
+    ax.text((x1 + x2) / 2 + 0.004, (y1 + y2) / 2 - 0.003, "same lr 1e-4", fontsize=13.5, color=INK2, ha="left", va="top")
+    ax.set_xlim(-0.10, 0.30); ax.set_ylim(0.70, 0.83)
+    ax.set_xlabel("forgetting on TerraMesh (nats, + = worse)"); ax.set_ylabel("micro-mAP, S1 + S2")
+    save(fig, "tradeoff.png")
+    return {k: (round(x, 3), round(y, 3)) for k, (x, y) in pt.items()}
+
+
 def fig_ben_task(row=304566):
     """The first downstream task, and the four ways it was trained. `row`: a test patch the LoRA model
     labels exactly (checked below), so the chips are what the model wrote."""
@@ -838,44 +866,65 @@ def fig_ben_task(row=304566):
     b = a2["S2_10m"][r2p2[row]].astype(np.float32)                   # B02 B03 B04 B08, as ben_examples.py
     s2 = np.clip(np.stack([b[2], b[1], b[0]], -1) / 2800.0, 0, 1) ** (1 / 1.3)
     s1 = np.clip((a1["S1"][r2p1[row]][0] + 25.0) / 25.0, 0, 1)       # VV
-    W, H = 14.0, 6.4
+    W, H = 14.0, 7.0
     fig = plt.figure(figsize=(W, H))
     ax = fig.add_axes([0, 0, 1, 1]); ax.set_xlim(0, W); ax.set_ylim(0, H); ax.set_axis_off()
     # ---- the task: S1 and S2 in, the classes out, as tokens
-    ty, ts = 3.75, 2.05
+    ty, ts = 4.75, 1.85
     yc = ty + ts / 2
-    for x, img, lab, mod in ((0.3, s2, "S2", "S2L2A"), (2.5, s1, "S1", "S1")):
+    for x, img, lab, mod in ((0.3, s2, "S2", "S2L2A"), (2.3, s1, "S1", "S1")):
         a = inset(fig, ax, x, ty, ts); a.imshow(img, cmap="gray" if lab == "S1" else None); frame(a, MODC[mod], 2.5)
         ax.text(x + ts / 2, ty + ts + 0.08, lab, ha="center", va="bottom", fontsize=17, fontweight="bold")
-    arrow(ax, (4.7, yc), (5.25, yc))
-    arch_box(ax, 5.3, yc - 0.7, 3.2, 1.4, "pre", "pretrained\ndecoder", fs=19, bold=True)
-    arrow(ax, (8.55, yc), (9.1, yc))
-    out_chips(ax, 9.2, yc - 0.78, 2.6, names, h=0.44, gap=0.11, fs=16)
-    ax.text(11.98, yc, "each class is a\nnew token that\nthe model writes", ha="left", va="center", fontsize=16.5,
+    arrow(ax, (4.3, yc), (4.85, yc))
+    arch_box(ax, 4.9, yc - 0.65, 3.2, 1.3, "pre", "pretrained\ndecoder", fs=19, bold=True)
+    arrow(ax, (8.15, yc), (8.7, yc))
+    out_chips(ax, 8.8, yc - 0.75, 2.6, names, h=0.42, gap=0.12, fs=16)
+    ax.text(11.6, yc, "each class is a\nnew token that\nthe model writes", ha="left", va="center", fontsize=16.5,
             color=MODC["TASK"], fontweight="bold", linespacing=1.2)
-    # ---- what was compared: which parts train
-    ax.text(0.3, 3.1, "Four ways to train it", ha="left", va="center", fontsize=19, fontweight="bold")
-    flame(ax, 10.2, 3.1, 0.24); ax.text(10.55, 3.1, "trains", ha="left", va="center", fontsize=16)
-    snowflake(ax, 12.0, 3.1, 0.18); ax.text(12.35, 3.1, "frozen", ha="left", va="center", fontsize=16)
-    regimes = [("from scratch", BEN["b10_scratch"], "random", "trained", False, "all 153 M"),
-               ("head only", BEN["b10_head"], "pretrained", "frozen", False, "12 k"),
-               ("LoRA", BEN["b10_lora"], "pretrained", "frozen", True, "4.7 M  (3%)"),
-               ("full fine-tune", FULL, "pretrained", "trained", False, "all 153 M")]
-    cw, cg = 3.3, 0.13
-    for k, (name, col, init, state, lora, n) in enumerate(regimes):
-        x = 0.2 + k * (cw + cg)
-        ax.add_patch(FancyBboxPatch((x, 0.05), cw, 2.65, boxstyle="round,pad=0,rounding_size=0.1", fc="white",
+    # ---- the four regimes: where each touches the model, what trains, what stays frozen
+    ax.text(0.2, 4.08, "Four ways to train it", ha="left", va="center", fontsize=19, fontweight="bold")
+    for x, kind, lab in ((6.55, "pre", "pretrained"), (8.55, "new", "new")):
+        arch_box(ax, x, 3.95, 0.44, 0.26, kind)
+        ax.text(x + 0.56, 4.08, lab, ha="left", va="center", fontsize=16)
+    flame(ax, 10.15, 4.08, 0.24); ax.text(10.5, 4.08, "trains", ha="left", va="center", fontsize=16)
+    snowflake(ax, 12.0, 4.08, 0.18); ax.text(12.35, 4.08, "frozen", ha="left", va="center", fontsize=16)
+    ly, lh, tb, th = 1.95, 0.95, 0.86, 0.62                # the layers row and the token-table row
+    ax.text(1.72, ly + lh / 2, "layers", ha="right", va="center", fontsize=16, fontweight="bold", color=INK2)
+    ax.text(1.72, tb + th / 2, "token table\n(in and out)", ha="right", va="center", fontsize=15, fontweight="bold",
+            color=INK2, linespacing=1.1)
+    # (name, colour, layers, LoRA adapters, pretrained rows, trainable); the 21 new rows always train
+    regimes = [("from scratch", BEN["b10_scratch"], "random", False, "trained", "all 153 M"),
+               ("new tokens only", BEN["b10_head"], "frozen", False, "frozen", "12 k"),
+               ("full fine-tune", BEN["b10_full"], "trained", False, "trained", "all 153 M"),
+               ("LoRA", BEN["b10_lora"], "frozen", True, "frozen", "4.7 M  (3%)")]
+    cw, cg = 2.93, 0.11
+    for k, (name, col, layers, lora, rows, n) in enumerate(regimes):
+        x = 1.85 + k * (cw + cg)
+        x0, x1, xs = x + 0.18, x + cw - 0.18, x + 2.05       # xs: where the 21 new rows start
+        ax.add_patch(FancyBboxPatch((x, 0.05), cw, 3.6, boxstyle="round,pad=0,rounding_size=0.1", fc="white",
                                     ec="#d7d6d0", lw=1.3, zorder=1))
-        ax.add_patch(Rectangle((x + 0.18, 2.17), 0.28, 0.28, fc=col, ec="none", zorder=3))
-        ax.text(x + 0.58, 2.31, name, ha="left", va="center", fontsize=18.5, fontweight="bold")
-        arch_box(ax, x + 0.15, 0.95, 1.42, 0.72, "pre", init, fs=15.5)
-        icon(ax, state, x + 0.86, 1.75, 0.85)
+        ax.add_patch(Rectangle((x + 0.16, 3.18), 0.26, 0.26, fc=col, ec="none", zorder=3))
+        ax.text(x + 0.52, 3.31, name, ha="left", va="center", fontsize=17, fontweight="bold")
+        scratch = layers == "random"
+        # the layers: random and new, or pretrained (frozen or trained); LoRA adds adapters inside them
+        arch_box(ax, x0, ly, x1 - x0, lh, "new" if scratch else "pre")
+        ax.text((x0 + x1) / 2, ly + (0.66 if lora else 0.5) * lh, "random" if scratch else "pretrained",
+                ha="center", va="center", fontsize=15, zorder=6,
+                bbox=dict(boxstyle="round,pad=0.12", fc="white", ec="none", alpha=0.85) if scratch else None)
+        icon(ax, "trained" if layers != "frozen" else "frozen", (x0 + x1) / 2, ly + lh, 0.8)
         if lora:
-            arch_box(ax, x + 1.68, 0.95, 0.7, 0.72, "new", "LoRA", fs=14)
-            icon(ax, "trained", x + 2.03, 1.75, 0.85)
-        arch_box(ax, x + 2.43, 0.95, 0.76, 0.72, "new", "class\ntokens", fs=13.5)
-        icon(ax, "trained", x + 2.81, 1.75, 0.85)
-        ax.text(x + cw / 2, 0.45, f"trains {n}", ha="center", va="center", fontsize=17)
+            for j in range(4):
+                arch_box(ax, x0 + 0.14 + j * 0.31, ly + 0.1, 0.23, 0.24, "new")
+            ax.text(x0 + 1.4, ly + 0.22, "adapters", ha="left", va="center", fontsize=13, zorder=6)
+            icon(ax, "trained", x1 - 0.2, ly + 0.22, 0.7)
+        # the shared token table: the pretrained rows, and the task's 21 new rows
+        arch_box(ax, x0, tb, xs - x0 - 0.04, th, "new" if scratch else "pre")
+        icon(ax, rows, (x0 + xs) / 2, tb + th, 0.8)
+        arch_box(ax, xs, tb, x1 - xs, th, "new")
+        ax.text((xs + x1) / 2, tb + 0.21, "+21", ha="center", va="center", fontsize=14, zorder=6,
+                bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.85))
+        icon(ax, "trained", (xs + x1) / 2, tb + th, 0.8)
+        ax.text(x + cw / 2, 0.45, f"trains {n}", ha="center", va="center", fontsize=16)
     save(fig, "ben_task.png")
     return {"row": row, "labels": names}
 
@@ -1006,6 +1055,7 @@ FIGS = {"strip": fig_strip, "arch_encdec": fig_arch_encdec, "arch_deconly": fig_
         "pipeline": fig_pipeline, "split_map": fig_split_map, "memorise": fig_memorise, "gain": fig_gain,
         "generation": fig_generation, "mor": fig_mor, "recursion": fig_recursion, "ben_task": fig_ben_task,
         "ben_tokens": fig_ben_tokens, "ben_results": fig_ben_results, "ben_labels": fig_ben_labels,
+        "tradeoff": fig_tradeoff,
         "next": fig_next, "pastis": fig_pastis}
 
 
