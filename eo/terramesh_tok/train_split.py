@@ -115,6 +115,21 @@ def done_path(out: Path, shard: str) -> Path:
     return Path(out) / "done" / shard.replace(".tar", ".json")
 
 
+def is_done(out: Path, shard: str) -> bool:
+    """Done here, or done on the other platform: done_remote/ holds the other side's markers,
+    copied by the sync loop, so the two platforms walking the order from opposite ends skip each
+    other's shards (the tokens themselves are merged where consolidation runs)."""
+    name = shard.replace(".tar", ".json")
+    return done_path(out, shard).exists() or (Path(out) / "done_remote" / name).exists()
+
+
+def drop_raw(work: Path, shard: str) -> None:
+    """Delete a shard's raw tars and its ready marker (after encoding it, or once the other side has)."""
+    for m in raw_mods(shard):
+        (Path(work) / m / shard).unlink(missing_ok=True)
+    ready_path(work, shard).unlink(missing_ok=True)
+
+
 def ready_path(work: Path, shard: str) -> Path:
     return Path(work) / "ready" / shard.replace(".tar", ".json")
 
@@ -262,8 +277,10 @@ def download_loop(out: Path, work: Path, positions: list[int], revision: str,
     t0 = time.time()
     n_bytes = 0
 
-    def pending() -> int:
-        return len(list((work / "ready").glob("*.json"))) if (work / "ready").exists() else 0
+    def pending() -> int:       # downloaded, not yet encoded here or on the other side
+        if not (work / "ready").exists():
+            return 0
+        return sum(not is_done(out, p.name.replace(".json", ".tar")) for p in (work / "ready").glob("*.json"))
 
     while todo or inflight:
         if stop_requested(out):
@@ -271,7 +288,7 @@ def download_loop(out: Path, work: Path, positions: list[int], revision: str,
             todo = []
         while todo and len(inflight) + pending() < ahead:
             sh = todo.pop(0)
-            if done_path(out, sh).exists() or ready_path(work, sh).exists():
+            if is_done(out, sh) or ready_path(work, sh).exists():
                 continue
             inflight[sh] = [(m, pool.submit(_fetch, f"{base}/{m}/{sh}", work / m / sh,
                                             files[m][sh]["size"], files[m][sh]["sha256"]))
@@ -516,10 +533,14 @@ def encode_loop(out: Path, work: Path, positions: list[int], device: str = "cuda
     state.parent.mkdir(parents=True, exist_ok=True)              # a waiting encoder idles the GPU
     for pos in positions:
         shard = order[pos]
-        if done_path(out, shard).exists():
+        if is_done(out, shard):
+            if delete_raw and not done_path(out, shard).exists() and ready_path(work, shard).exists():
+                drop_raw(work, shard)        # done on the other side, and fully downloaded here
             continue
         state.write_text(f"wait {shard}\n")
         while not ready_path(work, shard).exists():
+            if is_done(out, shard):          # the other platform finished it meanwhile
+                break
             if stop_requested(out):
                 print("STOP requested; exiting", flush=True)
                 return
@@ -527,6 +548,10 @@ def encode_loop(out: Path, work: Path, positions: list[int], device: str = "cuda
         if stop_requested(out):
             print("STOP requested; exiting", flush=True)
             return
+        if is_done(out, shard):
+            if delete_raw:
+                drop_raw(work, shard)
+            continue
         state.write_text(f"encode {shard}\n")
         t0 = time.time()
         ready = json.loads(ready_path(work, shard).read_text())
@@ -557,9 +582,7 @@ def encode_loop(out: Path, work: Path, positions: list[int], device: str = "cuda
         }
         atomic_json(rec, done_path(out, shard))
         if delete_raw:
-            for m in raw_mods(shard):
-                (work / m / shard).unlink(missing_ok=True)
-            ready_path(work, shard).unlink(missing_ok=True)
+            drop_raw(work, shard)
         n = len(by_shard[shard])
         print(f"[{time.strftime('%F %T')}] {pos:4d} {shard:28s} {n:6d} rows {rec['seconds']:6.1f}s "
               f"({n / rec['seconds']:.0f}/s)  scan offset-rule floor>900 "
