@@ -51,6 +51,8 @@ def main() -> int:
             p.add_argument("--device", default="cuda:0")
             p.add_argument("--expect-gpu", default=None)
             p.add_argument("--keep-raw", action="store_true")
+            p.add_argument("--worker", default="0/1", help="i/n: this encoder takes every n-th position from i "
+                                                         "(one downloader feeding n encoders, one per GPU)")
     p = sub.add_parser("verify-val")
     p.add_argument("--val-root", type=Path, default=TM / "val")
     p.add_argument("--shards", nargs="+", required=True)
@@ -79,7 +81,8 @@ def main() -> int:
         TS.download_loop(a.out, a.work, TS.parse_positions(a.positions, 894), a.revision, a.listing,
                          ahead=a.ahead, streams=a.streams, poll=a.poll)
     elif a.cmd == "encode":
-        TS.encode_loop(a.out, a.work, TS.parse_positions(a.positions, 894), device=a.device,
+        i, n = (int(x) for x in a.worker.split("/"))
+        TS.encode_loop(a.out, a.work, TS.parse_positions(a.positions, 894)[i::n], device=a.device,
                        expect_gpu=a.expect_gpu, delete_raw=not a.keep_raw, poll=a.poll)
     elif a.cmd == "verify-val":
         rep = TS.verify_val(a.val_root, a.shards, a.device, a.expect_gpu, crop_off=a.control_crop_off)

@@ -101,7 +101,7 @@ fi
 
 # --- 1. .env, without overriding anything already exported -------------------
 # Every key named here is handed to a detached run explicitly (step 5).
-ENV_KEYS=(MOR_SAVE_DIR TERRAMESH_TOK_ROOT HF_HOME WANDB_ENTITY WANDB_PROJECT WANDB_MODE WANDB_DIR)
+ENV_KEYS=(MOR_SAVE_DIR TERRAMESH_TOK_ROOT TERRAMESH_TRAIN_TOK_ROOT HF_HOME WANDB_ENTITY WANDB_PROJECT WANDB_MODE WANDB_DIR)
 if [[ -f "$REPO/.env" ]]; then
   while IFS= read -r line; do
     [[ "$line" =~ ^[[:space:]]*# ]] && continue

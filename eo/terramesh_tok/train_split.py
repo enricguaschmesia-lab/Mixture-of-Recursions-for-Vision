@@ -133,6 +133,38 @@ def parse_positions(spec: str, n: int) -> list[int]:
     return list(range(a, b)) if a <= b else list(range(a - 1, b - 1, -1))
 
 
+def resolve_train_root(raw, token_set: str, allow_partial: bool = False) -> Path:
+    """The train-split token root a `multimodal.split: train` run reads (TERRAMESH_TRAIN_TOK_ROOT).
+
+    Refuses rather than guesses:
+      * unset, or not a root `consolidate` wrote (its build.json);
+      * not offset-free by the in-line scan (C3);
+      * partial (only the shards finished so far), unless the config allows it (smoke runs);
+      * paired with the ORIGINAL val tokens. The train split is TerraMesh's fixed upstream
+        version, which val_clean equals and val/ does not, so its runs must set
+        multimodal.token_set: clean (the held-out rows then come from val_clean).
+    """
+    if not raw:
+        raise ValueError("TERRAMESH_TRAIN_TOK_ROOT is unset: a multimodal.split: train run needs the "
+                         "consolidated train root (eo/scripts/tokenize_train.py consolidate)")
+    root = Path(raw)
+    b = root / "build.json"
+    if not b.is_file():
+        raise FileNotFoundError(f"{b} missing: {root} is not a consolidated train root")
+    build = json.loads(b.read_text())
+    if build.get("split") != "train":
+        raise RuntimeError(f"{b} records split {build.get('split')!r}, not 'train'")
+    if build.get("offset_free") is not True:
+        raise RuntimeError(f"{b}: the S2 offset scan (C3) did not pass; this root may carry the offset")
+    if build.get("partial") and not allow_partial:
+        raise RuntimeError(f"{b}: a PARTIAL root ({build.get('shards')} of {len(canonical_shards())} shards); "
+                           f"set multimodal.allow_partial_train_root only for a smoke run")
+    if token_set != "clean":
+        raise ValueError(f"multimodal.token_set={token_set!r} with split train: the train split is the fixed "
+                         f"upstream version, so its held-out rows must come from val_clean (token_set: clean)")
+    return root
+
+
 # ----------------------------------------------------------------- plan
 def build_plan(out: Path, meta_path: Path, listing_path: Path, majortom_meta: Path,
                revision: str, seed: int) -> dict:
@@ -586,11 +618,12 @@ def consolidate(out: Path, val_root: Path, allow_partial: bool = False, dest: Pa
         atomic_npy(tokens, d / "tokens.npy")
         atomic_npy(present, d / "present.npy")
         tmpl = json.loads((Path(val_root) / C.tok_dir_name(mod) / "metadata.json").read_text())
-        tm = [recs[s]["tokens"][mod] for s in used]
+        tm = [recs[s]["tokens"][mod] for s in used]   # empty: e.g. S1GRD in a partial majortom-only root
         meta = {**tmpl,
                 "split": "train", "n_samples_total_rows": n, "n_samples_present": int(present.sum()),
                 "n_nan_total": int(n_nan), "shards": used,
-                "token_min": min(t["min"] for t in tm), "token_max": max(t["max"] for t in tm),
+                "token_min": min(t["min"] for t in tm) if tm else None,
+                "token_max": max(t["max"] for t in tm) if tm else None,
                 "device": sorted({recs[s]["gpu"] for s in used}),
                 "contract_git_rev": sorted({recs[s]["code"] for s in used}),
                 "versions": sorted({json.dumps(recs[s]["versions"], sort_keys=True) for s in used}),

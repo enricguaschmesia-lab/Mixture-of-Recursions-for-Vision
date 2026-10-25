@@ -155,6 +155,39 @@ def _broken_config(tmp: Path, **overrides) -> Path:
     return out
 
 
+def _fake_train_root(d: Path, fault: str = "ok") -> Path:
+    """A 4-row train root (2 majortom, 2 ssl4eos12) with val's real metadata.json, and one fault."""
+    import numpy as np
+    import pandas as pd
+    from eo.terramesh_tok.contract import tok_dir_name
+    from eo.data.eo_vocab import DEFAULT_ACTIVE_MODALITIES
+    val = Path(GOOD_ENV["TERRAMESH_TOK_ROOT"])
+    n = 4
+    d.mkdir(parents=True)
+    pd.DataFrame({"row": range(n), "stem": [f"majortom_train_{i}" for i in (1, 2)] + [f"ssl4eos12_train_{i}" for i in (3, 4)],
+                  "source_shard": ["majortom_shard_000001.tar"] * 2 + ["ssl4eos12_shard_000001.tar"] * 2,
+                  "corpus": ["majortom"] * 2 + ["ssl4eos12"] * 2}).to_parquet(d / "tok_index.parquet", index=False)
+    for m in DEFAULT_ACTIVE_MODALITIES:
+        md = d / tok_dir_name(m)
+        md.mkdir()
+        rows = n - 1 if fault == "short" and m == "DEM" else n
+        np.save(md / "tokens.npy", np.zeros((rows, 3 if m == "Coords" else 196), dtype=np.uint16))
+        p = np.ones(rows, dtype=bool)
+        if m == "S1RTC":
+            p[2:] = fault == "s1"                  # S1RTC on majortom only (both rows when s1 is broken)
+        if m == "S1GRD":
+            p[:2] = False
+        np.save(md / "present.npy", p)
+        meta = json.loads((val / tok_dir_name(m) / "metadata.json").read_text())
+        if fault == "contract" and m == "NDVI":
+            meta["standardization"] = {**meta["standardization"], "mean": [0.0]}
+        (md / "metadata.json").write_text(json.dumps(meta))
+    if fault != "nobuild":
+        (d / "build.json").write_text(json.dumps({
+            "split": "train", "offset_free": fault != "notfree", "partial": fault == "partial", "shards": 2}))
+    return d
+
+
 def _mutated_split(tmp: Path, name: str, mutate) -> Path:
     """The committed split with one field sabotaged, written beside it."""
     import json
@@ -364,6 +397,25 @@ def main(argv=None) -> int:
     ]
     arm_cfg = REPO / "conf/pretrain_vision/eo_terramesh"
 
+    # --- the TRAIN split (2026-10-25): `multimodal.split: train` reads its own consolidated root,
+    # gated by its build.json, row-aligned, S1 split exactly, under val's contract. Fake 4-row
+    # roots (2 majortom + 2 ssl4eos12) with val's real metadata.json, then one fault each. ---
+    train_cfg = _broken_config(tmp, multimodal__split="train", multimodal__token_set="clean")
+    troots = {name: _fake_train_root(tmp / f"tr_{name}", fault=name) for name in (
+        "ok", "nobuild", "notfree", "partial", "s1", "contract", "short")}
+    tenv = {k: _env(TERRAMESH_TRAIN_TOK_ROOT=str(r)) for k, r in troots.items()}
+    cases += [
+        ("train root: TERRAMESH_TRAIN_TOK_ROOT unset", "train root", dict(env=GOOD_ENV, config=train_cfg)),
+        ("train root: no build.json (not built)",      "train root", dict(env=tenv["nobuild"], config=train_cfg)),
+        ("train root: offset scan did not pass",       "train root", dict(env=tenv["notfree"], config=train_cfg)),
+        ("train root: partial, not allowed",           "train root", dict(env=tenv["partial"], config=train_cfg)),
+        ("train root: paired with original val",       "train root",
+         dict(env=tenv["ok"], config=_broken_config(tmp, multimodal__split="train"))),
+        ("train root: S1RTC + S1GRD != rows",          "train root", dict(env=tenv["s1"], config=train_cfg)),
+        ("train root: another tokenizer contract",     "train root", dict(env=tenv["contract"], config=train_cfg)),
+        ("train root: arrays shorter than the index",  "train root", dict(env=tenv["short"], config=train_cfg)),
+    ]
+
     # --- Phase 6: a BEN fine-tune starts from an EXTENDED checkpoint whose identity check
     # passed, and reads BEN tokens that exist for every row it uses (2026-10-12). Fake
     # extension dirs symlink the real weights and doctor extension.json; skipped (and said
@@ -462,6 +514,12 @@ def main(argv=None) -> int:
         (f"a100: {name} under the RCP root", name, rcp_base) for name in ("MOR_SAVE_DIR", "HF_HOME", "W&B")
     ] + [
         ("token set: clean resolves to val_clean", "token set", _results(env=GOOD_ENV, config=clean_cfg)),
+        ("train root: a good root passes",         "train root", _results(env=tenv["ok"], config=train_cfg)),
+        ("train root: partial, allowed (smoke)",   "train root",
+         _results(env=tenv["partial"], config=_broken_config(
+             tmp, multimodal__split="train", multimodal__token_set="clean",
+             multimodal__allow_partial_train_root=True))),
+        ("train root: n/a for a split-val run",    "train root", _results(env=GOOD_ENV)),
     ] + [
         ("--gpus 2, two cards visible",          "visible devices",   _results(env=rcp2, n_gpus=2, **on_a100)),
         ("--gpus 2 on a100 pretraining",         "multi-gpu",         _results(env=rcp2, n_gpus=2, **on_a100)),

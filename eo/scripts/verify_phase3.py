@@ -34,6 +34,9 @@ unverified deliverable:
   W15 Step 4 controls one key each        [next steps, Step 4] A10cR has no
                                                     router; B10c-11L matches A10c's
                                                     non-embedding parameters
+  W16 T360 changes only size/data/budget [train split, 2026-10-25] 2 epochs,
+                                                    398.69 M parameters, and the key
+                                                    reaches the data (TERRAMESH_TRAIN_TOK_ROOT)
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -648,6 +651,19 @@ CONTROL_DIFFS = {ARM_A10CR: (ARM_A10C, {"mor.rand_router"}),
                  ARM_A10CS2: (ARM_A10C, {"seed"})}
 #: B10c-11L must match A10c's non-embedding parameters this closely (measured -1.7%).
 PARAM_MATCH_TOL = 0.03
+
+#: T360 (2026-10-25): B10c's recipe at the SmolLM-360M shape on the TRAIN split, batch 1024.
+ARM_T360 = "eo_terramesh/arm_t360_vanilla"
+T360_DIFF_KEYS = {
+    "model_config.hidden_size", "model_config.intermediate_size", "model_config.num_hidden_layers",
+    "model_config.num_attention_heads", "model_config.num_key_value_heads", "multimodal.split",
+    "total_batch_size", "per_device_train_batch_size", "per_device_eval_batch_size",
+    "num_train_steps", "stop_steps", "num_warmup_steps", "lr_scheduler_kwargs.num_decay_steps",
+    "save_steps", "eval_steps",
+}
+#: Measured 2026-10-20 (bench360): 398,688,960 parameters, 314.64 M of them non-embedding.
+T360_NONEMB = 314.64e6
+N_TRAIN_ROWS = 8_929_841          # train_metadata.parquet, TerraMesh rev 01f5f9d8
 
 #: The plan's A10/B10 schedule (Step 11.1), in optimizer steps.
 A10_TOTAL, A10_WARMUP_END, A10_DECAY_START = 3300, 165, 2970
@@ -1472,6 +1488,74 @@ def w15_step4_controls() -> bool:
     return bool(ok and c1 and c2 and c3)
 
 
+def w16_t360() -> bool:
+    """T360 differs from B10c in exactly its size, data split and budget; it is 2 epochs of the
+    train split at a 5% warmup and 10% decay; it builds at 314.64 M non-embedding parameters; and
+    the split key reaches the data: train batches come from TERRAMESH_TRAIN_TOK_ROOT, held-out
+    batches from val_clean's 4,416 rows. The data half needs a train root and is skipped (and
+    says so) without one."""
+    import os
+    from lm_dataset.load_dataset import load_dataset_from_config, load_eval_dataset_from_config
+
+    diff = _arm_diff(_compose(ARM_B10C), _compose(ARM_T360))
+    d_ok = diff == T360_DIFF_KEYS
+    print(f"    {ARM_T360} vs {ARM_B10C}: differs in exactly the {len(T360_DIFF_KEYS)} intended keys = {d_ok}")
+    if not d_ok:
+        print(f"      measured extra {sorted(diff - T360_DIFF_KEYS)}, missing {sorted(T360_DIFF_KEYS - diff)}")
+    c = _compose(ARM_T360)
+    s_ok = _t360_schedule_ok(c)
+    print(f"    {c.num_train_steps} steps x {c.total_batch_size} = "
+          f"{c.num_train_steps * c.total_batch_size / N_TRAIN_ROWS:.5f} epochs, warmup {c.num_warmup_steps} "
+          f"(5%), decay {c.lr_scheduler_kwargs.num_decay_steps} (10%), divides 2 GPUs = {s_ok}")
+    ne, _ = _model_stats(ARM_T360)
+    p_ok = abs(ne / T360_NONEMB - 1) < 1e-3
+    print(f"    non-embedding {ne / 1e6:.2f} M (want {T360_NONEMB / 1e6:.2f} M) = {p_ok}")
+    ok = d_ok and s_ok and p_ok
+
+    root = os.environ.get("TERRAMESH_TRAIN_TOK_ROOT")
+    if root:
+        cp = _compose(ARM_T360, ["++multimodal.allow_partial_train_root=true"])
+        tr, ev = load_dataset_from_config(cp), load_eval_dataset_from_config(cp)
+        import pandas as pd
+        n_root = len(pd.read_parquet(Path(root) / "tok_index.parquet", columns=["row"]))
+        data_ok = (Path(tr.root_dir) == Path(root) and len(tr) == n_root
+                   and Path(ev.root_dir).name == "val_clean" and len(ev) == 4416)
+        x = tr[0]
+        shape_ok = tuple(x["input_ids"].shape) == (int(cp.max_length),)
+        print(f"    train reads {tr.root_dir} ({len(tr)} rows), eval reads {Path(ev.root_dir).name}/ "
+              f"({len(ev)} rows), a train sequence is {tuple(x['input_ids'].shape)} = {data_ok and shape_ok}")
+        # CONTROL: with split val the same config trains on val_clean's complement instead.
+        cv = _compose(ARM_T360, ["multimodal.split=val"])
+        trv = load_dataset_from_config(cv)
+        c0 = Path(trv.root_dir).name == "val_clean" and len(trv) == 84672
+        print(f"    control: split val trains on val_clean's 84,672 rows instead   = {c0}")
+        ok &= data_ok and shape_ok and c0
+    else:
+        print("    data half SKIPPED: TERRAMESH_TRAIN_TOK_ROOT is unset (no train root on this machine)")
+
+    # CONTROL 1: a stray key in the overlay must be caught.
+    c1 = _arm_diff(_compose(ARM_B10C), _compose(ARM_T360, ["learning_rate=0.001"])) != T360_DIFF_KEYS
+    print(f"    control: a stray learning_rate in T360 is caught          = {c1}")
+    # CONTROL 2: the parameter check must reject a 31-layer model.
+    ne31, _ = _model_stats(ARM_T360, ["model_config.num_hidden_layers=31"])
+    c2 = abs(ne31 / T360_NONEMB - 1) >= 1e-3
+    print(f"    control: 31 layers ({ne31 / 1e6:.2f} M) fails the parameter check = {c2}")
+    # CONTROL 3: the schedule check must reject a warmup that is not 5%.
+    c3 = not _t360_schedule_ok(_compose(ARM_T360, ["num_warmup_steps=1000"]))
+    print(f"    control: a 1,000-step warmup fails the schedule check      = {c3}")
+    return bool(ok and c1 and c2 and c3)
+
+
+def _t360_schedule_ok(c) -> bool:
+    """2 epochs of the train split, warmup 5%, decay 10%, batches that split over 2 GPUs."""
+    steps, bs = int(c.num_train_steps), int(c.total_batch_size)
+    return bool(int(c.stop_steps) == steps and abs(steps * bs / N_TRAIN_ROWS - 2) < 1e-3
+                and int(c.num_warmup_steps) == round(0.05 * steps)
+                and int(c.lr_scheduler_kwargs.num_decay_steps) == round(0.10 * steps)
+                and bs % (int(c.per_device_train_batch_size) * 2) == 0
+                and 4416 % (int(c.per_device_eval_batch_size) * 2) == 0)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1492,6 +1576,7 @@ def main() -> int:
         ("W13  build_prompt(sources=None) is unchanged [Step 12.5]", w13_build_prompt_sources),
         ("W14  B10c/A10c change only the token set   [next steps, Step 2]", w14_clean_arms),
         ("W15  Step 4 controls: one key each, as claimed [next steps, Step 4]", w15_step4_controls),
+        ("W16  T360 changes only size, data and budget [train split]", w16_t360),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]

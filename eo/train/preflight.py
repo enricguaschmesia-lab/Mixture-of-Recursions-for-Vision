@@ -43,6 +43,7 @@ Usage (normally via eo/scripts/train_eo.sh, which sets the environment first):
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -562,6 +563,76 @@ def check_token_set(ctx: PreflightContext) -> CheckResult:
     return CheckResult("token set", True, f"{token_set} -> {root}")
 
 
+#: metadata.json fields that must agree between a train root and val's: the same tokenizer,
+#: crop, grid, standardization and LULC encoding, i.e. the same contract.
+CONTRACT_FIELDS = ("tokenizer", "codebook_size", "crop", "tokens_per_sample", "flatten_order",
+                   "standardization", "lulc_one_hot", "nan_policy")
+
+
+def check_train_root(ctx: PreflightContext) -> CheckResult:
+    """`multimodal.split: train` reads its own consolidated root (2026-10-25).
+
+    The dataloader resolves it too (train_split.resolve_train_root), but only after the model is
+    built. This also checks what that cannot: every active modality is row-aligned with the
+    index, S1RTC and S1GRD split the rows exactly, and each artifact records val's contract
+    (tokenizer, crop, standardization...), so train and held-out tokens come from one tokenizer.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("train root", True, "skipped (config missing; check_config reports it)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    mm = cfg.get("multimodal") or {}
+    if cfg.get("dataset") == "ben_multimodal" or mm.get("split", "val") != "train":
+        return CheckResult("train root", True, "n/a: this run trains on the val split's complement")
+    import numpy as np
+    import pandas as pd
+    from eo.terramesh_tok.clean import resolve_token_root
+    from eo.terramesh_tok.contract import tok_dir_name
+    from eo.terramesh_tok.train_split import resolve_train_root
+    from eo.data.eo_vocab import DEFAULT_ACTIVE_MODALITIES
+    token_set = mm.get("token_set", "original")
+    try:
+        root = resolve_train_root(ctx.env.get("TERRAMESH_TRAIN_TOK_ROOT"), token_set,
+                                  allow_partial=bool(mm.get("allow_partial_train_root", False)))
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        return CheckResult("train root", False, str(e).splitlines()[0])
+    if not (root / "tok_index.parquet").is_file():
+        return CheckResult("train root", False, f"{root}/tok_index.parquet missing")
+    n = len(pd.read_parquet(root / "tok_index.parquet", columns=["row"]))
+    present = {}
+    for m in DEFAULT_ACTIVE_MODALITIES:
+        d = root / tok_dir_name(m)
+        if not all((d / f).is_file() for f in ("tokens.npy", "present.npy", "metadata.json")):
+            return CheckResult("train root", False, f"{d}: tokens/present/metadata missing")
+        t, p = np.load(d / "tokens.npy", mmap_mode="r"), np.load(d / "present.npy", mmap_mode="r")
+        if t.shape[0] != n or p.shape[0] != n:
+            return CheckResult("train root", False, f"{m}: {t.shape[0]} token rows / {p.shape[0]} "
+                                                    f"presence rows for an index of {n}")
+        present[m] = int(p.sum())
+    s1 = present.get("S1RTC", 0) + present.get("S1GRD", 0)
+    partial_mods = [m for m in DEFAULT_ACTIVE_MODALITIES if m not in ("S1RTC", "S1GRD") and present[m] != n]
+    if s1 != n or partial_mods:
+        return CheckResult("train root", False,
+                           f"presence: S1RTC {present.get('S1RTC')} + S1GRD {present.get('S1GRD')} = {s1} "
+                           f"for {n} rows; not every row in {partial_mods}")
+    val = ctx.env.get("TERRAMESH_TOK_ROOT")
+    if val:
+        try:
+            vroot = resolve_token_root(val, token_set)
+        except (ValueError, FileNotFoundError, RuntimeError) as e:
+            return CheckResult("train root", False, f"val root for the contract check: {e}")
+        for m in DEFAULT_ACTIVE_MODALITIES:
+            if m == "Coords":
+                continue
+            a = json.loads((root / tok_dir_name(m) / "metadata.json").read_text())
+            b = json.loads((vroot / tok_dir_name(m) / "metadata.json").read_text())
+            bad = [k for k in CONTRACT_FIELDS if a.get(k) != b.get(k)]
+            if bad:
+                return CheckResult("train root", False, f"{m}: {bad} differ from {vroot}",
+                                   "The train tokens must come from val's tokenizer contract.")
+    return CheckResult("train root", True, f"{root}: {n} rows (S1RTC {present.get('S1RTC')} / "
+                                           f"S1GRD {present.get('S1GRD')}), val's contract")
+
+
 def check_ben_data(ctx: PreflightContext) -> CheckResult:
     """A BEN fine-tune's data exists, is labelled, and was tokenized for every row it reads.
 
@@ -989,6 +1060,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_batch_division,
     check_eval_split,
     check_token_set,
+    check_train_root,
     check_ben_data,
     check_init_from,
     check_gpu_free_memory,

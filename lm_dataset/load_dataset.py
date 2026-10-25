@@ -62,6 +62,24 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
     from eo.terramesh_tok.clean import resolve_token_root
 
     token_set = mm_cfg.get("token_set", "original")
+    if want == "train" and mm_cfg.get("split", "val") == "train":
+        # The TRAIN split (2026-10-25): every row of its own consolidated root, from
+        # TERRAMESH_TRAIN_TOK_ROOT. Evaluation stays on val's held-out rows (want="eval"
+        # takes the path below), so train and eval never share a root or a row.
+        from eo.terramesh_tok.train_split import resolve_train_root
+        root_dir = str(resolve_train_root(os.environ.get("TERRAMESH_TRAIN_TOK_ROOT"), token_set,
+                                          allow_partial=bool(mm_cfg.get("allow_partial_train_root", False))))
+        print(f"TerraMesh train split: {root_dir} (train, every row)")
+        return TerraMeshTokenDataset(
+            root_dir=root_dir,
+            split="train",
+            active_modalities=mm_cfg.get("active_modalities", None),
+            max_length=cfg.max_length,
+            modality_order=mm_cfg.get("modality_order", "fixed"),
+            seed=cfg.get("seed", 42),
+            shuffle_image_patches=mm_cfg.get("shuffle_image_patches", False),
+            rows=None,
+        )
     root_dir = str(resolve_token_root(root_dir, token_set))
     print(f"TerraMesh token set: {token_set} -> {root_dir} ({want})")
 
@@ -86,7 +104,7 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
 
     return TerraMeshTokenDataset(
         root_dir=root_dir,
-        split=mm_cfg.get("split", "val"),
+        split="val",                   # this path always reads val's root (a train run's eval too)
         active_modalities=mm_cfg.get("active_modalities", None),
         max_length=cfg.max_length,
         modality_order=mm_cfg.get("modality_order", "fixed"),
