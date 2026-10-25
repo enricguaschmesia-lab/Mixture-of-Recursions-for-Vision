@@ -396,6 +396,7 @@ class Batcher:
         n = len(self.buf)
         b = np.stack(self.buf + [self.buf[-1]] * (BATCH - n))   # tail padding: the contract's shape
         t = time.time()
+        assert_strict_fp32()
         x, n_nan = gpu_prepare(b, self.mod, self.device)
         f = P.flatten_tokens(T.encode(self.tok, x)).cpu().numpy()[:n]
         if self.device.startswith("cuda"):
@@ -464,13 +465,34 @@ def encode_shard(root: Path, shard: str, toks: dict, device: str, expect: list[s
 
 def load_tokenizers(device: str, mods=OUT_MODS) -> dict:
     from . import tokenizers as T
-    return {m: T.build(m, device) for m in mods}
+    toks = {m: T.build(m, device) for m in mods}
+    strict_fp32()        # AFTER the build: importing terratorch lowers the matmul precision
+    return toks
+
+
+def strict_fp32() -> None:
+    """The contract is full fp32. ⚠ Importing terratorch runs
+    torch.set_float32_matmul_precision("medium") (terratorch/models/backbones/clay_v15/model.py),
+    which lets an A100 run fp32 matmuls in reduced precision: measured 2026-10-25, 0.4-4.9% of
+    tokens flipped against val_clean. No effect on the TITAN V / Titan X, which have no TF32.
+    So this is re-applied after every tokenizer build and asserted before every batch."""
+    import torch
+    torch.set_float32_matmul_precision("highest")
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+
+def assert_strict_fp32() -> None:
+    import torch
+    if (torch.get_float32_matmul_precision() != "highest" or torch.backends.cuda.matmul.allow_tf32
+            or torch.backends.cudnn.allow_tf32):
+        raise RuntimeError(f"fp32 is not strict: matmul precision {torch.get_float32_matmul_precision()!r}, "
+                           f"tf32 matmul {torch.backends.cuda.matmul.allow_tf32}, cudnn {torch.backends.cudnn.allow_tf32}")
 
 
 def setup_gpu(expect_gpu: str | None) -> str:
     import torch
-    torch.backends.cuda.matmul.allow_tf32 = False      # the contract is fp32 (TF32 would flip
-    torch.backends.cudnn.allow_tf32 = False            # bins on an A100; no effect on Volta)
+    strict_fp32()
     name = torch.cuda.get_device_name(0)
     if expect_gpu and expect_gpu not in name:
         raise SystemExit(f"cuda:0 is {name!r}, expected {expect_gpu!r}")
