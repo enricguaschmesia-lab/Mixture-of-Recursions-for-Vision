@@ -237,12 +237,61 @@ def build_plan(out: Path, meta_path: Path, listing_path: Path, majortom_meta: Pa
 
 
 # ----------------------------------------------------------------- download
-def _fetch(url: str, dest: Path, size: int, sha: str, tries: int = 6) -> str:
-    """Stream url to dest, verifying size and sha256 on the fly. Returns the sha256."""
+def _get_range(url: str, lo: int, hi: int, tries: int = 6) -> bytes:
+    """Bytes lo..hi (inclusive) of url, by an HTTP Range request (HF's CDN answers 206)."""
+    for k in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"Range": f"bytes={lo}-{hi}"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data = r.read()
+                if r.status != 206 or len(data) != hi - lo + 1:
+                    raise IOError(f"range {lo}-{hi}: status {r.status}, {len(data)} B")
+            return data
+        except Exception as e:                      # noqa: BLE001 -- retried, then re-raised
+            if k == tries - 1:
+                raise
+            time.sleep(5 * 2 ** k)
+    raise AssertionError("unreachable")
+
+
+def _fetch(url: str, dest: Path, size: int, sha: str, tries: int = 6,
+           conns: int = 1, chunk: int = 32 << 20) -> str:
+    """Download url to dest, verifying size and sha256 on the fly. Returns the sha256.
+
+    conns > 1 splits the file into `chunk`-sized HTTP Range requests, `conns` at a time. RCP's
+    link to HF is throttled PER CONNECTION (measured 2026-10-25: ~6-17 MB/s each; 16 ranged
+    connections 160 MB/s). Chunks are written and hashed in order through a window of
+    2 x conns, so nothing is re-read and memory stays bounded."""
     if dest.exists() and dest.stat().st_size == size and sha256_file(dest) == sha:
         return sha
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
+    if conns > 1 and size > chunk:
+        from collections import deque
+        from itertools import islice
+        for k in range(tries):
+            try:
+                h = hashlib.sha256()
+                ranges = iter([(o, min(o + chunk, size) - 1) for o in range(0, size, chunk)])
+                with ThreadPoolExecutor(conns) as ex, open(part, "wb") as fh:
+                    window = deque(ex.submit(_get_range, url, lo, hi) for lo, hi in islice(ranges, 2 * conns))
+                    while window:
+                        data = window.popleft().result()
+                        fh.write(data)
+                        h.update(data)
+                        nxt = next(ranges, None)
+                        if nxt is not None:
+                            window.append(ex.submit(_get_range, url, *nxt))
+                if part.stat().st_size != size or h.hexdigest() != sha:
+                    raise IOError(f"{dest.name}: got {part.stat().st_size} B sha {h.hexdigest()[:12]}, "
+                                  f"want {size} B sha {sha[:12]}")
+                os.replace(part, dest)
+                return sha
+            except Exception as e:                  # noqa: BLE001 -- retried, then re-raised
+                if k == tries - 1:
+                    raise
+                print(f"  retry {k + 1}/{tries - 1} {dest.parent.name}/{dest.name}: {e}", flush=True)
+                time.sleep(10 * 2 ** k)
     for k in range(tries):
         try:
             h, n = hashlib.sha256(), 0
@@ -265,7 +314,8 @@ def _fetch(url: str, dest: Path, size: int, sha: str, tries: int = 6) -> str:
 
 
 def download_loop(out: Path, work: Path, positions: list[int], revision: str,
-                  listing_path: Path, ahead: int = 4, streams: int = 8, poll: float = 20.0) -> None:
+                  listing_path: Path, ahead: int = 4, streams: int = 8, poll: float = 20.0,
+                  conns: int = 1) -> None:
     """Keep up to `ahead` shards downloaded and verified ahead of the encoder, in order."""
     out, work = Path(out), Path(work)
     order = load_order(out)
@@ -291,7 +341,7 @@ def download_loop(out: Path, work: Path, positions: list[int], revision: str,
             if is_done(out, sh) or ready_path(work, sh).exists():
                 continue
             inflight[sh] = [(m, pool.submit(_fetch, f"{base}/{m}/{sh}", work / m / sh,
-                                            files[m][sh]["size"], files[m][sh]["sha256"]))
+                                            files[m][sh]["size"], files[m][sh]["sha256"], conns=conns))
                             for m in raw_mods(sh)]
         if not inflight:
             if todo:

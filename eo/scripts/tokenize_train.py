@@ -46,7 +46,8 @@ def main() -> int:
             p.add_argument("--revision", required=True)
             p.add_argument("--listing", type=Path, default=TM / "train_meta/hf_train_listing.json")
             p.add_argument("--ahead", type=int, default=4)
-            p.add_argument("--streams", type=int, default=8)
+            p.add_argument("--streams", type=int, default=8, help="files downloaded at once")
+            p.add_argument("--conns", type=int, default=1, help="ranged connections per file (RCP: 16)")
         else:
             p.add_argument("--device", default="cuda:0")
             p.add_argument("--expect-gpu", default=None)
@@ -79,7 +80,7 @@ def main() -> int:
         print(json.dumps(TS.build_plan(a.out, a.meta, a.listing, a.majortom_meta, a.revision, a.seed), indent=1))
     elif a.cmd == "download":
         TS.download_loop(a.out, a.work, TS.parse_positions(a.positions, 894), a.revision, a.listing,
-                         ahead=a.ahead, streams=a.streams, poll=a.poll)
+                         ahead=a.ahead, streams=a.streams, poll=a.poll, conns=a.conns)
     elif a.cmd == "encode":
         i, n = (int(x) for x in a.worker.split("/"))
         TS.encode_loop(a.out, a.work, TS.parse_positions(a.positions, 894)[i::n], device=a.device,
