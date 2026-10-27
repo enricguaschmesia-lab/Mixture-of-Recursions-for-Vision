@@ -131,8 +131,12 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None) ->
                 TF.install_override(model, "router")
             if rf is not None:
                 rf.reseed(0)                       # each cell reproducible on its own (resume)
+            # The batch size only moves fp16 kernel choice (and, under --force-depth, which gate draw
+            # lands on which token): trim_collate cuts each batch to its longest row. 16 runs a cell
+            # 2.1-2.6x faster (2026-10-27, TITAN V); the "all" row keeps 4, as its P3 reference.
+            bs = 4 if S == "all" else args.grid_batch_size
             dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T, sources=sources),
-                                             batch_size=4, num_workers=args.num_workers,
+                                             batch_size=bs, num_workers=args.num_workers,
                                              collate_fn=collate)
             res = TF.run_pass(model, dl, override=ov, keep_tokens=False, per_row_target=T)
             pr = res["rows"]
@@ -143,7 +147,7 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None) ->
                     "top1": res["per_modality"][T]["top1"],
                     "top5": res["per_modality"][T]["top5"],
                     "n_tokens": res["per_modality"][T]["n_tokens"],
-                    "trimmed": collate is not None,
+                    "trimmed": collate is not None, "batch_size": bs,
                     "seconds": round(time.perf_counter() - t0, 1)}
             arrays[f"{key}|rows"] = np.asarray(rows)
             arrays[f"{key}|n"] = pr["n"]
@@ -207,6 +211,8 @@ def main() -> int:
                     help="also run Step 12's source x target grid (grid.json, grid_rows.npz)")
     ap.add_argument("--grid-all-others", action="store_true",
                     help="add the grid's 'all' row (sources=None, untrimmed): the P3 check")
+    ap.add_argument("--grid-batch-size", type=int, default=4,
+                    help="batch size of the grid's trimmed cells (default 4, as every grid before 2026-10-27)")
     ap.add_argument("--force-depth", type=int, default=None,
                     help="random-router arms: every token at this many passes (the depth sweep)")
     args = ap.parse_args()
