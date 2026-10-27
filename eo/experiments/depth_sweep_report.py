@@ -393,6 +393,7 @@ def fig_gain_over_training(U, V, metric="top1"):
                  for mk, spec in MODELS.items()]
         lines.append(("b10c", "b10c11", "b10c", "vanilla 29 minus 11 layers", "s", (0, (5, 3)),
                       lambda ck: V.get(("b10c", ck)), lambda ck: V.get(("b10c11", ck))))
+        mor_vals, van = [], ([], [])
         for col, ta, tb, label, mark, ls, hi, lo in lines:
             xs, ys, band = [], [], []
             for ck in CKS:
@@ -405,6 +406,22 @@ def fig_gain_over_training(U, V, metric="top1"):
             if band:
                 ax.fill_between(xs, [b[0] for b in band], [b[1] for b in band], color=MCOL[col], alpha=0.14, lw=0)
             ax.plot(xs, ys, color=MCOL[col], marker=mark, ls=ls, label=label)
+            if col in MODELS:
+                mor_vals += ys + [b[0] for b in band] + [b[1] for b in band]
+            else:
+                van = (xs, ys)
+        # The vanilla gap starts far below (more layers train slower at first) and would squash the
+        # MoR lines: its points under the floor are clipped and labelled at the bottom edge.
+        if mor_vals and van[1]:
+            lo_, hi_ = min(mor_vals + [0]), max(mor_vals + [0])
+            floor = lo_ - 0.6 * (hi_ - lo_)
+            if min(van[1]) < floor:
+                ax.set_ylim(bottom=floor)
+                for x, y in zip(*van):
+                    if y < floor:
+                        ax.scatter([x], [floor], marker="v", s=60, color=MCOL["b10c"], clip_on=False, zorder=5)
+                        ax.annotate(f"{y:+.2f}" if metric == "top1" else f"{y:+.3f}", (x, floor), xytext=(0, 7),
+                                    textcoords="offset points", ha="center", fontsize=12, color=MCOL["b10c"])
         ax.set_xticks(range(1, 11))
         ax.set_xlabel("epoch")
         ax.set_title(VIEWS[view])
@@ -413,7 +430,8 @@ def fig_gain_over_training(U, V, metric="top1"):
             ax.set_ylabel("top-1 gain (pp)")
         else:
             ax.set_ylabel("CE gain (nats)")
-    axs[0].legend(loc="best", fontsize=14)
+    h, l = axs[0].get_legend_handles_labels()
+    fig.legend(h, l, loc="lower center", ncol=len(h), fontsize=15, bbox_to_anchor=(0.5, 1.0))
     fig.tight_layout(w_pad=2.5)
     save(fig, f"gain_over_training_{metric}.png")
 
@@ -485,7 +503,7 @@ def fig_flips(U, ck=CKS[-1]):
     mks = [mk for mk in MODELS if all((mk, d, ck) in U for d in MODELS[mk]["depths"])]
     if not mks:
         return
-    fig, axs = plt.subplots(1, len(mks), figsize=(8.5 * len(mks), 5.6), squeeze=False)
+    fig, axs = plt.subplots(1, len(mks), figsize=(8.5 * len(mks), 5.6), squeeze=False, sharey=True)
     for ax, mk in zip(axs[0], mks):
         spec = MODELS[mk]
         z1 = np.load(ARM / f"{mk}_force1" / f"checkpoint-{ck}" / "tokens_router.npz")
