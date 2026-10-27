@@ -44,6 +44,9 @@ target-last, grid), D above the trained Nr included (TF.install_random_depth).
 One D per --arm-tag directory: metrics.json records it, and a directory
 holding another D is refused. Every pass checks that the depth it captured is
 D at every position, and fails otherwise.
+--gate-seed S (default 0, every sweep unit) seeds the forced run's random gate
+draws; another S at the same D measures how much the draw alone moves a result.
+A directory holding another S is refused.
 
 Arm B works unchanged: it has no router, so it gets the accuracy metrics and
 no depth, and any --modes other than `router` are refused for it.
@@ -130,7 +133,7 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None) ->
             if ov is not None:
                 TF.install_override(model, "router")
             if rf is not None:
-                rf.reseed(0)                       # each cell reproducible on its own (resume)
+                rf.reseed(args.gate_seed)          # each cell reproducible on its own (resume)
             # The batch size only moves fp16 kernel choice (and, under --force-depth, which gate draw
             # lands on which token): trim_collate cuts each batch to its longest row. 16 runs a cell
             # 2.1-2.6x faster (2026-10-27, TITAN V); the "all" row keeps 4, as its P3 reference.
@@ -215,7 +218,12 @@ def main() -> int:
                     help="batch size of the grid's trimmed cells (default 4, as every grid before 2026-10-27)")
     ap.add_argument("--force-depth", type=int, default=None,
                     help="random-router arms: every token at this many passes (the depth sweep)")
+    ap.add_argument("--gate-seed", type=int, default=0,
+                    help="with --force-depth: the seed of the random gate draws (0 for every sweep unit; "
+                         "another seed at the same depth measures how much the draw alone moves results)")
     args = ap.parse_args()
+    if args.gate_seed != 0 and args.force_depth is None:
+        raise SystemExit("--gate-seed applies only with --force-depth")
 
     if torch.cuda.device_count() != 1:
         raise SystemExit("pin exactly one GPU: CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=...")
@@ -228,6 +236,13 @@ def main() -> int:
         out.mkdir(parents=True, exist_ok=True)
         mpath = out / "metrics.json"
         doc = json.loads(mpath.read_text()) if mpath.exists() else {}
+        # Before the skip: a finished directory of another depth or gate draw must not pass as this run.
+        if doc and doc.get("force_depth") != args.force_depth:
+            raise SystemExit(f"{out} holds force_depth={doc.get('force_depth')!r} results; "
+                             f"this run forces {args.force_depth!r}. Use another --arm-tag.")
+        if doc and args.force_depth is not None and doc.get("gate_seed", 0) != args.gate_seed:
+            raise SystemExit(f"{out} holds gate_seed={doc.get('gate_seed', 0)!r} results; "
+                             f"this run draws with {args.gate_seed!r}. Use another --arm-tag.")
         todo = [m for m in modes if m not in doc.get("modes", {})]
         need_tl = "target_last" not in doc
         # ⚠ A checkpoint with every mode and target_last done must still run a
@@ -260,9 +275,6 @@ def main() -> int:
         if doc and doc.get("token_set", "original") != token_set:
             raise SystemExit(f"{out} holds token_set={doc.get('token_set', 'original')!r} results; "
                              f"this config reads {token_set!r}. Use another --arm-tag.")
-        if doc and doc.get("force_depth") != args.force_depth:
-            raise SystemExit(f"{out} holds force_depth={doc.get('force_depth')!r} results; "
-                             f"this run forces {args.force_depth!r}. Use another --arm-tag.")
         ds, loader = TF.eval_loader(cfg, num_workers=args.num_workers)
         doc.update({"arm_tag": args.arm_tag, "arm_config": args.arm_config, "checkpoint": ck,
                     "token_set": token_set, "token_root": str(ds.root_dir),
@@ -272,6 +284,7 @@ def main() -> int:
                     "logged_eval": logged_eval(run_dir, step) if ck != "untrained" else None})
         if rf is not None:
             doc["trained_recursions"] = rf.n_trained
+            doc["gate_seed"] = args.gate_seed
         doc.setdefault("modes", {})
 
         for mode in todo:
@@ -279,7 +292,7 @@ def main() -> int:
             if ov is not None:
                 TF.install_override(model, mode, seed=0)
             if rf is not None:
-                rf.reseed(0)
+                rf.reseed(args.gate_seed)
             res = TF.run_pass(model, loader, override=ov)
             tok = res.pop("tokens")
             if rf is not None and not (tok["depth"] == args.force_depth).all():
@@ -316,7 +329,7 @@ def main() -> int:
                 dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T), batch_size=4,
                                                  num_workers=args.num_workers)
                 if rf is not None:
-                    rf.reseed(0)
+                    rf.reseed(args.gate_seed)
                 res = TF.run_pass(model, dl, override=ov, keep_tokens=ov is not None or rf is not None)
                 r = {"n_rows": len(rows), **res["per_modality"][T]}
                 if ov is not None or rf is not None:
