@@ -25,6 +25,8 @@ raises; each one produces a run that trains happily and is worthless:
   * a non-empty run directory  -- silently overwrites a previous arm
   * vocab_size drift           -- indexes past the embedding table, or carries
                                   dead rows and a wrong ln(V) loss baseline
+  * a CLEVR init that was not verified, or a stage 2 whose stage 1 moved the
+    body, never finished, or was not given at all       (clevr_init.py)
 
 They are cheap to check and expensive to discover on day three of a run, so the
 launcher checks all of them before `pretrain.py` is reached.
@@ -771,6 +773,53 @@ def check_init_from(ctx: PreflightContext) -> CheckResult:
                        f"controls fired, sha {doc['weights_sha256'][:10]}")
 
 
+def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
+    """A CLEVR-initialised run starts from a verified conversion, and its stage 2 from a stage 1
+    whose freeze held (eo/train/clevr_init.py, 2026-10-27).
+
+    Each failure here trains happily: an unverified or changed init; a stage 2 whose
+    `from_stage1` was forgotten (OmegaConf's `.get` reads the mandatory `???` as None, so it
+    would silently become "CLEVR body without stage 1"); a stage 2 from a stage 1 whose body
+    moved, or that never finished; and a resume whose run directory recorded another init
+    (stage 1 resumed as stage 2, or the CLEVR arm as its shuffled control).
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("pretrain init", True, "skipped (no config)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    block = cfg.get("pretrain_init")
+    if block is None:
+        return CheckResult("pretrain init", True, "n/a (no pretrain_init)")
+    from eo.train import clevr_init as CI
+    try:
+        plan = CI.read_block(block, env=ctx.env)
+        CI.check_arm(cfg)
+        vocab = (cfg.get("model_config") or {}).get("vocab_size")
+        if vocab is None:
+            raise ValueError("the config has no model_config.vocab_size")
+        doc = CI.verify_conversion(plan["conversion"], plan["variant"], int(vocab))
+        handoff = None
+        if plan["from_stage1"] is not None:
+            handoff = CI.check_handoff(plan["from_stage1"], plan["conversion"], plan["variant"], doc)
+        if ctx.resuming:
+            want = {"conversion_weights_sha256": doc["weights_sha256"], "variant": plan["variant"],
+                    "freeze_body": plan["freeze_body"],
+                    "from_stage1": None if plan["from_stage1"] is None else str(plan["from_stage1"])}
+            if CI.check_record(ctx.run_dir, want) is None:
+                raise RuntimeError(f"resuming, but {ctx.run_dir / CI.RECORD} is missing")
+    except (ValueError, RuntimeError, FileNotFoundError, KeyError) as e:
+        return CheckResult("pretrain init", False, str(e).splitlines()[0],
+                           "Stage 1: launch arm_b10c{v,s}_stage1 as it is. Stage 2: pass "
+                           "pretrain_init.from_stage1=<stage 1 run>/checkpoint-<last>.")
+    stage = ("stage 1 (body frozen)" if plan["freeze_body"] else
+             f"stage 2 from {plan['from_stage1'].parent.name}/{plan['from_stage1'].name}"
+             if plan["from_stage1"] else "no stage 1 (body trains from the conversion)")
+    detail = f"{plan['variant']}, {stage}, conversion sha {doc['weights_sha256'][:10]}"
+    if handoff:
+        detail += (f"; handoff: {handoff['body_tensors_identical']} body tensors identical, "
+                   f"table moved (max {handoff['table_max_abs_change']:.2g})")
+    return CheckResult("pretrain init", True, detail)
+
+
 def _load_config(path: Path, overrides: Optional[Dict[str, object]] = None) -> dict:
     """The config the RUN will actually see, with CLI overrides applied.
 
@@ -1063,6 +1112,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_train_root,
     check_ben_data,
     check_init_from,
+    check_pretrain_init,
     check_gpu_free_memory,
     check_resume_checkpoint,
     check_gpu_identity,      # last: the only one that touches CUDA

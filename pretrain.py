@@ -161,6 +161,16 @@ def main(cfg: DictConfig):
         finetune_report = init_from(model, cfg)
         print(f"finetune: {finetune_report}")
 
+    # CLEVR-initialised vanilla (2026-10-27): the CLEVR vanilla model's body under a fresh EO
+    # embedding table, converted and verified offline (eo/scripts/convert_clevr_init.py).
+    # Stage 1 freezes the body, here, before the Trainer builds its optimizer; stage 2 starts
+    # from stage 1's final checkpoint, handoff checked. Not a resume (eo/train/clevr_init.py).
+    pretrain_init_report = None
+    if cfg.get("pretrain_init") is not None:
+        from eo.train.clevr_init import pretrain_init
+        pretrain_init_report = pretrain_init(model, cfg)
+        print(f"pretrain_init: {pretrain_init_report}")
+
     print_trainable_parameters(model)
         
     report_to = []
@@ -271,6 +281,10 @@ def main(cfg: DictConfig):
         with open(os.path.join(train_args.output_dir, "finetune_init.json"), "w") as fh:
             json.dump(finetune_report, fh, indent=2)
         OmegaConf.save(cfg, os.path.join(train_args.output_dir, "finetune_config.yaml"))
+    if pretrain_init_report is not None and int(os.environ.get("RANK", "0")) == 0:
+        # Stage 2's handoff check reads stage 1's record; a resume must match its own.
+        from eo.train.clevr_init import write_record
+        write_record(train_args.output_dir, pretrain_init_report)
         
     if "mor" in cfg and cfg.mor.get("enable"):
         trainer = MoRTrainer(model=model, args=train_args, train_dataset=train_dataset,

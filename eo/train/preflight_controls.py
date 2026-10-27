@@ -108,6 +108,50 @@ def _fake_checkpoint(parent: Path, arm: str, *, drop: Tuple[str, ...] = (),
     return d
 
 
+def _fake_conversion(d: Path, variant: str = "clevr", drop_json: bool = False, **doc_over) -> Path:
+    """A CLEVR conversion in miniature: three tensors, and a conversion.json that passed.
+
+    Synthetic for the same reason as _fake_checkpoint. verify_conversion reads the record and
+    the weights' hash, and check_handoff compares tensors by name, so 4x2 tensors suffice.
+    """
+    import torch
+    from safetensors.torch import save_file
+    from eo.train.clevr_init import sha256
+    d.mkdir(parents=True)
+    g = torch.Generator().manual_seed(0)
+    save_file({"model.embed_tokens.weight": torch.randn(4, 2, generator=g) * 0.02,
+               "model.layers.0.mlp.down_proj.weight": torch.randn(2, 2, generator=g),
+               "model.norm.weight": torch.ones(2)}, str(d / "model.safetensors"))
+    doc = {"variant": variant, "vocab_size": 87556, "weights_file": "model.safetensors",
+           "weights_sha256": sha256(d / "model.safetensors"),
+           "checks": {"body_identity": {"passed": True}}, "controls": {"body_identity:shuffled_body": {"fired": True}}}
+    doc.update(doc_over)
+    if not drop_json:
+        (d / "conversion.json").write_text(json.dumps(doc))
+    return d
+
+
+def _fake_stage1(run: Path, conv: Path, *, step: int = 330, last: int = 330, move_body: bool = False,
+                 move_table: bool = True, record: Optional[dict] = None) -> Path:
+    """Stage 1's checkpoint in miniature, plus the run's pretrain_init.json (`record` overrides it)."""
+    from safetensors.torch import load_file, save_file
+    from eo.train.clevr_init import sha256
+    s = load_file(str(conv / "model.safetensors"))
+    if move_table:
+        s["model.embed_tokens.weight"] = s["model.embed_tokens.weight"] + 1e-3
+    if move_body:              # one ulp-scale step in one tensor: the comparison is bitwise
+        s["model.layers.0.mlp.down_proj.weight"] = s["model.layers.0.mlp.down_proj.weight"] * (1 + 1e-6)
+    ck = run / f"checkpoint-{step}"
+    ck.mkdir(parents=True)
+    save_file(s, str(ck / "model.safetensors"))
+    (ck / "trainer_state.json").write_text(json.dumps({"global_step": step, "max_steps": last}))
+    rec = {"conversion_weights_sha256": sha256(conv / "model.safetensors"), "variant": "clevr",
+           "freeze_body": True, "from_stage1": None}
+    rec.update(record or {})
+    (run / "pretrain_init.json").write_text(json.dumps(rec))
+    return ck
+
+
 def _results(env, *, run_dir: Optional[Path] = None, config: Optional[Path] = None,
              allow_existing: bool = False, resuming: bool = False,
              overrides: Optional[dict] = None, check_torch: bool = False,
@@ -482,6 +526,59 @@ def main(argv=None) -> int:
         print("\n(Phase 6 controls skipped: no extended checkpoint or BEN tokens on this machine)")
     cases += ben_cases
 
+    # --- the CLEVR-initialised vanilla (2026-10-27, eo/train/clevr_init.py). Each of these
+    # trains happily: an unverified init, a stage 2 whose from_stage1 was forgotten (the
+    # mandatory ??? reads as None through .get), a stage 2 from a stage 1 whose body moved
+    # or that never finished, a resume under another init. Miniature fakes throughout. ---
+    eo_cfg = REPO / "conf/pretrain_vision/eo_terramesh"
+    s1_cfg, s2_cfg = eo_cfg / "arm_b10cv_stage1.yaml", eo_cfg / "arm_b10cv_vanilla.yaml"
+    conv = _fake_conversion(tmp / "ci_conv")
+    conv_shuf = _fake_conversion(tmp / "ci_conv_shuf", variant="shuffled")
+    good_s1 = _fake_stage1(tmp / "ci_s1_good", conv)
+
+    def ci(config, **ov):
+        kw = {k: ov.pop(k) for k in ("run_dir", "resuming") if k in ov}
+        if kw.get("resuming"):
+            kw["allow_existing"] = True
+        return dict(env=GOOD_ENV, config=config,
+                    overrides={"pretrain_init.conversion": str(ov.pop("conversion", conv)), **ov}, **kw)
+    stage2 = lambda ck, **ov: ci(s2_cfg, **{"pretrain_init.from_stage1": str(ck)}, **ov)
+    ci_cases = [
+        ("CLEVR init: on a MoR arm",              ci(s1_cfg, **{"recursive.enable": True, "mor.enable": True})),
+        ("CLEVR init: conversion.json missing",   ci(s1_cfg, conversion=_fake_conversion(tmp / "ci_nojson", drop_json=True))),
+        ("CLEVR init: weights changed after check", ci(s1_cfg, conversion=_fake_conversion(tmp / "ci_sha", weights_sha256="0" * 64))),
+        ("CLEVR init: a conversion check failed", ci(s1_cfg, conversion=_fake_conversion(
+            tmp / "ci_fail", checks={"body_identity": {"passed": False}}))),
+        ("CLEVR init: variant is not the conversion's", ci(s1_cfg, conversion=conv_shuf)),
+        ("CLEVR init: unknown key (typo of freeze_body)", ci(s1_cfg, **{"+pretrain_init.freeze": True})),
+        ("CLEVR init: stage 2, from_stage1 forgotten", ci(s2_cfg)),
+        ("CLEVR init: freeze_body with from_stage1", ci(s1_cfg, **{"pretrain_init.from_stage1": str(good_s1)})),
+        ("handoff: stage 1 was not frozen",       stage2(_fake_stage1(tmp / "ci_s1_unfrozen", conv, move_body=True,
+                                                                      record={"freeze_body": False}))),
+        ("handoff: body moved (record says frozen)", stage2(_fake_stage1(tmp / "ci_s1_moved", conv, move_body=True))),
+        ("handoff: table never trained",          stage2(_fake_stage1(tmp / "ci_s1_still", conv, move_table=False))),
+        ("handoff: not stage 1's final checkpoint", stage2(_fake_stage1(tmp / "ci_s1_mid", conv, step=165))),
+        ("handoff: the other variant's stage 1",  stage2(_fake_stage1(tmp / "ci_s1_shuf", conv, record={"variant": "shuffled"}))),
+        ("handoff: a run with no record",         stage2(_fake_stage1(tmp / "ci_s1_norec", conv))),
+        ("resume: run dir records another variant", ci(s1_cfg, run_dir=_fake_stage1(
+            tmp / "ci_res_shuf", conv, record={"variant": "shuffled"}).parent, resuming=True)),
+        ("resume: run dir has no record",         ci(s1_cfg, run_dir=tmp / "ci_res_none", resuming=True)),
+    ]
+    (tmp / "ci_s1_norec" / "pretrain_init.json").unlink()
+    (tmp / "ci_res_none").mkdir()
+    cases += [(label, "pretrain init", kw) for label, kw in ci_cases]
+    ci_pos = [
+        ("CLEVR init: stage 1",                   "pretrain init", _results(**ci(s1_cfg))),
+        ("CLEVR init: stage 2 from a good stage 1", "pretrain init", _results(**stage2(good_s1))),
+        ("CLEVR init: resume stage 1 as itself",  "pretrain init", _results(**ci(s1_cfg, run_dir=good_s1.parent, resuming=True))),
+    ]
+    real = Path("/data/enric/weights/clevr_init/b10c_v1")
+    if (real / "clevr_body/conversion.json").is_file() and (real / "shuffled_body/conversion.json").is_file():
+        ci_pos += [(f"CLEVR init: {c} as shipped", "pretrain init", _results(env=GOOD_ENV, config=eo_cfg / f"{c}.yaml"))
+                   for c in ("arm_b10cv_stage1", "arm_b10cs_stage1")]
+    else:
+        print("\n(CLEVR init: the shipped-config positives skipped, no conversion on this machine)")
+
     print("\nnegative controls (each must FIRE):")
     fired = 0
     for label, target, kw in cases:
@@ -530,7 +627,7 @@ def main(argv=None) -> int:
         (f"token set: {arm} (Hydra overlay)", "token set",
          _results(env=GOOD_ENV, config=arm_cfg / f"{arm}.yaml"))
         for arm in ("arm_b10c_vanilla", "arm_a10c_mor")
-    ] + ben_pos
+    ] + ben_pos + ci_pos
     pos_ok = 0
     for label, target, res in positives:
         ok = res[target]

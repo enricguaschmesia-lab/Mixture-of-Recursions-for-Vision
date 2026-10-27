@@ -1,0 +1,21 @@
+# @package _global_
+#
+# ARM B10cS, STAGE 1 — the shuffled control's embedding warm-up.  CLEVR init,
+# 2026-10-27 (docs/notes/clevr_init_2026-10-27.md).
+#
+# ┌── THE DIFF FROM B10cV STAGE 1 (arm_b10cv_stage1), IN FULL ──────────┐
+# │   pretrain_init.conversion    .../shuffled_body                     │
+# │   pretrain_init.variant       shuffled                              │
+# │ Nothing else (and from B10cS it differs exactly as B10cV's stage 1  │
+# │ differs from B10cV). W19 in eo/scripts/verify_phase3.py asserts it. │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+#   launch (RCP):  jobs/train.sh b10cs_stage1 eo_terramesh/arm_b10cs_stage1 b10cs_stage1_<ts>
+
+defaults:
+  - arm_b10cv_stage1
+  - _self_
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/weights/clevr_init/b10c_v1/shuffled_body
+  variant: shuffled

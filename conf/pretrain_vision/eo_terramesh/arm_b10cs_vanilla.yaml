@@ -1,0 +1,28 @@
+# @package _global_
+#
+# ARM B10cS — B10cV's CONTROL: the CLEVR body with each tensor's entries shuffled,
+# STAGE 2.  CLEVR init, 2026-10-27 (docs/notes/clevr_init_2026-10-27.md).
+#
+# ┌── THE DIFF FROM B10cV (arm_b10cv_vanilla), IN FULL ─────────────────┐
+# │   pretrain_init.conversion    .../shuffled_body                     │
+# │   pretrain_init.variant       shuffled                              │
+# │ Nothing else, so the embedding table is B10cV's bit for bit and the │
+# │ body keeps every tensor's values and scale but none of its learned  │
+# │ structure. W19 in eo/scripts/verify_phase3.py asserts both.         │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# B10cV vs B10cS is the question ("did CLEVR teach the body something useful for
+# EO?"); B10cV vs B10c is the whole recipe against scratch.
+#
+#   launch:  bash eo/scripts/train_eo.sh --arm b10cs --config eo_terramesh/arm_b10cs_vanilla \
+#                --gpu a100 pretrain_init.from_stage1=<b10cs_stage1 run>/checkpoint-330
+#   ⚠ On RCP the launcher must forward the Hydra override: p6.sh train ... none <override>
+#     does; check jobs/train.sh at the RCP smoke (2026-10-27: not verified).
+
+defaults:
+  - arm_b10cv_vanilla
+  - _self_
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/weights/clevr_init/b10c_v1/shuffled_body
+  variant: shuffled

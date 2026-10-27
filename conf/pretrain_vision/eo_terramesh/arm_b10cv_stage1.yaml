@@ -1,0 +1,49 @@
+# @package _global_
+#
+# ARM B10cV, STAGE 1 — the embedding warm-up: the CLEVR body FROZEN, only the fresh
+# 87,556 x 576 table trains (50,432,256 parameters).  CLEVR init, 2026-10-27
+# (docs/notes/clevr_init_2026-10-27.md).
+#
+# ┌── THE DIFF FROM B10cV (arm_b10cv_vanilla), IN FULL ─────────────────┐
+# │                                   B10cV (stage 2)   this (stage 1)  │
+# │   pretrain_init.freeze_body       false             true            │
+# │   pretrain_init.from_stage1       ???               null            │
+# │   num_train_steps / stop_steps    3300              330  (K)        │
+# │   num_warmup_steps                165               16   (5%)       │
+# │   lr_scheduler_kwargs.num_decay_steps 330           0  (constant LR)│
+# │   save_steps                      330               165             │
+# │   eval_steps                      165               33              │
+# │ Nothing else. W19 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# WHY TWO STAGES (Artetxe et al. 2020; de Vries & Nissim 2021). HF builds the
+# optimizer once, from what requires grad at that moment, so an in-run unfreeze
+# needs a custom optimizer and would meet peak LR with empty Adam moments. Stage 2
+# is B10c's recipe from warmup 0 instead, with a fresh optimizer.
+#
+# K = 330 (Enric, 2026-10-27): one epoch and one checkpoint interval. No anneal:
+# stage 2 restarts its own warmup. Eval every 33 steps (11 passes with the step-0
+# one, ~1 min each on an A100): the stage-1 curve is the cleanest readout, since
+# stage 2 can wash an init effect out.
+#
+# The freeze is set before the Trainer exists (eo/train/clevr_init.freeze_body),
+# so the body gets no Adam state and no weight decay; the stage-2 handoff checks
+# it held, bit for bit.
+#
+#   launch (RCP):  jobs/train.sh b10cv_stage1 eo_terramesh/arm_b10cv_stage1 b10cv_stage1_<ts>
+
+defaults:
+  - arm_b10cv_vanilla
+  - _self_
+
+pretrain_init:
+  freeze_body: true
+  from_stage1: null
+
+num_train_steps: 330
+stop_steps: 330
+num_warmup_steps: 16
+lr_scheduler_kwargs:
+  num_decay_steps: 0
+save_steps: 165
+eval_steps: 33

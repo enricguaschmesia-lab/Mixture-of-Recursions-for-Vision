@@ -43,6 +43,15 @@ unverified deliverable:
   W18 forced depth is what it claims     [depth sweep, 2026-10-27] every token
                                                     at D (above Nr too), pass-through
                                                     exact, extension exact (forward)
+  W19 CLEVR-init arms differ as intended [CLEVR init, 2026-10-27] B10cV/B10cS and
+                                                    their stage 1s; K = 330 at a constant LR;
+                                                    through the hook, V and S share the table
+                                                    bit for bit and only the table trains
+  W20 stage 1 freezes; handoff; stage 2  [CLEVR init, 2026-10-27] through pretrain.py,
+                                                    2 steps each: body bit for bit, optimizer
+                                                    holds the table alone; the unfrozen control
+                                                    is refused by record and by body. On one
+                                                    visible card, else CPU at fp32 (~10 min)
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -661,6 +670,17 @@ PARAM_MATCH_TOL = 0.03
 #: The depth sweep (2026-10-27): A10cR with five recursions, base_depth kept at 9.
 ARM_A10CR5 = "eo_terramesh/arm_a10cr5_random"
 A10CR5_DIFF_KEYS = {"recursive.num_recursion", "model_config.num_hidden_layers"}
+
+#: The CLEVR init (2026-10-27): B10c from the CLEVR vanilla body (V) and its shuffled control
+#: (S), each in two stages. Stage 2 is the arm; stage 1 is its embedding warm-up.
+ARM_B10CV, ARM_B10CS = "eo_terramesh/arm_b10cv_vanilla", "eo_terramesh/arm_b10cs_vanilla"
+ARM_B10CV1, ARM_B10CS1 = "eo_terramesh/arm_b10cv_stage1", "eo_terramesh/arm_b10cs_stage1"
+PRETRAIN_INIT_KEYS = {"pretrain_init.conversion", "pretrain_init.variant",
+                      "pretrain_init.freeze_body", "pretrain_init.from_stage1"}
+BODY_INIT_KEYS = {"pretrain_init.conversion", "pretrain_init.variant"}
+STAGE1_DIFF_KEYS = {"pretrain_init.freeze_body", "pretrain_init.from_stage1"} | BUDGET_DIFF_KEYS
+STAGE1_K = 330                     # Enric, 2026-10-27
+EMBED_ROWS, HIDDEN = 87556, 576
 
 #: T360 (2026-10-25): B10c's recipe at the SmolLM-360M shape on the TRAIN split, batch 1024.
 ARM_T360 = "eo_terramesh/arm_t360_vanilla"
@@ -1670,6 +1690,224 @@ def _t360_schedule_ok(c) -> bool:
                 and 4416 % (int(c.per_device_eval_batch_size) * 2) == 0)
 
 
+def w19_clevr_init_arms() -> bool:
+    """The CLEVR-init arms differ in exactly the intended keys, stage 1 is K = 330 steps at a
+    constant LR after a 5% warmup, and the block reaches the model. Built through the hook
+    (eo/train/clevr_init.pretrain_init), the V and S stage-1 models have the same embedding
+    table bit for bit, differ in every non-constant body tensor, and train the table alone."""
+    import gc
+    import torch
+    from eo.generate import conditional as G
+    from eo.train import clevr_init as CI
+    from omegaconf import OmegaConf
+
+    ok = True
+    for a, b, keys in ((ARM_B10C, ARM_B10CV, PRETRAIN_INIT_KEYS), (ARM_B10CV, ARM_B10CS, BODY_INIT_KEYS),
+                       (ARM_B10CV, ARM_B10CV1, STAGE1_DIFF_KEYS), (ARM_B10CS, ARM_B10CS1, STAGE1_DIFF_KEYS),
+                       (ARM_B10CV1, ARM_B10CS1, BODY_INIT_KEYS)):
+        diff = _arm_diff(_compose(a), _compose(b))
+        pair_ok = diff == keys
+        print(f"    {b.split('/')[-1]} vs {a.split('/')[-1]}: differs in exactly the {len(keys)} intended keys = {pair_ok}")
+        if not pair_ok:
+            print(f"      measured extra {sorted(diff - keys)}, missing {sorted(keys - diff)}")
+        ok &= pair_ok
+
+    c1 = _compose(ARM_B10CV1)
+    lr = _lr_schedule(c1, range(STAGE1_K))
+    warm = int(c1.num_warmup_steps)
+    s_ok = (int(c1.num_train_steps) == int(c1.stop_steps) == STAGE1_K and warm == round(0.05 * STAGE1_K)
+            and all(lr[s] == float(c1.learning_rate) for s in range(warm, STAGE1_K))
+            and STAGE1_K % int(c1.save_steps) == 0 and int(c1.save_steps) % int(c1.eval_steps) == 0)
+    print(f"    stage 1: {STAGE1_K} steps, warmup {warm}, then lr {c1.learning_rate} to the last step; "
+          f"save {c1.save_steps}, eval {c1.eval_steps} = {s_ok}")
+    stage2 = _compose(ARM_B10CV)
+    trap = OmegaConf.is_missing(stage2.pretrain_init, "from_stage1") and stage2.pretrain_init.get("from_stage1") is None
+    print(f"    stage 2's from_stage1 is mandatory (???), and .get() would read it as None = {trap}")
+    ok &= s_ok and trap
+
+    built = {}
+    for arm in (ARM_B10CV1, ARM_B10CS1):
+        m, cfg = G.build_model(arm, None, device="cpu")
+        rep = CI.pretrain_init(m, cfg)
+        built[arm] = (m.state_dict(), rep, [n for n, p in m.named_parameters() if p.requires_grad])
+        del m
+    (sv, rv, tv), (ss, rs, ts) = built[ARM_B10CV1], built[ARM_B10CS1]
+    want = EMBED_ROWS * HIDDEN
+    table = torch.equal(sv[CI.EMBED_KEY], ss[CI.EMBED_KEY])
+    body = [k for k in sv if k not in CI.EMBED_KEYS]
+    differ = [k for k in body if not torch.equal(sv[k], ss[k])]
+    const = [k for k in body if k not in differ and sv[k].unique().numel() == 1]
+    b_ok = len(differ) + len(const) == len(body) and len(differ) > 0
+    t_ok = tv == ts == [CI.EMBED_KEY] and rv["trainable_params"] == rs["trainable_params"] == want
+    print(f"    V and S stage-1 models: same table bit for bit = {table}; {len(differ)} body tensors differ, "
+          f"{len(const)} constant ones equal (of {len(body)}) = {b_ok}")
+    print(f"    only {CI.EMBED_KEY} trains, {want:,} parameters, in both = {t_ok}")
+    ok &= table and b_ok and t_ok
+    del built, sv, ss
+    gc.collect()
+
+    # CONTROL 1: a stray key in the S overlay must be caught.
+    c1_ = _arm_diff(_compose(ARM_B10CV), _compose(ARM_B10CS, ["seed=43"])) != BODY_INIT_KEYS
+    print(f"    control: a stray seed in B10cS is caught                  = {c1_}")
+    # CONTROL 2: the trainable check must reject a model whose body was not frozen.
+    m, cfg = G.build_model(ARM_B10CV1, None, device="cpu", overrides=["pretrain_init.freeze_body=false"])
+    n_unfrozen = CI.pretrain_init(m, cfg)["trainable_params"]
+    c2 = n_unfrozen != want
+    print(f"    control: freeze_body=false trains {n_unfrozen:,} parameters, caught = {c2}")
+    del m
+    gc.collect()
+
+    def refused(arm, overrides, model=True):
+        mm, cc = (G.build_model(arm, None, device="cpu", overrides=overrides) if model
+                  else (None, _compose(arm, overrides)))
+        try:
+            CI.pretrain_init(mm, cc)
+            return False, "accepted"
+        except (ValueError, RuntimeError) as e:
+            return True, str(e).splitlines()[0][:80]
+    # CONTROL 3: the V stage 1 pointed at the shuffled body (a swapped variant) is refused.
+    c3, why3 = refused(ARM_B10CV1, ["pretrain_init.variant=shuffled"])
+    # CONTROL 4: stage 2 with from_stage1 forgotten is refused, not run as "no stage 1".
+    c4, why4 = refused(ARM_B10CV, [], model=False)
+    # CONTROL 5: the block on a recursive arm is refused.
+    c5, why5 = refused(ARM_B10CV1, ["recursive.enable=true", "mor.enable=true"], model=False)
+    print(f"    control: variant swapped is refused = {c3} ({why3})")
+    print(f"    control: stage 2 without from_stage1 is refused = {c4} ({why4})")
+    print(f"    control: a recursive arm is refused = {c5} ({why5})")
+    return bool(ok and c1_ and c2 and c3 and c4 and c5)
+
+
+def _pretrain(arm: str, out: str, overrides, env, timeout: int = 1800):
+    """pretrain.py as train_eo.sh launches it (same config path and run-identity keys); (rc, log)."""
+    import subprocess
+    cmd = [sys.executable, "pretrain.py", "--config-path", "conf/pretrain_vision", "--config-name", arm,
+           f"name={Path(out).name}", f"output_dir={out}", f"wandb_run_name={Path(out).name}", *overrides]
+    r = subprocess.run(cmd, cwd=str(REPO), env=env, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout + r.stderr
+
+
+def w20_clevr_stages() -> bool:
+    """Stage 1, the handoff and stage 2, end to end through pretrain.py (2 steps each, batch 1,
+    no warmup). Stage 1 keeps the body bit for bit, trains the table, and its optimizer holds the
+    table alone; the handoff accepts it; stage 2 starts from it and trains everything. Controls:
+    the same stage 1 without the freeze moves the body, and the handoff refuses it by the record
+    and, with the record doctored to claim a freeze, by the bitwise body comparison, in
+    pretrain.py itself.
+
+    On the one visible card when the gate is given exactly one (fp16, as the runs); otherwise on
+    CPU at fp32, which tests the same freeze, optimizer and handoff code without the autocast."""
+    import json
+    import shutil
+    import time
+    import torch
+    from util.env import load_dotenv
+    from eo.train import clevr_init as CI
+    # ⚠ Not paths.SAVE_DIR: it is fixed when `paths` is first imported, and an earlier check
+    # may import it before .env is loaded, which makes it <repo>/results while pretrain.py
+    # (which loads .env itself) writes under MOR_SAVE_DIR. Measured 2026-10-27.
+    load_dotenv()
+    SAVE_DIR = os.environ.get("MOR_SAVE_DIR", "")
+    if not SAVE_DIR.startswith("/data/"):
+        print(f"    MOR_SAVE_DIR {SAVE_DIR!r} is not under /data: refusing to write 1-3 GB of checkpoints")
+        return False
+
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    on_gpu = vis.strip() != "" and "," not in vis
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false")
+    common = ["wandb=false", "num_train_steps=2", "stop_steps=2", "num_warmup_steps=0",
+              "lr_scheduler_kwargs.num_decay_steps=0", "save_steps=2", "eval_on_start=false",
+              "eval_steps=1000", "total_batch_size=1", "per_device_train_batch_size=1",
+              "logging_steps=1", "dataloader_num_workers=0"]
+    if not on_gpu:
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        common.append("precision=fp32")
+    print(f"    device: {'GPU ' + vis + ' (fp16, as the runs)' if on_gpu else 'CPU (fp32; no single card visible)'}")
+    rel = f"gate_w20/{time.strftime('%Y%m%d_%H%M%S')}"
+    root = Path(SAVE_DIR) / "pretrain" / rel
+
+    def run(name, arm, extra):
+        out = f"{rel}/{name}"
+        rc, log = _pretrain(arm, out, common + [f"hydra.run.dir={root}/hydra/{name}"] + extra, env)
+        (root / f"{name}.log").parent.mkdir(parents=True, exist_ok=True)
+        (root / f"{name}.log").write_text(log)
+        return rc, log, Path(SAVE_DIR) / "pretrain" / out
+
+    conv = Path(str(_compose(ARM_B10CV1).pretrain_init.conversion))     # resolves ${oc.env:...}
+    conv_doc = CI.verify_conversion(conv, "clevr", EMBED_ROWS)
+    s0 = CI._state(conv)
+    body = [k for k in s0 if k not in CI.EMBED_KEYS]
+
+    def opt_state(ck):
+        st = torch.load(ck / "optimizer.pt", map_location="cpu", weights_only=True)["state"]
+        return [tuple(v["exp_avg"].shape) for v in st.values()]
+
+    ok = True
+    # Stage 1, frozen.
+    rc_a, log_a, dir_a = run("stage1", ARM_B10CV1, [])
+    ck_a = dir_a / "checkpoint-2"
+    if rc_a != 0 or not ck_a.is_dir():
+        print(f"    stage 1 run FAILED (exit {rc_a}); log {root / 'stage1.log'}")
+        print("      " + "\n      ".join(log_a.strip().splitlines()[-8:]))
+        return False
+    rec_a = json.loads((dir_a / CI.RECORD).read_text())
+    ho = CI.check_handoff(ck_a, conv, "clevr", conv_doc)
+    shapes = opt_state(ck_a)
+    losses = [h["loss"] for h in json.loads((ck_a / "trainer_state.json").read_text())["log_history"] if "loss" in h]
+    a_ok = (rec_a["trainable_params"] == EMBED_ROWS * HIDDEN and shapes == [(EMBED_ROWS, HIDDEN)]
+            and ho["body_tensors_identical"] == len(body) and ho["table_max_abs_change"] > 0
+            and len(losses) == 2 and all(np.isfinite(losses)))
+    print(f"    stage 1: {rec_a['trainable_params']:,} trainable; optimizer state {shapes}; losses {losses}")
+    print(f"    handoff accepts it: {ho['body_tensors_identical']} body tensors identical, table moved "
+          f"(max {ho['table_max_abs_change']:.2g}, {ho['table_rows_changed']:,} rows) = {a_ok}")
+    ok &= a_ok
+
+    # CONTROL: the same stage 1 without the freeze moves the body; the handoff refuses it.
+    rc_b, log_b, dir_b = run("stage1_unfrozen", ARM_B10CV1, ["pretrain_init.freeze_body=false"])
+    ck_b = dir_b / "checkpoint-2"
+    if rc_b != 0 or not ck_b.is_dir():
+        print(f"    control run FAILED (exit {rc_b}); log {root / 'stage1_unfrozen.log'}")
+        return False
+    sb = CI._state(ck_b)
+    moved = sum(not torch.equal(sb[k], s0[k]) for k in body)
+    try:
+        CI.check_handoff(ck_b, conv, "clevr", conv_doc)
+        c_rec = False
+    except RuntimeError:
+        c_rec = True
+    rec_b = json.loads((dir_b / CI.RECORD).read_text())
+    rec_b["freeze_body"] = True                        # doctored: claims the freeze
+    (dir_b / CI.RECORD).write_text(json.dumps(rec_b))
+    rc_d, log_d, _ = run("stage2_from_unfrozen", ARM_B10CV, [f"pretrain_init.from_stage1={ck_b}"])
+    c_body = rc_d != 0 and "the freeze did not hold" in log_d
+    print(f"    control: without the freeze {moved} of {len(body)} body tensors moved = {moved > 0}")
+    print(f"    control: the handoff refuses it by its record = {c_rec}; with the record doctored, "
+          f"pretrain.py refuses it by the body (exit {rc_d}) = {c_body}")
+
+    # Stage 2 from stage 1.
+    rc_c, log_c, dir_c = run("stage2", ARM_B10CV, [f"pretrain_init.from_stage1={ck_a}"])
+    ck_c = dir_c / "checkpoint-2"
+    if rc_c != 0 or not ck_c.is_dir():
+        print(f"    stage 2 run FAILED (exit {rc_c}); log {root / 'stage2.log'}")
+        print("      " + "\n      ".join(log_c.strip().splitlines()[-8:]))
+        return False
+    rec_c = json.loads((dir_c / CI.RECORD).read_text())
+    sc = CI._state(ck_c)
+    c_moved = sum(not torch.equal(sc[k], s0[k]) for k in body)
+    n_opt = len(opt_state(ck_c))
+    c_ok = (rec_c["from_stage1"] == str(ck_a) and rec_c["handoff"] is not None
+            and rec_c["trainable_params"] == rec_c["total_params"] and n_opt == len(sc) and c_moved > 0)
+    print(f"    stage 2: from {ck_a.parent.name}/{ck_a.name}, {rec_c['trainable_params']:,} of "
+          f"{rec_c['total_params']:,} trainable, {n_opt} optimizer tensors, {c_moved} body tensors moved = {c_ok}")
+    ok &= c_ok
+
+    passed = bool(ok and moved > 0 and c_rec and c_body)
+    if passed:
+        shutil.rmtree(root)
+    else:
+        print(f"    (kept for inspection: {root})")
+    return passed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1692,6 +1930,8 @@ def main() -> int:
         ("W15  Step 4 controls: one key each, as claimed [next steps, Step 4]", w15_step4_controls),
         ("W16  T360 changes only size, data and budget [train split]", w16_t360),
         ("W17  A10cR5 changes only the recursions     [depth sweep]", w17_a10cr5),
+        ("W19  CLEVR-init arms differ only as intended [CLEVR init]", w19_clevr_init_arms),
+        ("W20  stage 1 freezes, handoff, stage 2      [CLEVR init]", w20_clevr_stages),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]

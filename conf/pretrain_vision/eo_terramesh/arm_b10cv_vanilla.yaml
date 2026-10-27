@@ -1,0 +1,41 @@
+# @package _global_
+#
+# ARM B10cV — B10c from the CLEVR vanilla body, STAGE 2.  CLEVR init, 2026-10-27
+# (docs/notes/clevr_init_2026-10-27.md).
+#
+# ┌── THE DIFF FROM B10c (arm_b10c_vanilla), IN FULL ───────────────────┐
+# │   pretrain_init.conversion    the converted CLEVR body + fresh table│
+# │   pretrain_init.variant       clevr                                 │
+# │   pretrain_init.freeze_body   false                                 │
+# │   pretrain_init.from_stage1   ??? (stage 1's final checkpoint)      │
+# │ Nothing else: B10c's recipe exactly, 3,300 steps from warmup 0 with │
+# │ a fresh optimizer. W19 in eo/scripts/verify_phase3.py asserts it.   │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The init: the CLEVR vanilla model (Mahlia/baseline-multimodal-vanilla @ a92e8b2a)
+# has exactly B10c's body. eo/scripts/convert_clevr_init.py copied its 29 layers and
+# final norm bit for bit under B10c's own seed-42 embedding table and verified it.
+# Stage 1 (arm_b10cv_stage1) trains the table under the frozen body; this config
+# starts from stage 1's final checkpoint, after eo/train/clevr_init.check_handoff
+# proves the body is still the conversion's, bit for bit, and the table moved.
+#
+# ⚠ from_stage1 is MANDATORY. A forgotten override must not become "CLEVR body
+#   without stage 1" (that arm, B10cV0, would say null here explicitly).
+# ⚠ The conversion lives under ${MOR_EO_RCP} on RCP ($G/weights/clevr_init/...)
+#   and under /data/enric on the workstation (MOR_EO_RCP unset). Copy it there
+#   with ee559.sh push before the first RCP launch.
+#
+#   launch:  bash eo/scripts/train_eo.sh --arm b10cv --config eo_terramesh/arm_b10cv_vanilla \
+#                --gpu a100 pretrain_init.from_stage1=<b10cv_stage1 run>/checkpoint-330
+#   ⚠ On RCP the launcher must forward the Hydra override: p6.sh train ... none <override>
+#     does; check jobs/train.sh at the RCP smoke (2026-10-27: not verified).
+
+defaults:
+  - arm_b10c_vanilla
+  - _self_
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/weights/clevr_init/b10c_v1/clevr_body
+  variant: clevr
+  freeze_body: false
+  from_stage1: ???
