@@ -1,0 +1,34 @@
+# @package _global_
+#
+# ARM A10cR5 — A10cR (random router) with FIVE recursions.  The depth sweep,
+# 2026-10-27.
+#
+# ┌── THE DIFF FROM A10cR (arm_a10cr_random), IN FULL ──────────────────┐
+# │                                   A10cR        A10cR5 (this)        │
+# │   recursive.num_recursion         3            5                    │
+# │   model_config.num_hidden_layers  29           47                   │
+# │ base_depth = (L - 2) // Nr stays 9, so the unique layers (1 + 9 + 1)│
+# │ and the parameters are A10cR's. Nothing else. W17 in                │
+# │ eo/scripts/verify_phase3.py asserts it.                             │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question: does applying the shared block MORE times help, and when in
+# training? Every token draws its depth uniformly from {1..5} at every
+# forward pass, so depths 1-5 are all trained depths, and evaluation forces
+# one depth for every token (eval_checkpoint.py --force-depth). A10cR's sweep
+# stops at its trained 3; above that it extrapolates.
+#
+# Compute: 2 + 9 * E[d] = 29 layer applications per token on average, the
+# same as the 29-layer vanilla B10c, with B10c-11L's unique parameters.
+#
+#   launch (RCP):  jobs/train.sh mor10cr5 eo_terramesh/arm_a10cr5_random mor10cr5_<ts>
+
+defaults:
+  - arm_a10cr_random
+  - _self_
+
+model_config:
+  num_hidden_layers: 47
+
+recursive:
+  num_recursion: 5

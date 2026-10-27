@@ -37,6 +37,12 @@ unverified deliverable:
   W16 T360 changes only size/data/budget [train split, 2026-10-25] 2 epochs,
                                                     398.69 M parameters, and the key
                                                     reaches the data (TERRAMESH_TRAIN_TOK_ROOT)
+  W17 A10cR5 changes only the recursions [depth sweep, 2026-10-27] Nr 5 at
+                                                    47 layers: base_depth 9, A10cR's
+                                                    parameters, five tied blocks
+  W18 forced depth is what it claims     [depth sweep, 2026-10-27] every token
+                                                    at D (above Nr too), pass-through
+                                                    exact, extension exact (forward)
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -651,6 +657,10 @@ CONTROL_DIFFS = {ARM_A10CR: (ARM_A10C, {"mor.rand_router"}),
                  ARM_A10CS2: (ARM_A10C, {"seed"})}
 #: B10c-11L must match A10c's non-embedding parameters this closely (measured -1.7%).
 PARAM_MATCH_TOL = 0.03
+
+#: The depth sweep (2026-10-27): A10cR with five recursions, base_depth kept at 9.
+ARM_A10CR5 = "eo_terramesh/arm_a10cr5_random"
+A10CR5_DIFF_KEYS = {"recursive.num_recursion", "model_config.num_hidden_layers"}
 
 #: T360 (2026-10-25): B10c's recipe at the SmolLM-360M shape on the TRAIN split, batch 1024.
 ARM_T360 = "eo_terramesh/arm_t360_vanilla"
@@ -1488,6 +1498,110 @@ def w15_step4_controls() -> bool:
     return bool(ok and c1 and c2 and c3)
 
 
+def _mor_geometry(config: str, overrides=()):
+    """(non-embedding parameters, Nr, layers per block, every block tied to block 0) on CPU."""
+    import torch
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import find_mor_layers
+    torch.manual_seed(0)
+    m, _ = G.build_model(config, None, device="cpu", overrides=list(overrides))
+    ne = sum(p.numel() for n, p in m.named_parameters()
+             if "embed_tokens" not in n and "lm_head" not in n)
+    blocks = find_mor_layers(m)[0].block_list
+    ref = [p.data_ptr() for p in blocks[0].parameters()]
+    tied = all([p.data_ptr() for p in b.parameters()] == ref for b in blocks)
+    out = (ne, len(blocks), len(blocks[0]), tied)
+    del m
+    return out
+
+
+def w17_a10cr5() -> bool:
+    """A10cR5 is A10cR with five recursions and nothing else: the layer count
+    moves with Nr so that base_depth stays 9, so it has A10cR's unique layers
+    and parameters, and its five blocks are one tied block."""
+    diff = _arm_diff(_compose(ARM_A10CR), _compose(ARM_A10CR5))
+    d_ok = diff == A10CR5_DIFF_KEYS
+    print(f"    {ARM_A10CR5} vs {ARM_A10CR}: differs in exactly {sorted(A10CR5_DIFF_KEYS)} = {d_ok}")
+    if not d_ok:
+        print(f"      measured: {sorted(diff)}")
+    ne3, nr3, bd3, t3 = _mor_geometry(ARM_A10CR)
+    ne5, nr5, bd5, t5 = _mor_geometry(ARM_A10CR5)
+    g_ok = (nr3, bd3, nr5, bd5) == (3, 9, 5, 9) and t3 and t5 and ne5 == ne3
+    print(f"    A10cR {nr3} x {bd3} layers, A10cR5 {nr5} x {bd5}; all blocks tied {t3}/{t5}; "
+          f"non-embedding {ne3 / 1e6:.2f}M / {ne5 / 1e6:.2f}M (equal) = {g_ok}")
+    # CONTROL 1: Nr 5 at A10cR's 29 layers would shrink the shared block to 5 layers.
+    ne_c, nr_c, bd_c, _ = _mor_geometry(ARM_A10CR, ["recursive.num_recursion=5"])
+    c1 = bd_c != 9 and ne_c != ne3
+    print(f"    control: Nr 5 at 29 layers gives {nr_c} x {bd_c} layers ({ne_c / 1e6:.2f}M), caught = {c1}")
+    # CONTROL 2: a stray key in the overlay is caught.
+    c2 = _arm_diff(_compose(ARM_A10CR), _compose(ARM_A10CR5, ["seed=43"])) != A10CR5_DIFF_KEYS
+    print(f"    control: a stray seed in A10cR5 is caught                = {c2}")
+    return bool(d_ok and g_ok and c1 and c2)
+
+
+def w18_forced_depth() -> bool:
+    """TF.install_random_depth (the depth sweep) on an untrained A10cR, 2 held-out rows:
+    every token is captured at the forced depth, 1..5 (4 and 5 above the trained 3);
+    the pass-through hook is bit-identical to no hook (so is the cache it turns off);
+    extending the block list leaves a trained depth bit-identical. Controls: adjacent
+    depths must differ, and an untied block and a learned router are refused."""
+    import copy
+    import torch
+    from eo.eval import teacher_forced as TF
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import find_mor_layers
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.manual_seed(42)
+    model, cfg = G.build_model(ARM_A10CR, None, device=dev)
+    layer = find_mor_layers(model)[0]
+    ds, _ = TF.eval_loader(cfg, num_workers=0)
+    batch = torch.utils.data.default_collate([ds[i] for i in range(2)])
+    batch.pop("modality_ids"); batch.pop("labels")
+    inp = {k: v.to(dev) for k, v in batch.items()}
+    cap = []
+    h = layer.register_forward_hook(lambda m, i, o: cap.append(o.token_expert_indices.detach().cpu()))
+
+    def fwd():
+        torch.manual_seed(7)
+        with torch.no_grad(), torch.autocast(dev, dtype=torch.float16, enabled=dev == "cuda"):
+            lg = model(**inp).logits.float()
+        return lg[..., ::64].cpu(), cap[-1]
+
+    try:
+        base, d0 = fwd()
+        TF.install_random_depth(model, None)
+        pt, dpt = fwd()
+        c_pass = torch.equal(pt, base) and torch.equal(dpt, d0)
+        res, cap_ok = {}, True
+        for d in range(1, 6):
+            TF.install_random_depth(model, d)
+            res[d], dd = fwd()
+            cap_ok &= bool((dd == d - 1).all())
+        TF.install_random_depth(model, 3, n_blocks=5)
+        ext, dd = fwd()
+        c_ext = torch.equal(ext, res[3]) and bool((dd == 2).all())
+        c_diff = all(not torch.equal(res[a], res[a + 1]) for a in range(1, 5))
+    finally:
+        h.remove()
+    print(f"    every token at the forced depth, 1..5 = {cap_ok}")
+    print(f"    pass-through (cache off) == no hook, bitwise = {c_pass}")
+    print(f"    depth 3 with the list extended to 5 == depth 3, bitwise = {c_ext}")
+    print(f"    control: each depth differs from the next = {c_diff}")
+    m2, _ = G.build_model(ARM_A10CR, None, device="cpu")
+    find_mor_layers(m2)[0].block_list[2] = copy.deepcopy(find_mor_layers(m2)[0].block_list[2])
+    try:
+        TF.install_random_depth(m2, 4); c_tie = False
+    except ValueError:
+        c_tie = True
+    m3, _ = G.build_model(ARM_A10C, None, device="cpu")
+    try:
+        TF.install_random_depth(m3, 2); c_router = False
+    except ValueError:
+        c_router = True
+    print(f"    control: an untied block is refused = {c_tie}; a learned router is refused = {c_router}")
+    return bool(cap_ok and c_pass and c_ext and c_diff and c_tie and c_router)
+
+
 def w16_t360() -> bool:
     """T360 differs from B10c in exactly its size, data split and budget; it is 2 epochs of the
     train split at a 5% warmup and 10% decay; it builds at 314.64 M non-embedding parameters; and
@@ -1577,6 +1691,7 @@ def main() -> int:
         ("W14  B10c/A10c change only the token set   [next steps, Step 2]", w14_clean_arms),
         ("W15  Step 4 controls: one key each, as claimed [next steps, Step 4]", w15_step4_controls),
         ("W16  T360 changes only size, data and budget [train split]", w16_t360),
+        ("W17  A10cR5 changes only the recursions     [depth sweep]", w17_a10cr5),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]
@@ -1585,6 +1700,7 @@ def main() -> int:
         checks.append(("W4   per-modality loss in BOTH arms       [Step 5]", w4_symmetric_logging))
         checks.append(("W6   generated ids land in target slot    [Step 6]", w6_generation_slots))
         checks.append(("W5   fp16 matches fp32; scaler control    [Step 2]", w5_fp16_equivalence))
+        checks.append(("W18  forced depth is what it claims       [depth sweep]", w18_forced_depth))
 
     results = []
     for title, fn in checks:

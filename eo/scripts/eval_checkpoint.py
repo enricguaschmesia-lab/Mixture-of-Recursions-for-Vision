@@ -38,6 +38,13 @@ same, and `logged_eval` then differs from the pass in S2L2A/NDVI by design.
 ⚠ `untrained` is a legitimate checkpoint name: a randomly initialised model
 (seed 42), the step-0 point of every curve.
 
+--force-depth D (the depth sweep, 2026-10-27; RANDOM-router arms only) puts
+every token at D passes of the shared block for every pass of the run (main,
+target-last, grid), D above the trained Nr included (TF.install_random_depth).
+One D per --arm-tag directory: metrics.json records it, and a directory
+holding another D is refused. Every pass checks that the depth it captured is
+D at every position, and fails otherwise.
+
 Arm B works unchanged: it has no router, so it gets the accuracy metrics and
 no depth, and any --modes other than `router` are refused for it.
 
@@ -79,7 +86,18 @@ def grid_keys(all_others: bool):
     return [f"{s}->{t}" for t in GRID_TARGETS for s in srcs if s != t]
 
 
-def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args) -> None:
+def check_forced(depth_counts: np.ndarray, force_depth, where: str) -> None:
+    """A forced pass must capture depth D at every counted position (columns 1..Nr).
+    Empty counts pass (a "none" cell has no source tokens); the main pass's
+    check, over every position, is the one that cannot be empty."""
+    if force_depth is None:
+        return
+    tot = np.asarray(depth_counts).reshape(-1, np.asarray(depth_counts).shape[-1]).sum(0)
+    if tot.sum() and tot[force_depth - 1] != tot.sum():
+        raise SystemExit(f"{where}: forced depth {force_depth}, captured depth counts {tot.tolist()}")
+
+
+def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None) -> None:
     """One teacher-forced pass per cell; resumable per cell.
 
     Writes `grid.json` (per cell: rows, n, CE as the mean of per-row means and
@@ -111,6 +129,8 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args) -> None:
             t0 = time.perf_counter()
             if ov is not None:
                 TF.install_override(model, "router")
+            if rf is not None:
+                rf.reseed(0)                       # each cell reproducible on its own (resume)
             dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T, sources=sources),
                                              batch_size=4, num_workers=args.num_workers,
                                              collate_fn=collate)
@@ -121,6 +141,7 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args) -> None:
                     "ce_row_mean": float(row_ce.mean()),
                     "ce_token_weighted": res["per_modality"][T]["ce"],
                     "top1": res["per_modality"][T]["top1"],
+                    "top5": res["per_modality"][T]["top5"],
                     "n_tokens": res["per_modality"][T]["n_tokens"],
                     "trimmed": collate is not None,
                     "seconds": round(time.perf_counter() - t0, 1)}
@@ -130,10 +151,11 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args) -> None:
             arrays[f"{key}|top1"] = pr["top1"]
             for dk in ("d_pred", "d_tgt", "d_src"):
                 if dk in pr:
+                    check_forced(pr[dk], args.force_depth, f"{out.name} [grid {key}] {dk}")
                     arrays[f"{key}|{dk}"] = pr[dk]
                     tot = pr[dk].sum(0)
                     cell[f"{dk}_mix"] = (tot / max(tot.sum(), 1)).tolist()
-                    cell[f"{dk}_mean"] = float((tot * np.arange(1, 4)).sum() / max(tot.sum(), 1))
+                    cell[f"{dk}_mean"] = float((tot * np.arange(1, tot.size + 1)).sum() / max(tot.sum(), 1))
             if S == "all" and "target_last" in doc and T in doc["target_last"]:
                 ref = doc["target_last"][T]["ce"]
                 cell["target_last_ce"] = ref
@@ -185,6 +207,8 @@ def main() -> int:
                     help="also run Step 12's source x target grid (grid.json, grid_rows.npz)")
     ap.add_argument("--grid-all-others", action="store_true",
                     help="add the grid's 'all' row (sources=None, untrimmed): the P3 check")
+    ap.add_argument("--force-depth", type=int, default=None,
+                    help="random-router arms: every token at this many passes (the depth sweep)")
     args = ap.parse_args()
 
     if torch.cuda.device_count() != 1:
@@ -215,6 +239,11 @@ def main() -> int:
         if int(cfg.dataloader_num_workers) != args.num_workers:
             raise SystemExit(f"--num-workers {args.num_workers} != config's "
                              f"{cfg.dataloader_num_workers}: modality orders would differ from training")
+        rf = None
+        if args.force_depth is not None:
+            if any(m != "router" for m in modes):
+                raise SystemExit("--force-depth runs the main pass as --modes router (or '')")
+            rf = TF.install_random_depth(model, args.force_depth)
         ov = TF.install_override(model, "router")
         if ov is None and any(m != "router" for m in todo):
             raise SystemExit(f"{ck}: interventions need a router; this arm has none")
@@ -225,20 +254,31 @@ def main() -> int:
         if doc and doc.get("token_set", "original") != token_set:
             raise SystemExit(f"{out} holds token_set={doc.get('token_set', 'original')!r} results; "
                              f"this config reads {token_set!r}. Use another --arm-tag.")
+        if doc and doc.get("force_depth") != args.force_depth:
+            raise SystemExit(f"{out} holds force_depth={doc.get('force_depth')!r} results; "
+                             f"this run forces {args.force_depth!r}. Use another --arm-tag.")
         ds, loader = TF.eval_loader(cfg, num_workers=args.num_workers)
         doc.update({"arm_tag": args.arm_tag, "arm_config": args.arm_config, "checkpoint": ck,
                     "token_set": token_set, "token_root": str(ds.root_dir),
                     "step": step, "gpu": gpu, "n_eval_rows": len(ds),
                     "has_router": ov is not None,
+                    "force_depth": args.force_depth,
                     "logged_eval": logged_eval(run_dir, step) if ck != "untrained" else None})
+        if rf is not None:
+            doc["trained_recursions"] = rf.n_trained
         doc.setdefault("modes", {})
 
         for mode in todo:
             t0 = time.perf_counter()
             if ov is not None:
                 TF.install_override(model, mode, seed=0)
+            if rf is not None:
+                rf.reseed(0)
             res = TF.run_pass(model, loader, override=ov)
             tok = res.pop("tokens")
+            if rf is not None and not (tok["depth"] == args.force_depth).all():
+                raise SystemExit(f"{ck}: forced depth {args.force_depth}, captured "
+                                 f"{np.unique(tok['depth'], return_counts=True)}")
             keep = tok if mode == "router" else {k: tok[k] for k in ("ce", "correct", "depth") if k in tok}
             np.savez_compressed(out / f"tokens_{mode}.npz", **keep)
             if mode == "router":
@@ -252,7 +292,7 @@ def main() -> int:
             write_json(mpath, doc)
             pm = res["per_modality"]
             print(f"{ck} [{mode}] {res['seconds']}s  CE(all) {res['ce_all_body_tokens']:.4f}"
-                  + (f"  depth {res.get('mean_depth_body', 0):.3f}" if ov is not None else ""))
+                  + (f"  depth {res.get('mean_depth_body', 0):.3f}" if ov is not None or rf is not None else ""))
             for n in pm:
                 lg = (doc["logged_eval"] or {}).get(f"eval_loss_{n}")
                 print(f"   {n:7s} ce {pm[n]['ce']:.4f}  batch-mean {pm[n]['ce_batch_mean']:.4f}"
@@ -269,12 +309,17 @@ def main() -> int:
                 rows = TF.stratified_target_rows(ds, eval_rows, corpus, T, args.target_last_rows)
                 dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T), batch_size=4,
                                                  num_workers=args.num_workers)
-                res = TF.run_pass(model, dl, override=ov, keep_tokens=ov is not None)
+                if rf is not None:
+                    rf.reseed(0)
+                res = TF.run_pass(model, dl, override=ov, keep_tokens=ov is not None or rf is not None)
                 r = {"n_rows": len(rows), **res["per_modality"][T]}
-                if ov is not None:
+                if ov is not None or rf is not None:
                     t = res["tokens"]
                     sel = t["label_mod"] == TF.MODALITY_TO_ID[T]
                     r["mean_depth_target"] = float(t["depth"][sel].mean())
+                    if rf is not None and not (t["depth"] == args.force_depth).all():
+                        raise SystemExit(f"{ck} [target-last {T}]: forced depth {args.force_depth}, "
+                                         f"captured {np.unique(t['depth'], return_counts=True)}")
                 tl[T] = r
                 print(f"{ck} [target-last {T}] rows {len(rows)}  ce {r['ce']:.4f}  "
                       f"top1 {r['top1']:.4f}  top5 {r['top5']:.4f}  slot {r['slot_mass']:.4f}")
@@ -283,7 +328,7 @@ def main() -> int:
 
         if need_grid:
             run_grid(model, ov, ds, load_eval_rows(root_dir=ROOT), load_row_table(ROOT).corpus.values,
-                     out, doc, args)
+                     out, doc, args, rf=rf)
 
         del model
         torch.cuda.empty_cache()

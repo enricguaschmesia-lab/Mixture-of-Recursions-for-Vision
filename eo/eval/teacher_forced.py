@@ -44,6 +44,14 @@ recursed update is unchanged and ONLY the number of passes moves. Modes:
   perm_all        shuffled among all real tokens of the row: identical per-row
                   compute, modality-level assignment destroyed too
 
+DEPTH SWEEP (random router, 2026-10-27). `install_random_depth` puts every
+token of a RANDOM-router model at one depth d, including depths above the Nr
+it was trained with (the tied shared block applied more times). The random
+router draws r ~ U(0,1)^Nr per token: depth = argmax(r) + 1, and the gate on
+the recursed update is max(r) * alpha. For iid draws the argmax is independent
+of the max, so forcing d and drawing the gate as the max of Nr uniforms is
+exactly the training-time computation conditional on depth d.
+
 Runs in `.venv`. Nothing here imports terratorch.
 """
 from __future__ import annotations
@@ -55,9 +63,9 @@ import torch
 import torch.nn.functional as F
 
 from eo.data.eo_vocab import ID_TO_MODALITY, MODALITIES, MODALITY_TO_ID, PAD_ID
-from eo.routing.telemetry import find_mor_layers
+from eo.routing.telemetry import find_mor_layers, has_learned_router
 
-MODES = ("router", "force1", "force2", "force3", "perm_modality", "perm_all", "skip")
+MODES =("router", "force1", "force2", "force3", "perm_modality", "perm_all", "skip")
 
 
 # ------------------------------------------------------------------ data
@@ -210,6 +218,81 @@ def install_override(model, mode: str, seed: int = 0) -> Optional[DepthOverride]
     return layer.mor_router
 
 
+class RandomDepthForce:
+    """The random router's draw, rewritten so every token makes `depth` passes.
+
+    Called by the MoR layer on its fresh draw r (B, L, num_recursion). The
+    draw is ignored: the gate is drawn from this object's own generator, as
+    the max of `n_trained` uniforms, so it does not depend on how many blocks
+    the layer holds (an extended block list leaves depth <= Nr unchanged,
+    exactly). `depth=None` is the pass-through control: r is returned as is.
+    """
+
+    def __init__(self, depth: Optional[int], n_trained: int, seed: int = 0):
+        self.depth, self.n_trained, self.seed = depth, n_trained, seed
+        self.gen: Optional[torch.Generator] = None
+
+    def reseed(self, seed: Optional[int] = None) -> None:
+        self.seed = self.seed if seed is None else seed
+        self.gen = None                                 # rebuilt on the draw's device
+
+    def __call__(self, r: torch.Tensor) -> torch.Tensor:
+        if self.depth is None:
+            return r
+        if self.gen is None or self.gen.device != r.device:
+            self.gen = torch.Generator(device=r.device).manual_seed(self.seed)
+        w = torch.rand(*r.shape[:2], self.n_trained, generator=self.gen, device=r.device).amax(-1)
+        out = torch.zeros_like(r)
+        # The forced depth must win uniquely: a zero gate would tie with the zeros.
+        out[..., self.depth - 1] = w.clamp_min(1e-4).to(r.dtype)
+        return out
+
+
+def install_random_depth(model, depth: Optional[int], seed: int = 0,
+                         n_blocks: Optional[int] = None) -> RandomDepthForce:
+    """Put every token of a RANDOM-router model at `depth` passes (None: the
+    trained random draw, through the hook). Idempotent; call again to change.
+
+    Depth above the trained Nr applies the shared block more times than in
+    training: the block list is extended with the last trained block, whose
+    weights are tied to every other (checked here, tensor by tensor). `n_blocks`
+    (default max(Nr, depth)) exists for the control that extending the list
+    leaves a depth <= Nr unchanged.
+
+    ⚠ Turns the model's KV cache off (`config.use_cache`). The cache is keyed
+    by layer index, and the repeated block reuses the last block's layers, so a
+    cached forward appends the extra pass's keys to that block's slot and the
+    attention shapes break (measured). A teacher-forced pass has no use for
+    the cache, and turning it off leaves the logits bit-identical (controlled
+    in the smoke test, worklog 2026-10-27).
+    """
+    layers = find_mor_layers(model)
+    if not layers or has_learned_router(model):
+        raise ValueError("install_random_depth needs a MoR model with a RANDOM router "
+                         "(mor.rand_router=true); a learned router takes DepthOverride")
+    layer = layers[0]
+    trained = layer.__dict__.get("_eo_trained_blocks")
+    if trained is None:
+        trained = list(layer.block_list)                # a plain list: not registered as a module
+        ref = [p.data_ptr() for p in trained[0].parameters()]
+        for blk in trained[1:]:
+            if [p.data_ptr() for p in blk.parameters()] != ref:
+                raise ValueError("the recursion blocks do not share weights; cannot extend them")
+        layer.__dict__["_eo_trained_blocks"] = trained
+    n = len(trained)
+    if depth is not None and not 1 <= depth:
+        raise ValueError(f"depth must be >= 1, got {depth}")
+    nb = n_blocks or max(n, depth or n)
+    if nb < max(n, depth or n):
+        raise ValueError(f"n_blocks {nb} < max(trained {n}, depth {depth})")
+    layer.block_list = torch.nn.ModuleList(trained + [trained[-1]] * (nb - n))
+    layer.num_recursion = nb
+    layer.rand_override = RandomDepthForce(depth, n, seed)
+    for c in {id(model.config): model.config, id(model.model.config): model.model.config}.values():
+        c.use_cache = False
+    return layer.rand_override
+
+
 # ------------------------------------------------------------------ the pass
 
 def _slot_bounds():
@@ -231,7 +314,7 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     loop, so it works with `trim_collate`'s varying lengths, where
     `keep_tokens` cannot: per row, the number of `per_row_target` tokens
     predicted, their summed CE and top-1 hits, and (MoR) the depth counts
-    1/2/3 at the positions PREDICTING target tokens (`d_pred`, the frame of
+    1..num_recursion at the positions PREDICTING target tokens (`d_pred`, the frame of
     `mean_depth_target`), ON target tokens (`d_tgt`) and on every other
     modality's tokens (`d_src`).
     """
@@ -318,9 +401,10 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
                 if mor:
                     d = grabbed[-1][:, :-1].to(device).long() + 1
                     imod = mids[:, :-1].to(device)
+                    depths = range(1, int(mor[0].num_recursion) + 1)    # 1..3 for every trained arm
                     for key, sel in (("d_pred", m), ("d_tgt", imod.eq(tid)),
                                      ("d_src", imod.gt(0) & imod.ne(tid))):
-                        rows[key].append(torch.stack([(sel & d.eq(k)).sum(1) for k in (1, 2, 3)], 1).cpu())
+                        rows[key].append(torch.stack([(sel & d.eq(k)).sum(1) for k in depths], 1).cpu())
             if keep_tokens:
                 toks["ce"].append(torch.where(valid, ce, torch.zeros_like(ce)).half().cpu())
                 toks["correct"].append((c1 & valid).cpu())

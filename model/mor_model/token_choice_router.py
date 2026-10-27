@@ -244,6 +244,10 @@ class MoRLlamaDecoderLayer(nn.Module):
             
         else:
             router_weights = torch.rand(bs, seq_len, self.num_recursion, device=x.device, dtype=x.dtype)
+            # EO evaluation hook (eo/eval/teacher_forced.py, the depth sweep): rewrites the random draw,
+            # e.g. to put every token at one depth. Never set in training.
+            if getattr(self, "rand_override", None) is not None:
+                router_weights = self.rand_override(router_weights)
             router_probs = _router_probs = router_weights * self.cfg.mor.token.get("alpha", 0.1)
         
         if self.training and self.training_step < self.bal_warmup_step:
