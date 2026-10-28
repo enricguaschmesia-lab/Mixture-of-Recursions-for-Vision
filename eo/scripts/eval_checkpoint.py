@@ -16,6 +16,9 @@ Per checkpoint, writes /data/enric/reports/arm_eval/<arm-tag>/<ckpt>/:
                        (mean of per-row means, and token-weighted), top-1 and
                        the MoR depth mix; holes recorded as such
   grid_rows.npz        with --grid: per-row arrays per cell, for pairing arms
+  target_last_rows.npz per-row arrays of the target-last pass, per target, in
+                       grid_rows.npz's layout (2026-10-28: pairs all-to-one
+                       across depths and arms)
 
 --grid runs one teacher-forced pass per cell over the target-last rows that
 carry the cell's source (PHASE3_PLAN.md 12.1, 4.16), batches trimmed to their
@@ -38,15 +41,22 @@ same, and `logged_eval` then differs from the pass in S2L2A/NDVI by design.
 ⚠ `untrained` is a legitimate checkpoint name: a randomly initialised model
 (seed 42), the step-0 point of every curve.
 
---force-depth D (the depth sweep, 2026-10-27; RANDOM-router arms only) puts
-every token at D passes of the shared block for every pass of the run (main,
-target-last, grid), D above the trained Nr included (TF.install_random_depth).
-One D per --arm-tag directory: metrics.json records it, and a directory
-holding another D is refused. Every pass checks that the depth it captured is
-D at every position, and fails otherwise.
---gate-seed S (default 0, every sweep unit) seeds the forced run's random gate
-draws; another S at the same D measures how much the draw alone moves a result.
-A directory holding another S is refused.
+--force-depth D (the depth sweep, 2026-10-27) puts every token at D passes of
+the shared block for every pass of the run (main, target-last, grid), D above
+the trained Nr included: TF.install_random_depth for a random router, and
+(2026-10-28) TF.install_learned_depth for a learned one, whose gate stays the
+router's own top probability. One D per --arm-tag directory: metrics.json
+records it, and a directory holding another D is refused. Every pass checks
+that the depth it captured is D at every position, and fails otherwise.
+--gate-seed S (default 0, every sweep unit; random router only) seeds the forced
+run's random gate draws; another S at the same D measures how much the draw
+alone moves a result. A directory holding another S is refused.
+--force-scope target (learned router, 2026-10-28) forces only the positions that
+predict the TARGET's tokens, in target-last and the grid; every other position
+keeps the router's choice, so the context is computed exactly as routed. It has
+no main pass (any-to-any has no single target): run it with --modes ''. Its
+check is on the predicting positions alone. A directory holding another scope
+is refused.
 
 Arm B works unchanged: it has no router, so it gets the accuracy metrics and
 no depth, and any --modes other than `router` are refused for it.
@@ -72,6 +82,7 @@ from eo.data.eo_vocab import MODALITIES  # noqa: E402
 from eo.data.eval_split import load_eval_rows, load_row_table  # noqa: E402
 from eo.eval import teacher_forced as TF  # noqa: E402
 from eo.generate import conditional as G  # noqa: E402
+from eo.routing.telemetry import has_learned_router  # noqa: E402
 
 ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
 TARGETS = ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC", "Coords"]
@@ -100,7 +111,8 @@ def check_forced(depth_counts: np.ndarray, force_depth, where: str) -> None:
         raise SystemExit(f"{where}: forced depth {force_depth}, captured depth counts {tot.tolist()}")
 
 
-def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None) -> None:
+def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
+             base: str = "router") -> None:
     """One teacher-forced pass per cell; resumable per cell.
 
     Writes `grid.json` (per cell: rows, n, CE as the mean of per-row means and
@@ -131,7 +143,8 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None) ->
                 continue
             t0 = time.perf_counter()
             if ov is not None:
-                TF.install_override(model, "router")
+                TF.install_override(model, base)
+                ov.only_mod = TF.MODALITY_TO_ID[T] if args.force_scope == "target" else None
             if rf is not None:
                 rf.reseed(args.gate_seed)          # each cell reproducible on its own (resume)
             # The batch size only moves fp16 kernel choice (and, under --force-depth, which gate draw
@@ -158,7 +171,8 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None) ->
             arrays[f"{key}|top1"] = pr["top1"]
             for dk in ("d_pred", "d_tgt", "d_src"):
                 if dk in pr:
-                    check_forced(pr[dk], args.force_depth, f"{out.name} [grid {key}] {dk}")
+                    if args.force_scope == "all" or dk == "d_pred":
+                        check_forced(pr[dk], args.force_depth, f"{out.name} [grid {key}] {dk}")
                     arrays[f"{key}|{dk}"] = pr[dk]
                     tot = pr[dk].sum(0)
                     cell[f"{dk}_mix"] = (tot / max(tot.sum(), 1)).tolist()
@@ -217,13 +231,18 @@ def main() -> int:
     ap.add_argument("--grid-batch-size", type=int, default=4,
                     help="batch size of the grid's trimmed cells (default 4, as every grid before 2026-10-27)")
     ap.add_argument("--force-depth", type=int, default=None,
-                    help="random-router arms: every token at this many passes (the depth sweep)")
+                    help="MoR arms: every token at this many passes (the depth sweep)")
     ap.add_argument("--gate-seed", type=int, default=0,
-                    help="with --force-depth: the seed of the random gate draws (0 for every sweep unit; "
-                         "another seed at the same depth measures how much the draw alone moves results)")
+                    help="with --force-depth, random router: the seed of the random gate draws (0 for every "
+                         "sweep unit; another seed at the same depth measures how much the draw alone moves results)")
+    ap.add_argument("--force-scope", choices=("all", "target"), default="all",
+                    help="with --force-depth, learned router: 'target' forces only the positions predicting the "
+                         "target's tokens (target-last and grid; needs --modes '')")
     args = ap.parse_args()
     if args.gate_seed != 0 and args.force_depth is None:
         raise SystemExit("--gate-seed applies only with --force-depth")
+    if args.force_scope != "all" and args.force_depth is None:
+        raise SystemExit("--force-scope applies only with --force-depth")
 
     if torch.cuda.device_count() != 1:
         raise SystemExit("pin exactly one GPU: CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=...")
@@ -243,6 +262,9 @@ def main() -> int:
         if doc and args.force_depth is not None and doc.get("gate_seed", 0) != args.gate_seed:
             raise SystemExit(f"{out} holds gate_seed={doc.get('gate_seed', 0)!r} results; "
                              f"this run draws with {args.gate_seed!r}. Use another --arm-tag.")
+        if doc and args.force_depth is not None and doc.get("force_scope", "all") != args.force_scope:
+            raise SystemExit(f"{out} holds force_scope={doc.get('force_scope', 'all')!r} results; "
+                             f"this run forces {args.force_scope!r}. Use another --arm-tag.")
         todo = [m for m in modes if m not in doc.get("modes", {})]
         need_tl = "target_last" not in doc
         # ⚠ A checkpoint with every mode and target_last done must still run a
@@ -260,12 +282,22 @@ def main() -> int:
         if int(cfg.dataloader_num_workers) != args.num_workers:
             raise SystemExit(f"--num-workers {args.num_workers} != config's "
                              f"{cfg.dataloader_num_workers}: modality orders would differ from training")
-        rf = None
-        if args.force_depth is not None:
+        rf, base, forced = None, "router", args.force_depth is not None
+        if forced:
             if any(m != "router" for m in modes):
                 raise SystemExit("--force-depth runs the main pass as --modes router (or '')")
-            rf = TF.install_random_depth(model, args.force_depth)
-        ov = TF.install_override(model, "router")
+            if args.force_scope == "target" and modes:
+                raise SystemExit("--force-scope target has no main pass: run it with --modes ''")
+            if has_learned_router(model):
+                if args.gate_seed != 0:
+                    raise SystemExit("--gate-seed: a learned router's gate is its own top probability, not a draw")
+                TF.install_learned_depth(model, args.force_depth)
+                base = f"force{args.force_depth}"
+            else:
+                if args.force_scope != "all":
+                    raise SystemExit("--force-scope target needs a learned router")
+                rf = TF.install_random_depth(model, args.force_depth)
+        ov = TF.install_override(model, base)
         if ov is None and any(m != "router" for m in todo):
             raise SystemExit(f"{ck}: interventions need a router; this arm has none")
         step = 0 if ck == "untrained" else int(ck.split("-")[-1])
@@ -285,17 +317,21 @@ def main() -> int:
         if rf is not None:
             doc["trained_recursions"] = rf.n_trained
             doc["gate_seed"] = args.gate_seed
+        elif forced:
+            doc["trained_recursions"] = int(cfg.recursive.num_recursion)
+        if forced:
+            doc["force_scope"] = args.force_scope
         doc.setdefault("modes", {})
 
         for mode in todo:
             t0 = time.perf_counter()
             if ov is not None:
-                TF.install_override(model, mode, seed=0)
+                TF.install_override(model, base if mode == "router" else mode, seed=0)
             if rf is not None:
                 rf.reseed(args.gate_seed)
             res = TF.run_pass(model, loader, override=ov)
             tok = res.pop("tokens")
-            if rf is not None and not (tok["depth"] == args.force_depth).all():
+            if forced and not (tok["depth"] == args.force_depth).all():
                 raise SystemExit(f"{ck}: forced depth {args.force_depth}, captured "
                                  f"{np.unique(tok['depth'], return_counts=True)}")
             keep = tok if mode == "router" else {k: tok[k] for k in ("ce", "correct", "depth") if k in tok}
@@ -320,34 +356,49 @@ def main() -> int:
 
         if need_tl:
             if ov is not None:
-                TF.install_override(model, "router")
+                TF.install_override(model, base)
             corpus = load_row_table(ROOT).corpus.values
             eval_rows = load_eval_rows(root_dir=ROOT)
-            tl = {}
+            tl, tl_rows = {}, {}
             for T in TARGETS:
                 rows = TF.stratified_target_rows(ds, eval_rows, corpus, T, args.target_last_rows)
                 dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T), batch_size=4,
                                                  num_workers=args.num_workers)
                 if rf is not None:
                     rf.reseed(args.gate_seed)
-                res = TF.run_pass(model, dl, override=ov, keep_tokens=ov is not None or rf is not None)
+                if ov is not None:
+                    ov.only_mod = TF.MODALITY_TO_ID[T] if args.force_scope == "target" else None
+                res = TF.run_pass(model, dl, override=ov, keep_tokens=ov is not None or rf is not None,
+                                  per_row_target=T)
                 r = {"n_rows": len(rows), **res["per_modality"][T]}
+                tl_rows[f"{T}|rows"] = np.asarray(rows)
+                for k, v in res["rows"].items():
+                    tl_rows[f"{T}|{k}"] = v
                 if ov is not None or rf is not None:
                     t = res["tokens"]
                     sel = t["label_mod"] == TF.MODALITY_TO_ID[T]
                     r["mean_depth_target"] = float(t["depth"][sel].mean())
-                    if rf is not None and not (t["depth"] == args.force_depth).all():
+                    ctx = (t["label_mod"] > 0) & ~sel
+                    if ctx.any():
+                        r["mean_depth_context"] = float(t["depth"][ctx].mean())
+                    chk = t["depth"][sel] if args.force_scope == "target" else t["depth"]
+                    if forced and not (chk == args.force_depth).all():
                         raise SystemExit(f"{ck} [target-last {T}]: forced depth {args.force_depth}, "
-                                         f"captured {np.unique(t['depth'], return_counts=True)}")
+                                         f"captured {np.unique(chk, return_counts=True)}")
                 tl[T] = r
                 print(f"{ck} [target-last {T}] rows {len(rows)}  ce {r['ce']:.4f}  "
                       f"top1 {r['top1']:.4f}  top5 {r['top5']:.4f}  slot {r['slot_mass']:.4f}")
+            tmp = out / "target_last_rows.tmp.npz"
+            np.savez(tmp, **tl_rows)
+            os.replace(tmp, out / "target_last_rows.npz")
             doc["target_last"] = tl
             write_json(mpath, doc)
+            if ov is not None:
+                ov.only_mod = None
 
         if need_grid:
             run_grid(model, ov, ds, load_eval_rows(root_dir=ROOT), load_row_table(ROOT).corpus.values,
-                     out, doc, args, rf=rf)
+                     out, doc, args, rf=rf, base=base)
 
         del model
         torch.cuda.empty_cache()

@@ -52,10 +52,22 @@ the recursed update is max(r) * alpha. For iid draws the argmax is independent
 of the max, so forcing d and drawing the gate as the max of Nr uniforms is
 exactly the training-time computation conditional on depth d.
 
+DEPTH SWEEP, LEARNED ROUTER (2026-10-28). `install_learned_depth` does the same
+for a LEARNED router through `DepthOverride`'s logit swap, so the gate stays the
+router's own top probability, as in force1/2/3. Above Nr the block list is
+extended as for the random router, and the router's logits are padded with -inf
+up to the new depth (the padded slots get probability 0, so the swapped-in
+maximum keeps its probability). `DepthOverride.only_mod` restricts the forcing to
+the positions that PREDICT one modality's body tokens (mods[t+1] == m, the frame
+of `mean_depth_target`); every other position keeps the router's choice. In a
+target-last row the context precedes the target, so under causal attention the
+context is computed exactly as routed and only the target's depth moves.
+
 Runs in `.venv`. Nothing here imports terratorch.
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
@@ -66,6 +78,12 @@ from eo.data.eo_vocab import ID_TO_MODALITY, MODALITIES, MODALITY_TO_ID, PAD_ID
 from eo.routing.telemetry import find_mor_layers, has_learned_router
 
 MODES =("router", "force1", "force2", "force3", "perm_modality", "perm_all", "skip")
+
+
+def check_mode(mode: str) -> None:
+    """MODES, plus force<d> for any d >= 1 (above Nr through install_learned_depth)."""
+    if mode not in MODES and not re.fullmatch(r"force[1-9][0-9]*", mode):
+        raise ValueError(f"mode must be one of {MODES} or force<d>, got {mode!r}")
 
 
 # ------------------------------------------------------------------ data
@@ -161,13 +179,14 @@ class DepthOverride(torch.nn.Module):
                  alpha: float = 1.0):
         super().__init__()
         self.alpha = alpha
-        if mode not in MODES:
-            raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+        check_mode(mode)
         self.inner, self.mode = inner, mode
         self.gen = torch.Generator(device="cpu").manual_seed(seed)
         self.mod_ids: Optional[torch.Tensor] = None      # (B, L), set per batch
         self.att: Optional[torch.Tensor] = None
         self.last_top_prob: Optional[torch.Tensor] = None
+        self.n_out: Optional[int] = None     # pad the logits to this many depths (install_learned_depth)
+        self.only_mod: Optional[int] = None  # force only the positions predicting this modality
 
     def forward(self, x):
         w = self.inner(x)
@@ -181,7 +200,15 @@ class DepthOverride(torch.nn.Module):
         a = torch.topk(F.softmax(w, dim=-1) * self.alpha, 1, dim=-1,
                        sorted=False).indices.squeeze(-1)    # (B, L)
         if self.mode.startswith("force"):
-            tgt = torch.full_like(a, int(self.mode[-1]) - 1)
+            d = int(self.mode[5:])
+            if d > (self.n_out or w.shape[-1]):
+                raise ValueError(f"{self.mode} above the router's {w.shape[-1]} depths: "
+                                 f"use install_learned_depth, which extends the blocks")
+            tgt = torch.full_like(a, d - 1)
+            if self.only_mod is not None:
+                pred = torch.zeros_like(a, dtype=torch.bool)
+                pred[:, :-1] = self.mod_ids[:, 1:] == self.only_mod
+                tgt = torch.where(pred, tgt, a)
         else:
             tgt = a.clone()
             groups = self.mod_ids if self.mode == "perm_modality" else self.att.long()
@@ -194,8 +221,11 @@ class DepthOverride(torch.nn.Module):
                     tgt[b, idx] = a[b, idx[p]]
         # Swap in fp32, and give the target a margin so it wins UNIQUELY: an
         # exact tie would hand the choice back to topk's tie-breaking. The
-        # margin moves the gate by ~1e-4 relative.
+        # margin moves the gate by ~1e-4 relative. Padded slots (depth > Nr) hold
+        # -inf, so the slot the maximum leaves gets probability 0.
         w32 = w.float()
+        if self.n_out is not None and self.n_out > w32.shape[-1]:
+            w32 = F.pad(w32, (0, self.n_out - w32.shape[-1]), value=float("-inf"))
         top = w32.gather(-1, a.unsqueeze(-1))
         at_tgt = w32.gather(-1, tgt.unsqueeze(-1))
         w2 = w32.clone()
@@ -210,6 +240,7 @@ def install_override(model, mode: str, seed: int = 0) -> Optional[DepthOverride]
     if not layers:
         return None
     layer = layers[0]
+    check_mode(mode)
     if not isinstance(layer.mor_router, DepthOverride):
         layer.mor_router = DepthOverride(layer.mor_router, mode, seed,
                                          alpha=float(layer.cfg.mor.token.get("alpha", 1.0)))
@@ -269,8 +300,38 @@ def install_random_depth(model, depth: Optional[int], seed: int = 0,
     layers = find_mor_layers(model)
     if not layers or has_learned_router(model):
         raise ValueError("install_random_depth needs a MoR model with a RANDOM router "
-                         "(mor.rand_router=true); a learned router takes DepthOverride")
+                         "(mor.rand_router=true); a learned router takes install_learned_depth")
     layer = layers[0]
+    n, _ = _extend_blocks(model, layer, depth, n_blocks)
+    layer.rand_override = RandomDepthForce(depth, n, seed)
+    return layer.rand_override
+
+
+def install_learned_depth(model, depth: Optional[int],
+                          n_blocks: Optional[int] = None) -> DepthOverride:
+    """Put every token of a LEARNED-router model at `depth` passes (None: as routed,
+    with the block list still extended to `n_blocks`, the pass-through control).
+    Idempotent; call again to change. The gate stays the router's own top
+    probability (DepthOverride's swap); above Nr the blocks are extended as in
+    install_random_depth (same checks, KV cache off) and the router's logits are
+    padded. Set `.only_mod` on the returned override to force one modality's
+    predicting positions only.
+    """
+    layers = find_mor_layers(model)
+    if not layers or not has_learned_router(model):
+        raise ValueError("install_learned_depth needs a MoR model with a LEARNED router; "
+                         "a random router takes install_random_depth")
+    layer = layers[0]
+    _, nb = _extend_blocks(model, layer, depth, n_blocks)
+    ov = install_override(model, "router" if depth is None else f"force{depth}")
+    ov.n_out, ov.only_mod = nb, None
+    return ov
+
+
+def _extend_blocks(model, layer, depth: Optional[int], n_blocks: Optional[int]):
+    """The block list extended with the last trained block to max(Nr, depth) blocks
+    (or `n_blocks`), after checking that the trained blocks are tied tensor by
+    tensor. Turns the KV cache off (see install_random_depth). Returns (Nr, blocks)."""
     trained = layer.__dict__.get("_eo_trained_blocks")
     if trained is None:
         trained = list(layer.block_list)                # a plain list: not registered as a module
@@ -287,10 +348,9 @@ def install_random_depth(model, depth: Optional[int], seed: int = 0,
         raise ValueError(f"n_blocks {nb} < max(trained {n}, depth {depth})")
     layer.block_list = torch.nn.ModuleList(trained + [trained[-1]] * (nb - n))
     layer.num_recursion = nb
-    layer.rand_override = RandomDepthForce(depth, n, seed)
     for c in {id(model.config): model.config, id(model.model.config): model.model.config}.values():
         c.use_cache = False
-    return layer.rand_override
+    return n, nb
 
 
 # ------------------------------------------------------------------ the pass

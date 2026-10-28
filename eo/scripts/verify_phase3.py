@@ -52,6 +52,11 @@ unverified deliverable:
                                                     holds the table alone; the unfrozen control
                                                     is refused by record and by body. On one
                                                     visible card, else CPU at fp32 (~10 min)
+  W21 learned-router forced depth        [depth sweep, 2026-10-28] every token at D
+                                                    (above Nr too), the gate the router's own,
+                                                    pass-through and extension exact, D <= Nr
+                                                    = the earlier force<D>; target scope moves
+                                                    the target alone (forward)
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -1622,6 +1627,116 @@ def w18_forced_depth() -> bool:
     return bool(cap_ok and c_pass and c_ext and c_diff and c_tie and c_router)
 
 
+def w21_learned_depth() -> bool:
+    """TF.install_learned_depth on an untrained A10c, 2 held-out rows: as routed with the blocks
+    extended to 5 is bit-identical to no override; every token is captured at d = 1..5 (4, 5 above
+    the trained 3); the gate on the forced depth is the router's own top probability; extending
+    the block list leaves depth 3 bit-identical; d <= 3 equals the earlier install_override
+    force<d>, bit for bit. Target scope (DepthOverride.only_mod), 2 target-last DEM rows at fp32:
+    the positions predicting DEM are at d, every other position keeps the router's depth, and the
+    context's logits stay those of the routed pass. Controls: adjacent depths differ; forcing every
+    position moves the context; force4 without extended blocks and a random router are refused."""
+    import torch
+    from eo.data.eval_split import load_eval_rows, load_row_table
+    from eo.eval import teacher_forced as TF
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import find_mor_layers
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def build():
+        torch.manual_seed(42)
+        m, c = G.build_model(ARM_A10C, None, device=dev)
+        cap = []
+        find_mor_layers(m)[0].register_forward_hook(
+            lambda mod, i, o: cap.append(o.token_expert_indices.detach().cpu()))
+        return m, c, cap
+
+    def fwd(m, cap, batch, ov=None, fp16=True):
+        b = dict(batch)
+        mids = b.pop("modality_ids"); b.pop("labels")
+        inp = {k: v.to(dev) for k, v in b.items()}
+        if ov is not None:
+            ov.mod_ids, ov.att = mids.to(dev), inp["attention_mask"]
+        with torch.no_grad(), torch.autocast(dev, dtype=torch.float16, enabled=fp16 and dev == "cuda"):
+            lg = m(**inp).logits.float()
+        return lg.cpu(), cap[-1].clone()
+
+    model, cfg, cap = build()
+    ds, _ = TF.eval_loader(cfg, num_workers=0)
+    batch = torch.utils.data.default_collate([ds[i] for i in range(2)])
+    base, d0 = fwd(model, cap, batch)
+    ov = TF.install_learned_depth(model, None, n_blocks=5)
+    pt, dpt = fwd(model, cap, batch, ov)
+    c_pass = torch.equal(pt, base) and torch.equal(dpt, d0)
+    gates = []
+    gh = ov.register_forward_hook(lambda mod, i, o: gates.append((o.detach().float(), mod.last_top_prob)))
+    res, cap_ok, gate_err = {}, True, 0.0
+    for d in range(1, 6):
+        TF.install_learned_depth(model, d)
+        res[d], dd = fwd(model, cap, batch, ov)
+        cap_ok &= bool((dd == d - 1).all())
+        w2, top = gates[-1]
+        gate_err = max(gate_err, float(((torch.softmax(w2, -1)[..., d - 1] - top).abs() / top).max()))
+    gh.remove()
+    TF.install_learned_depth(model, 3, n_blocks=5)
+    ext, dd = fwd(model, cap, batch, ov)
+    c_ext = torch.equal(ext, res[3]) and bool((dd == 2).all())
+    c_diff = all(not torch.equal(res[a], res[a + 1]) for a in range(1, 5))
+    m2, _, cap2 = build()
+    c_old = True
+    for d in (1, 2, 3):
+        ov2 = TF.install_override(m2, f"force{d}")
+        c_old &= torch.equal(fwd(m2, cap2, batch, ov2)[0], res[d])
+    TF.install_override(m2, "force4")
+    try:
+        fwd(m2, cap2, batch, ov2); c_unext = False
+    except ValueError:
+        c_unext = True
+    del m2
+    print(f"    as routed, blocks extended to 5 == no override, bitwise = {c_pass}")
+    print(f"    every token at the forced depth, 1..5 = {cap_ok}")
+    print(f"    gate at the forced depth = the router's top probability (max rel. err {gate_err:.1e}) = {gate_err < 1e-3}")
+    print(f"    depth 3 with the list extended to 5 == depth 3, bitwise = {c_ext}")
+    print(f"    d = 1..3 == the earlier install_override force<d>, bitwise = {c_old}")
+    print(f"    control: each depth differs from the next = {c_diff}")
+
+    root = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
+    T = "DEM"; tid = TF.MODALITY_TO_ID[T]
+    rows = TF.stratified_target_rows(ds, load_eval_rows(root_dir=root), load_row_table(root).corpus.values,
+                                     T, 512)[:2]
+    tl = TF.TargetLast(ds, rows, T)
+    tb = torch.utils.data.default_collate([tl[i] for i in range(len(rows))])
+    mids = tb["modality_ids"]
+    pred = torch.zeros_like(mids, dtype=torch.bool)
+    pred[:, :-1] = mids[:, 1:] == tid
+    real = tb["attention_mask"].bool()
+    ctx = real & (torch.arange(mids.shape[1]).unsqueeze(0) < pred.float().argmax(1, keepdim=True))
+    TF.install_learned_depth(model, None)
+    r_lg, r_d = fwd(model, cap, tb, ov, fp16=False)
+    tol = 1e-4 * float(r_lg.abs().max())
+    c_scope, worst = True, 0.0
+    for d in (1, 5):
+        TF.install_learned_depth(model, d)
+        ov.only_mod = tid
+        t_lg, t_d = fwd(model, cap, tb, ov, fp16=False)
+        c_scope &= bool((t_d[pred] == d - 1).all()) and torch.equal(t_d[real & ~pred], r_d[real & ~pred])
+        worst = max(worst, float((t_lg - r_lg).abs().amax(-1)[ctx].max()))
+    ov.only_mod = None
+    a_lg, _ = fwd(model, cap, tb, ov, fp16=False)
+    moved = float((a_lg - r_lg).abs().amax(-1)[ctx].max())
+    print(f"    target scope (DEM, d = 1, 5): its predicting positions at d, the rest as routed = {c_scope}")
+    print(f"    target scope: context logits as routed, fp32 (max |diff| {worst:.1e} <= {tol:.1e}) = {worst <= tol}")
+    print(f"    control: forcing every position moves the context (max |diff| {moved:.2f}) = {moved > 100 * tol}")
+    m3, _ = G.build_model(ARM_A10CR, None, device="cpu")
+    try:
+        TF.install_learned_depth(m3, 2); c_rand = False
+    except ValueError:
+        c_rand = True
+    print(f"    control: force4 without extended blocks is refused = {c_unext}; a random router is refused = {c_rand}")
+    return bool(c_pass and cap_ok and gate_err < 1e-3 and c_ext and c_old and c_diff and c_scope
+                and worst <= tol and moved > 100 * tol and c_unext and c_rand)
+
+
 def w16_t360() -> bool:
     """T360 differs from B10c in exactly its size, data split and budget; it is 2 epochs of the
     train split at a 5% warmup and 10% decay; it builds at 314.64 M non-embedding parameters; and
@@ -1941,6 +2056,7 @@ def main() -> int:
         checks.append(("W6   generated ids land in target slot    [Step 6]", w6_generation_slots))
         checks.append(("W5   fp16 matches fp32; scaler control    [Step 2]", w5_fp16_equivalence))
         checks.append(("W18  forced depth is what it claims       [depth sweep]", w18_forced_depth))
+        checks.append(("W21  learned-router forced depth           [depth sweep]", w21_learned_depth))
 
     results = []
     for title, fn in checks:
