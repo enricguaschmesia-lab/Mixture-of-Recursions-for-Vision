@@ -1,0 +1,34 @@
+# @package _global_
+#
+# ARM B10cL — B10c from the SmolLM-135M body (an LLM), STAGE 2.  LLM init, 2026-10-28
+# (docs/notes/smollm_init_2026-10-28.md).
+#
+# ┌── THE DIFF FROM B10cV (arm_b10cv_vanilla), IN FULL ─────────────────┐
+# │   pretrain_init.conversion    .../smollm_init/b10c_v1/smollm_body   │
+# │   pretrain_init.variant       smollm                                │
+# │ Nothing else: B10cV's recipe with an LLM body instead of CLEVR's,   │
+# │ so B10cL differs from B10c exactly as B10cV does. W22 in            │
+# │ eo/scripts/verify_phase3.py asserts it.                             │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The init: B10c's architecture is SmolLM-135M's own config at 29 layers instead of 30.
+# eo/scripts/convert_smollm_init.py copied 29 of SmolLM's 30 layers (the one whose removal
+# costs SmolLM the least text loss is dropped) and its final norm, bit for bit, under B10c's
+# own seed-42 embedding table, so B10cL, B10cLS, B10cV and B10cS share the table bit for bit.
+# Stage 1 (arm_b10cl_stage1) trains the table under the frozen body; this config starts from
+# stage 1's final checkpoint after eo/train/clevr_init.check_handoff.
+#
+# ⚠ from_stage1 is MANDATORY (inherited ???).
+# ⚠ The conversion lives under ${MOR_EO_RCP} on RCP ($G/weights/smollm_init/...) and under
+#   /data/enric on the workstation.
+#
+#   launch (RCP):  jobs/train.sh b10cl eo_terramesh/arm_b10cl_vanilla vanilla10cl_<ts> \
+#                      pretrain_init.from_stage1=$G/runs/pretrain/phase3/<stage-1 run id>/checkpoint-330
+
+defaults:
+  - arm_b10cv_vanilla
+  - _self_
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/weights/smollm_init/b10c_v1/smollm_body
+  variant: smollm

@@ -31,6 +31,10 @@ Every check here comes with a control that must FAIL it (CLAUDE.md rule 2). The 
 are built in `eo/scripts/convert_clevr_init.py`, which writes `conversion.json` only when
 every check passed and every control fired.
 
+The same training side serves the LLM init (2026-10-28): SmolLM-135M's body under the same
+seeded table, variants `smollm` and `smollm_shuffled`. Its source logic is
+`eo/train/smollm_init.py`, its converter `eo/scripts/convert_smollm_init.py`.
+
 The training side is at the bottom: `pretrain_init` (pretrain.py's hook), `freeze_body`
 (stage 1 trains the embedding table alone) and `check_handoff` (stage 2 starts from a stage 1
 whose body is still the conversion's, bit for bit). Their controls are in
@@ -56,7 +60,10 @@ EMBED_KEY = "model.embed_tokens.weight"
 HEAD_KEY = "lm_head.weight"
 EMBED_KEYS = (EMBED_KEY, HEAD_KEY)
 
-VARIANTS = ("clevr", "shuffled")
+#: The init variants by source: a pretrained body and its shuffled control.
+SOURCES = {"clevr": ("clevr", "shuffled"), "smollm": ("smollm", "smollm_shuffled")}
+VARIANTS = tuple(v for vs in SOURCES.values() for v in vs)
+SHUFFLED = ("shuffled", "smollm_shuffled")
 FUNCTION_TOL = 1e-5        # identical tensors through identical fp32 CPU code: expected 0
 EMBED_STD_RTOL = 0.02      # the fresh table's std against initializer_range
 SHUFFLED_SAME_MAX = 0.05   # a permuted body may keep a few entries in place by chance, not more
@@ -118,11 +125,11 @@ def clevr_reference(src: Path, state: Dict[str, torch.Tensor]):
 
 
 def body_state(state: Dict[str, torch.Tensor], variant: str, shuffle_seed: int = 0) -> Dict[str, torch.Tensor]:
-    """The body to install: CLEVR's as saved, or each tensor permuted independently."""
+    """The body to install: the source's as saved, or each tensor permuted independently."""
     if variant not in VARIANTS:
         raise ValueError(f"variant must be one of {VARIANTS}, got {variant!r}")
     keys = body_keys(state)
-    if variant == "clevr":
+    if variant not in SHUFFLED:
         return {k: state[k] for k in keys}
     g = torch.Generator().manual_seed(shuffle_seed)
     out = {}
@@ -250,8 +257,8 @@ def verify_conversion(init_dir: Path, variant: str, vocab_size: int, check_hash:
     """conversion.json's verdict. A training hook calls this before loading; raises with the reason."""
     cj = init_dir / "conversion.json"
     if not cj.is_file():
-        raise RuntimeError(f"{cj} missing: {init_dir} was not written by convert_clevr_init.py, "
-                           f"or its checks did not pass")
+        raise RuntimeError(f"{cj} missing: {init_dir} was not written by convert_clevr_init.py "
+                           f"or convert_smollm_init.py, or its checks did not pass")
     doc = json.loads(cj.read_text())
     if doc.get("variant") != variant:
         raise RuntimeError(f"{cj}: variant {doc.get('variant')!r}, the run wants {variant!r}")
@@ -293,7 +300,7 @@ def load_rgb_rows(path: Path, expect_sha256: Optional[str] = None) -> Dict[str, 
 #
 #   pretrain_init:
 #     conversion: <dir>         the verified converted init; provenance in both stages
-#     variant: clevr|shuffled   must be the conversion's
+#     variant: clevr|shuffled|smollm|smollm_shuffled   must be the conversion's
 #     freeze_body: true|false   true = stage 1: only the embedding table trains
 #     from_stage1: <ckpt>|null  stage 2: stage 1's FINAL checkpoint, handoff checked
 #
@@ -356,7 +363,7 @@ def read_block(block, env: Optional[Mapping[str, str]] = None) -> Dict:
 def check_arm(cfg) -> None:
     """Vanilla only, and not on top of a fine-tune's init. Raises ValueError."""
     if (cfg.get("recursive") or {}).get("enable") or (cfg.get("mor") or {}).get("enable"):
-        raise ValueError("pretrain_init is for the vanilla arm only: the CLEVR body has 29 "
+        raise ValueError("pretrain_init is for the vanilla arm only: the pretrained body has 29 "
                          "distinct layers, and a recursive arm would tie them")
     if (cfg.get("finetune") or {}).get("init_from"):
         raise ValueError("pretrain_init and finetune.init_from do not combine")

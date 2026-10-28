@@ -57,6 +57,11 @@ unverified deliverable:
                                                     pass-through and extension exact, D <= Nr
                                                     = the earlier force<D>; target scope moves
                                                     the target alone (forward)
+  W22 LLM-init arms differ as intended   [LLM init, 2026-10-28] W19 for B10cL/B10cLS (the
+                                                    SmolLM-135M body and its shuffled control),
+                                                    which also differ from B10cV/B10cS in the
+                                                    body alone and share their table bit for bit
+  W23 the same stages for the LLM init   [LLM init, 2026-10-28] W20 for B10cL
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -685,6 +690,23 @@ PRETRAIN_INIT_KEYS = {"pretrain_init.conversion", "pretrain_init.variant",
 BODY_INIT_KEYS = {"pretrain_init.conversion", "pretrain_init.variant"}
 STAGE1_DIFF_KEYS = {"pretrain_init.freeze_body", "pretrain_init.from_stage1"} | BUDGET_DIFF_KEYS
 STAGE1_K = 330                     # Enric, 2026-10-27
+#: The LLM init (2026-10-28): the same two stages from SmolLM-135M's body (L) and its shuffled
+#: control (LS). Each L config is its CLEVR counterpart with another conversion and variant.
+ARM_B10CL, ARM_B10CLS = "eo_terramesh/arm_b10cl_vanilla", "eo_terramesh/arm_b10cls_vanilla"
+ARM_B10CL1, ARM_B10CLS1 = "eo_terramesh/arm_b10cl_stage1", "eo_terramesh/arm_b10cls_stage1"
+INIT_FAMILIES = {
+    "clevr": dict(v=ARM_B10CV, s=ARM_B10CS, v1=ARM_B10CV1, s1=ARM_B10CS1, variant="clevr",
+                  swapped="shuffled", foreign=None, same_table_as=None,
+                  pairs=((ARM_B10C, ARM_B10CV, PRETRAIN_INIT_KEYS), (ARM_B10CV, ARM_B10CS, BODY_INIT_KEYS),
+                         (ARM_B10CV, ARM_B10CV1, STAGE1_DIFF_KEYS), (ARM_B10CS, ARM_B10CS1, STAGE1_DIFF_KEYS),
+                         (ARM_B10CV1, ARM_B10CS1, BODY_INIT_KEYS))),
+    "smollm": dict(v=ARM_B10CL, s=ARM_B10CLS, v1=ARM_B10CL1, s1=ARM_B10CLS1, variant="smollm",
+                   swapped="smollm_shuffled", foreign="clevr", same_table_as=ARM_B10CV1,
+                   pairs=((ARM_B10C, ARM_B10CL, PRETRAIN_INIT_KEYS), (ARM_B10CL, ARM_B10CLS, BODY_INIT_KEYS),
+                          (ARM_B10CL, ARM_B10CL1, STAGE1_DIFF_KEYS), (ARM_B10CLS, ARM_B10CLS1, STAGE1_DIFF_KEYS),
+                          (ARM_B10CL1, ARM_B10CLS1, BODY_INIT_KEYS), (ARM_B10CV, ARM_B10CL, BODY_INIT_KEYS),
+                          (ARM_B10CV1, ARM_B10CL1, BODY_INIT_KEYS), (ARM_B10CS, ARM_B10CLS, BODY_INIT_KEYS))),
+}
 EMBED_ROWS, HIDDEN = 87556, 576
 
 #: T360 (2026-10-25): B10c's recipe at the SmolLM-360M shape on the TRAIN split, batch 1024.
@@ -1806,10 +1828,20 @@ def _t360_schedule_ok(c) -> bool:
 
 
 def w19_clevr_init_arms() -> bool:
-    """The CLEVR-init arms differ in exactly the intended keys, stage 1 is K = 330 steps at a
-    constant LR after a 5% warmup, and the block reaches the model. Built through the hook
-    (eo/train/clevr_init.pretrain_init), the V and S stage-1 models have the same embedding
-    table bit for bit, differ in every non-constant body tensor, and train the table alone."""
+    return _init_arms(INIT_FAMILIES["clevr"])
+
+
+def w22_smollm_init_arms() -> bool:
+    return _init_arms(INIT_FAMILIES["smollm"])
+
+
+def _init_arms(fam) -> bool:
+    """A pretrained-init family's arms differ in exactly the intended keys, stage 1 is K = 330
+    steps at a constant LR after a 5% warmup, and the block reaches the model. Built through the
+    hook (eo/train/clevr_init.pretrain_init), the V and S stage-1 models have the same embedding
+    table bit for bit, differ in every non-constant body tensor, and train the table alone.
+    W19 runs it for CLEVR (B10cV/B10cS), W22 for SmolLM (B10cL/B10cLS), whose table must also
+    be B10cV's bit for bit, and whose stage 1 must refuse the CLEVR variant."""
     import gc
     import torch
     from eo.generate import conditional as G
@@ -1817,9 +1849,8 @@ def w19_clevr_init_arms() -> bool:
     from omegaconf import OmegaConf
 
     ok = True
-    for a, b, keys in ((ARM_B10C, ARM_B10CV, PRETRAIN_INIT_KEYS), (ARM_B10CV, ARM_B10CS, BODY_INIT_KEYS),
-                       (ARM_B10CV, ARM_B10CV1, STAGE1_DIFF_KEYS), (ARM_B10CS, ARM_B10CS1, STAGE1_DIFF_KEYS),
-                       (ARM_B10CV1, ARM_B10CS1, BODY_INIT_KEYS)):
+    V, S, V1, S1 = fam["v"], fam["s"], fam["v1"], fam["s1"]
+    for a, b, keys in fam["pairs"]:
         diff = _arm_diff(_compose(a), _compose(b))
         pair_ok = diff == keys
         print(f"    {b.split('/')[-1]} vs {a.split('/')[-1]}: differs in exactly the {len(keys)} intended keys = {pair_ok}")
@@ -1827,7 +1858,7 @@ def w19_clevr_init_arms() -> bool:
             print(f"      measured extra {sorted(diff - keys)}, missing {sorted(keys - diff)}")
         ok &= pair_ok
 
-    c1 = _compose(ARM_B10CV1)
+    c1 = _compose(V1)
     lr = _lr_schedule(c1, range(STAGE1_K))
     warm = int(c1.num_warmup_steps)
     s_ok = (int(c1.num_train_steps) == int(c1.stop_steps) == STAGE1_K and warm == round(0.05 * STAGE1_K)
@@ -1835,18 +1866,19 @@ def w19_clevr_init_arms() -> bool:
             and STAGE1_K % int(c1.save_steps) == 0 and int(c1.save_steps) % int(c1.eval_steps) == 0)
     print(f"    stage 1: {STAGE1_K} steps, warmup {warm}, then lr {c1.learning_rate} to the last step; "
           f"save {c1.save_steps}, eval {c1.eval_steps} = {s_ok}")
-    stage2 = _compose(ARM_B10CV)
+    stage2 = _compose(V)
     trap = OmegaConf.is_missing(stage2.pretrain_init, "from_stage1") and stage2.pretrain_init.get("from_stage1") is None
     print(f"    stage 2's from_stage1 is mandatory (???), and .get() would read it as None = {trap}")
     ok &= s_ok and trap
 
     built = {}
-    for arm in (ARM_B10CV1, ARM_B10CS1):
+    for arm in (V1, S1):
         m, cfg = G.build_model(arm, None, device="cpu")
         rep = CI.pretrain_init(m, cfg)
         built[arm] = (m.state_dict(), rep, [n for n, p in m.named_parameters() if p.requires_grad])
         del m
-    (sv, rv, tv), (ss, rs, ts) = built[ARM_B10CV1], built[ARM_B10CS1]
+    (sv, rv, tv), (ss, rs, ts) = built[V1], built[S1]
+    print(f"    built through the hook: {rv['variant']} and {rs['variant']}")
     want = EMBED_ROWS * HIDDEN
     table = torch.equal(sv[CI.EMBED_KEY], ss[CI.EMBED_KEY])
     body = [k for k in sv if k not in CI.EMBED_KEYS]
@@ -1858,14 +1890,21 @@ def w19_clevr_init_arms() -> bool:
           f"{len(const)} constant ones equal (of {len(body)}) = {b_ok}")
     print(f"    only {CI.EMBED_KEY} trains, {want:,} parameters, in both = {t_ok}")
     ok &= table and b_ok and t_ok
+    if fam["same_table_as"] is not None:
+        m, cfg = G.build_model(fam["same_table_as"], None, device="cpu")
+        CI.pretrain_init(m, cfg)
+        same = torch.equal(m.state_dict()[CI.EMBED_KEY], sv[CI.EMBED_KEY])
+        print(f"    the table is {fam['same_table_as'].split('/')[-1]}'s bit for bit = {same}")
+        ok &= same
+        del m
     del built, sv, ss
     gc.collect()
 
     # CONTROL 1: a stray key in the S overlay must be caught.
-    c1_ = _arm_diff(_compose(ARM_B10CV), _compose(ARM_B10CS, ["seed=43"])) != BODY_INIT_KEYS
-    print(f"    control: a stray seed in B10cS is caught                  = {c1_}")
+    c1_ = _arm_diff(_compose(V), _compose(S, ["seed=43"])) != BODY_INIT_KEYS
+    print(f"    control: a stray seed in {S.split('_')[-2]} is caught = {c1_}")
     # CONTROL 2: the trainable check must reject a model whose body was not frozen.
-    m, cfg = G.build_model(ARM_B10CV1, None, device="cpu", overrides=["pretrain_init.freeze_body=false"])
+    m, cfg = G.build_model(V1, None, device="cpu", overrides=["pretrain_init.freeze_body=false"])
     n_unfrozen = CI.pretrain_init(m, cfg)["trainable_params"]
     c2 = n_unfrozen != want
     print(f"    control: freeze_body=false trains {n_unfrozen:,} parameters, caught = {c2}")
@@ -1881,15 +1920,20 @@ def w19_clevr_init_arms() -> bool:
         except (ValueError, RuntimeError) as e:
             return True, str(e).splitlines()[0][:80]
     # CONTROL 3: the V stage 1 pointed at the shuffled body (a swapped variant) is refused.
-    c3, why3 = refused(ARM_B10CV1, ["pretrain_init.variant=shuffled"])
+    c3, why3 = refused(V1, [f"pretrain_init.variant={fam['swapped']}"])
     # CONTROL 4: stage 2 with from_stage1 forgotten is refused, not run as "no stage 1".
-    c4, why4 = refused(ARM_B10CV, [], model=False)
+    c4, why4 = refused(V, [], model=False)
     # CONTROL 5: the block on a recursive arm is refused.
-    c5, why5 = refused(ARM_B10CV1, ["recursive.enable=true", "mor.enable=true"], model=False)
+    c5, why5 = refused(V1, ["recursive.enable=true", "mor.enable=true"], model=False)
     print(f"    control: variant swapped is refused = {c3} ({why3})")
     print(f"    control: stage 2 without from_stage1 is refused = {c4} ({why4})")
     print(f"    control: a recursive arm is refused = {c5} ({why5})")
-    return bool(ok and c1_ and c2 and c3 and c4 and c5)
+    c6 = True
+    if fam["foreign"] is not None:
+        # CONTROL 6: this conversion under another source's variant is refused.
+        c6, why6 = refused(V1, [f"pretrain_init.variant={fam['foreign']}"])
+        print(f"    control: the {fam['foreign']} variant on this conversion is refused = {c6} ({why6})")
+    return bool(ok and c1_ and c2 and c3 and c4 and c5 and c6)
 
 
 def _pretrain(arm: str, out: str, overrides, env, timeout: int = 1800):
@@ -1902,6 +1946,14 @@ def _pretrain(arm: str, out: str, overrides, env, timeout: int = 1800):
 
 
 def w20_clevr_stages() -> bool:
+    return _stages(INIT_FAMILIES["clevr"])
+
+
+def w23_smollm_stages() -> bool:
+    return _stages(INIT_FAMILIES["smollm"])
+
+
+def _stages(fam) -> bool:
     """Stage 1, the handoff and stage 2, end to end through pretrain.py (2 steps each, batch 1,
     no warmup). Stage 1 keeps the body bit for bit, trains the table, and its optimizer holds the
     table alone; the handoff accepts it; stage 2 starts from it and trains everything. Controls:
@@ -1947,8 +1999,11 @@ def w20_clevr_stages() -> bool:
         (root / f"{name}.log").write_text(log)
         return rc, log, Path(SAVE_DIR) / "pretrain" / out
 
-    conv = Path(str(_compose(ARM_B10CV1).pretrain_init.conversion))     # resolves ${oc.env:...}
-    conv_doc = CI.verify_conversion(conv, "clevr", EMBED_ROWS)
+    V, V1, variant = fam["v"], fam["v1"], fam["variant"]
+    rel += f"_{variant}"
+    root = Path(SAVE_DIR) / "pretrain" / rel
+    conv = Path(str(_compose(V1).pretrain_init.conversion))     # resolves ${oc.env:...}
+    conv_doc = CI.verify_conversion(conv, variant, EMBED_ROWS)
     s0 = CI._state(conv)
     body = [k for k in s0 if k not in CI.EMBED_KEYS]
 
@@ -1958,14 +2013,14 @@ def w20_clevr_stages() -> bool:
 
     ok = True
     # Stage 1, frozen.
-    rc_a, log_a, dir_a = run("stage1", ARM_B10CV1, [])
+    rc_a, log_a, dir_a = run("stage1", V1, [])
     ck_a = dir_a / "checkpoint-2"
     if rc_a != 0 or not ck_a.is_dir():
         print(f"    stage 1 run FAILED (exit {rc_a}); log {root / 'stage1.log'}")
         print("      " + "\n      ".join(log_a.strip().splitlines()[-8:]))
         return False
     rec_a = json.loads((dir_a / CI.RECORD).read_text())
-    ho = CI.check_handoff(ck_a, conv, "clevr", conv_doc)
+    ho = CI.check_handoff(ck_a, conv, variant, conv_doc)
     shapes = opt_state(ck_a)
     losses = [h["loss"] for h in json.loads((ck_a / "trainer_state.json").read_text())["log_history"] if "loss" in h]
     a_ok = (rec_a["trainable_params"] == EMBED_ROWS * HIDDEN and shapes == [(EMBED_ROWS, HIDDEN)]
@@ -1977,7 +2032,7 @@ def w20_clevr_stages() -> bool:
     ok &= a_ok
 
     # CONTROL: the same stage 1 without the freeze moves the body; the handoff refuses it.
-    rc_b, log_b, dir_b = run("stage1_unfrozen", ARM_B10CV1, ["pretrain_init.freeze_body=false"])
+    rc_b, log_b, dir_b = run("stage1_unfrozen", V1, ["pretrain_init.freeze_body=false"])
     ck_b = dir_b / "checkpoint-2"
     if rc_b != 0 or not ck_b.is_dir():
         print(f"    control run FAILED (exit {rc_b}); log {root / 'stage1_unfrozen.log'}")
@@ -1985,21 +2040,21 @@ def w20_clevr_stages() -> bool:
     sb = CI._state(ck_b)
     moved = sum(not torch.equal(sb[k], s0[k]) for k in body)
     try:
-        CI.check_handoff(ck_b, conv, "clevr", conv_doc)
+        CI.check_handoff(ck_b, conv, variant, conv_doc)
         c_rec = False
     except RuntimeError:
         c_rec = True
     rec_b = json.loads((dir_b / CI.RECORD).read_text())
     rec_b["freeze_body"] = True                        # doctored: claims the freeze
     (dir_b / CI.RECORD).write_text(json.dumps(rec_b))
-    rc_d, log_d, _ = run("stage2_from_unfrozen", ARM_B10CV, [f"pretrain_init.from_stage1={ck_b}"])
+    rc_d, log_d, _ = run("stage2_from_unfrozen", V, [f"pretrain_init.from_stage1={ck_b}"])
     c_body = rc_d != 0 and "the freeze did not hold" in log_d
     print(f"    control: without the freeze {moved} of {len(body)} body tensors moved = {moved > 0}")
     print(f"    control: the handoff refuses it by its record = {c_rec}; with the record doctored, "
           f"pretrain.py refuses it by the body (exit {rc_d}) = {c_body}")
 
     # Stage 2 from stage 1.
-    rc_c, log_c, dir_c = run("stage2", ARM_B10CV, [f"pretrain_init.from_stage1={ck_a}"])
+    rc_c, log_c, dir_c = run("stage2", V, [f"pretrain_init.from_stage1={ck_a}"])
     ck_c = dir_c / "checkpoint-2"
     if rc_c != 0 or not ck_c.is_dir():
         print(f"    stage 2 run FAILED (exit {rc_c}); log {root / 'stage2.log'}")
@@ -2047,6 +2102,8 @@ def main() -> int:
         ("W17  A10cR5 changes only the recursions     [depth sweep]", w17_a10cr5),
         ("W19  CLEVR-init arms differ only as intended [CLEVR init]", w19_clevr_init_arms),
         ("W20  stage 1 freezes, handoff, stage 2      [CLEVR init]", w20_clevr_stages),
+        ("W22  LLM-init arms differ only as intended  [LLM init]", w22_smollm_init_arms),
+        ("W23  stage 1 freezes, handoff, stage 2      [LLM init]", w23_smollm_stages),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]

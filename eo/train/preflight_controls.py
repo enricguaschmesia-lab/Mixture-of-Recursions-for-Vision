@@ -563,6 +563,8 @@ def main(argv=None) -> int:
         ("resume: run dir records another variant", ci(s1_cfg, run_dir=_fake_stage1(
             tmp / "ci_res_shuf", conv, record={"variant": "shuffled"}).parent, resuming=True)),
         ("resume: run dir has no record",         ci(s1_cfg, run_dir=tmp / "ci_res_none", resuming=True)),
+        # The LLM init (2026-10-28) shares the hook: its stage 1 on a CLEVR conversion is refused.
+        ("LLM init: stage 1 on a CLEVR conversion", ci(eo_cfg / "arm_b10cl_stage1.yaml")),
     ]
     (tmp / "ci_s1_norec" / "pretrain_init.json").unlink()
     (tmp / "ci_res_none").mkdir()
@@ -572,12 +574,18 @@ def main(argv=None) -> int:
         ("CLEVR init: stage 2 from a good stage 1", "pretrain init", _results(**stage2(good_s1))),
         ("CLEVR init: resume stage 1 as itself",  "pretrain init", _results(**ci(s1_cfg, run_dir=good_s1.parent, resuming=True))),
     ]
-    real = Path("/data/enric/weights/clevr_init/b10c_v1")
-    if (real / "clevr_body/conversion.json").is_file() and (real / "shuffled_body/conversion.json").is_file():
-        ci_pos += [(f"CLEVR init: {c} as shipped", "pretrain init", _results(env=GOOD_ENV, config=eo_cfg / f"{c}.yaml"))
-                   for c in ("arm_b10cv_stage1", "arm_b10cs_stage1")]
-    else:
-        print("\n(CLEVR init: the shipped-config positives skipped, no conversion on this machine)")
+    ci_pos.append(("LLM init: stage 1 on an LLM conversion", "pretrain init", _results(
+        **ci(eo_cfg / "arm_b10cl_stage1.yaml", conversion=_fake_conversion(tmp / "ci_conv_llm", variant="smollm")))))
+    for label, real, shipped in (
+            ("CLEVR init", Path("/data/enric/weights/clevr_init/b10c_v1"),
+             {"clevr_body": "arm_b10cv_stage1", "shuffled_body": "arm_b10cs_stage1"}),
+            ("LLM init", Path("/data/enric/weights/smollm_init/b10c_v1"),
+             {"smollm_body": "arm_b10cl_stage1", "smollm_shuffled_body": "arm_b10cls_stage1"})):
+        if all((real / d / "conversion.json").is_file() for d in shipped):
+            ci_pos += [(f"{label}: {c} as shipped", "pretrain init", _results(env=GOOD_ENV, config=eo_cfg / f"{c}.yaml"))
+                       for c in shipped.values()]
+        else:
+            print(f"\n({label}: the shipped-config positives skipped, no conversion on this machine)")
 
     print("\nnegative controls (each must FIRE):")
     fired = 0

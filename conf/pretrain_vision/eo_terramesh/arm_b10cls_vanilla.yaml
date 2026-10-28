@@ -1,0 +1,27 @@
+# @package _global_
+#
+# ARM B10cLS — B10cL's CONTROL: the SmolLM body with each tensor's entries shuffled, STAGE 2.
+# LLM init, 2026-10-28 (docs/notes/smollm_init_2026-10-28.md).
+#
+# ┌── THE DIFF FROM B10cL (arm_b10cl_vanilla), IN FULL ─────────────────┐
+# │   pretrain_init.conversion    .../smollm_shuffled_body              │
+# │   pretrain_init.variant       smollm_shuffled                       │
+# │ Nothing else: the table is B10cL's bit for bit, and the body keeps  │
+# │ every tensor's values and scale but none of SmolLM's structure.     │
+# │ W22 in eo/scripts/verify_phase3.py asserts it.                      │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# B10cL vs B10cLS asks "did text pretraining teach the body something useful for EO?",
+# with SmolLM's weight scale (~2x CLEVR's) held fixed; B10cL vs B10c is the whole recipe
+# against scratch.
+#
+#   launch (RCP):  jobs/train.sh b10cls eo_terramesh/arm_b10cls_vanilla vanilla10cls_<ts> \
+#                      pretrain_init.from_stage1=$G/runs/pretrain/phase3/<stage-1 run id>/checkpoint-330
+
+defaults:
+  - arm_b10cl_vanilla
+  - _self_
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/weights/smollm_init/b10c_v1/smollm_shuffled_body
+  variant: smollm_shuffled

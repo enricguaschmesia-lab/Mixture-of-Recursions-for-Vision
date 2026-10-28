@@ -54,6 +54,7 @@ from util.seeding import set_global_seed  # noqa: E402
 
 SEQ_LEN = 520            # two CLEVR chunks (258 each) and then some
 DROPPED = "model.layers.13.mlp.down_proj.weight"   # the strict-load control's missing tensor
+VARIANTS = C.SOURCES["clevr"]      # this converter writes the CLEVR pair only
 
 
 def build(arm_config: str, seed: int):
@@ -120,7 +121,7 @@ def main():
         C.overlap_layout(fresh, state, CODEBOOK["S2L2A"]), fresh, init_std))
 
     models = {}
-    for v in C.VARIANTS:
+    for v in VARIANTS:
         m = copy.deepcopy(target)
         C.install_body(m, C.body_state(state, v, a.shuffle_seed))
         X.assert_tied(m)
@@ -133,8 +134,8 @@ def main():
         x = ref.model.embed_tokens(ids)
     pos = torch.arange(SEQ_LEN).unsqueeze(0).expand(2, -1)
 
-    checks = {v: {} for v in C.VARIANTS}
-    controls = {v: {} for v in C.VARIANTS}
+    checks = {v: {} for v in VARIANTS}
+    controls = {v: {} for v in VARIANTS}
 
     print("body identity / function (clevr)")
     checks["clevr"]["body_identity"] = C.check_body_identity(models["clevr"], state)
@@ -154,16 +155,16 @@ def main():
     controls["shuffled"]["body_permutation:untrained_body"] = fired(C.check_body_permutation(scratch, state))
     del scratch
 
-    for v in C.VARIANTS:
+    for v in VARIANTS:
         checks[v]["fresh_embedding"] = C.check_fresh_embedding(models[v].model.embed_tokens.weight, fresh, init_std)
         checks[v]["seeded_build_reproducible"] = reproducible
         controls[v]["fresh_embedding:other_seed"] = ctl_other_seed
         controls[v]["fresh_embedding:overlap_layout"] = ctl_overlap
 
     def gate(stage):
-        bad = [f"{v}.{n}" for v in C.VARIANTS for n, c in checks[v].items() if not c["passed"]]
-        silent = [f"{v}.{n}" for v in C.VARIANTS for n, c in controls[v].items() if not c["fired"]]
-        for v in C.VARIANTS:
+        bad = [f"{v}.{n}" for v in VARIANTS for n, c in checks[v].items() if not c["passed"]]
+        silent = [f"{v}.{n}" for v in VARIANTS for n, c in controls[v].items() if not c["fired"]]
+        for v in VARIANTS:
             for n, c in checks[v].items():
                 print(f"  {v:8s} check   {n:42s} {'PASS' if c['passed'] else 'FAIL'}")
             for n, c in controls[v].items():
@@ -175,7 +176,7 @@ def main():
 
     # --- write, then load back strictly --------------------------------------------------
     a.out.mkdir(parents=True, exist_ok=True)
-    dirs = {v: a.out / f"{v}_body" for v in C.VARIANTS}
+    dirs = {v: a.out / f"{v}_body" for v in VARIANTS}
     for v, d in dirs.items():
         models[v].save_pretrained(d, safe_serialization=True)
 
@@ -208,7 +209,7 @@ def main():
     except RuntimeError as err:
         ctl_missing = {"refused": True, "dropped": DROPPED, "message": str(err)[:200], "fired": True}
     shutil.rmtree(broken)
-    for v in C.VARIANTS:
+    for v in VARIANTS:
         controls[v]["strict_load:missing_tensor"] = ctl_missing
     del loader
 

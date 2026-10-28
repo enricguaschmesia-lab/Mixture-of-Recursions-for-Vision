@@ -808,7 +808,7 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
                 raise RuntimeError(f"resuming, but {ctx.run_dir / CI.RECORD} is missing")
     except (ValueError, RuntimeError, FileNotFoundError, KeyError) as e:
         return CheckResult("pretrain init", False, str(e).splitlines()[0],
-                           "Stage 1: launch arm_b10c{v,s}_stage1 as it is. Stage 2: pass "
+                           "Stage 1: launch arm_b10c{v,s,l,ls}_stage1 as it is. Stage 2: pass "
                            "pretrain_init.from_stage1=<stage 1 run>/checkpoint-<last>.")
     stage = ("stage 1 (body frozen)" if plan["freeze_body"] else
              f"stage 2 from {plan['from_stage1'].parent.name}/{plan['from_stage1'].name}"

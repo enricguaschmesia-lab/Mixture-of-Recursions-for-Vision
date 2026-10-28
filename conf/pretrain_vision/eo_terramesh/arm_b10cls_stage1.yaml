@@ -1,0 +1,20 @@
+# @package _global_
+#
+# ARM B10cLS, STAGE 1 — the shuffled-SmolLM control's embedding warm-up.  LLM init, 2026-10-28
+# (docs/notes/smollm_init_2026-10-28.md).
+#
+# ┌── THE DIFF FROM B10cL STAGE 1 (arm_b10cl_stage1), IN FULL ──────────┐
+# │   pretrain_init.conversion    .../smollm_shuffled_body              │
+# │   pretrain_init.variant       smollm_shuffled                       │
+# │ Nothing else. W22 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+#   launch (RCP):  jobs/train.sh b10cls_s1 eo_terramesh/arm_b10cls_stage1 vanilla10cls_s1_<ts>
+
+defaults:
+  - arm_b10cl_stage1
+  - _self_
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/weights/smollm_init/b10c_v1/smollm_shuffled_body
+  variant: smollm_shuffled
