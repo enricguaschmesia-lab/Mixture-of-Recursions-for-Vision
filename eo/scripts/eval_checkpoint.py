@@ -57,6 +57,7 @@ keeps the router's choice, so the context is computed exactly as routed. It has
 no main pass (any-to-any has no single target): run it with --modes ''. Its
 check is on the predicting positions alone. A directory holding another scope
 is refused.
+--skip-target-last runs no target-last pass (a main-pass-only unit).
 
 Arm B works unchanged: it has no router, so it gets the accuracy metrics and
 no depth, and any --modes other than `router` are refused for it.
@@ -230,6 +231,9 @@ def main() -> int:
                     help="add the grid's 'all' row (sources=None, untrimmed): the P3 check")
     ap.add_argument("--grid-batch-size", type=int, default=4,
                     help="batch size of the grid's trimmed cells (default 4, as every grid before 2026-10-27)")
+    ap.add_argument("--skip-target-last", action="store_true",
+                    help="no target-last pass: a main-pass-only unit, e.g. into its own --arm-tag while "
+                         "another process writes the target-last of the same model and depth")
     ap.add_argument("--force-depth", type=int, default=None,
                     help="MoR arms: every token at this many passes (the depth sweep)")
     ap.add_argument("--gate-seed", type=int, default=0,
@@ -266,7 +270,7 @@ def main() -> int:
             raise SystemExit(f"{out} holds force_scope={doc.get('force_scope', 'all')!r} results; "
                              f"this run forces {args.force_scope!r}. Use another --arm-tag.")
         todo = [m for m in modes if m not in doc.get("modes", {})]
-        need_tl = "target_last" not in doc
+        need_tl = "target_last" not in doc and not args.skip_target_last
         # ⚠ A checkpoint with every mode and target_last done must still run a
         #   requested grid; without this the --grid run silently does nothing.
         gpath = out / "grid.json"
