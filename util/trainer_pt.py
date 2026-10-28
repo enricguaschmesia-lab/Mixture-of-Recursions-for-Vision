@@ -151,8 +151,11 @@ class PerModalityLossMixin:
             for name in list(self.modality_tr_loss.keys()):
                 tot = self._nested_gather(self.modality_tr_loss[name]).sum().item()
                 cnt = self._nested_gather(self.modality_tr_count[name]).sum().item()
-                self.modality_tr_loss[name] -= self.modality_tr_loss[name]
-                self.modality_tr_count[name] -= self.modality_tr_count[name]
+                # ⚠ zero_(), not `x -= x`: nan - nan is nan, so one non-finite batch
+                #   (an fp16 overflow, a skipped step) used to stick for the rest of
+                #   the run. B10cL lost every per-modality curve to it (2026-10-28).
+                self.modality_tr_loss[name].zero_()
+                self.modality_tr_count[name].zero_()
                 if cnt > 0:
                     logs[f"loss_{name}"] = round(tot / cnt, 4)
         return super().log(logs, start_time)
@@ -165,9 +168,9 @@ class PerModalityLossMixin:
         hundreds of GB -- so the per-modality CE has to be accumulated inside
         compute_loss, where the logits still exist, and folded in here.
         """
-        for name in self.modality_ev_loss:
-            self.modality_ev_loss[name] = self.modality_ev_loss[name] - self.modality_ev_loss[name]
-            self.modality_ev_count[name] = self.modality_ev_count[name] - self.modality_ev_count[name]
+        for name in self.modality_ev_loss:                # zero_(): see log()
+            self.modality_ev_loss[name].zero_()
+            self.modality_ev_count[name].zero_()
 
         metrics = super().evaluate(*args, **kwargs)
 

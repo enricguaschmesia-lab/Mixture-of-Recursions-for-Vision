@@ -62,6 +62,9 @@ unverified deliverable:
                                                     which also differ from B10cV/B10cS in the
                                                     body alone and share their table bit for bit
   W23 the same stages for the LLM init   [LLM init, 2026-10-28] W20 for B10cL
+  W24 a nan per-modality CE marks one    [LLM init, 2026-10-28] the train and eval
+      logging interval, not the run                 accumulators reset with zero_(); control:
+                                                    the old `x -= x` reset stays nan
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -2078,6 +2081,83 @@ def _stages(fam) -> bool:
     return passed
 
 
+#: The last commit whose per-modality accumulators were reset with `x -= x`: W24's control.
+_STICKY_RESET_COMMIT = "dadcf81"
+
+
+def w24_per_modality_reset() -> bool:
+    """A non-finite per-modality CE marks the interval it falls in, not the rest of the run.
+
+    ⚠ B10cL, 2026-10-28: one stage-1 batch overflowed under fp16 (the grad scaler skipped that
+    step), and every per-modality curve read nan from then on, through stage 2, while `loss` and
+    `eval_loss` stayed finite. The accumulators were reset with `x -= x`, and nan - nan is nan.
+    The mixin runs here on a stub trainer: interval 1 carries a nan batch, interval 2 none, on the
+    train and the eval axis. CONTROLS: the same mixin at _STICKY_RESET_COMMIT stays nan in interval
+    2; a nan batch in interval 2 shows as nan (the check can see one).
+    """
+    import subprocess
+    import types
+
+    import torch
+
+    from util.trainer_pt import PerModalityLossMixin
+
+    src = subprocess.run(["git", "show", f"{_STICKY_RESET_COMMIT}:util/trainer_pt.py"], cwd=str(REPO),
+                         capture_output=True, text=True, check=True).stdout
+    old = types.ModuleType("trainer_pt_sticky_reset")
+    old.__file__ = str(REPO / "util" / "trainer_pt.py")
+    exec(compile(src, f"{_STICKY_RESET_COMMIT}:util/trainer_pt.py", "exec"), old.__dict__)
+
+    nan = float("nan")
+
+    def run(mixin, tr2, ev2):
+        class Base:
+            def log(self, logs, start_time=None):
+                self.logged.append(dict(logs))
+
+            def evaluate(self, *a, **k):
+                for ce in self.eval_batches:
+                    self._accumulate_per_modality(ce, evaluating=True)
+                return {}
+
+        class Stub(mixin, Base):
+            def __init__(self):
+                self.logged, self.id_to_modality = [], {1: "S2L2A", 2: "DEM"}
+                z = lambda: {n: torch.tensor(0.0) for n in self.id_to_modality.values()}  # noqa: E731
+                self.modality_tr_loss, self.modality_tr_count = z(), z()
+                self.modality_ev_loss, self.modality_ev_count = z(), z()
+
+            def _nested_gather(self, t):
+                return t
+
+        t, out = Stub(), {}
+        for i, s2 in ((1, nan), (2, tr2)):
+            t._accumulate_per_modality({"S2L2A": torch.tensor(s2), "DEM": torch.tensor(2.0)}, evaluating=False)
+            t.log({"loss": 1.0})
+            out[f"train{i}"] = t.logged[-1]["loss_S2L2A"]
+        for i, s2 in ((1, nan), (2, ev2)):
+            t.eval_batches = [{"S2L2A": torch.tensor(s2), "DEM": torch.tensor(2.0)},
+                              {"S2L2A": torch.tensor(1.0), "DEM": torch.tensor(4.0)}]
+            m = t.evaluate()
+            out[f"eval{i}"], out[f"eval{i}_DEM"] = m["eval_loss_S2L2A"], m["eval_loss_DEM"]
+        return out
+
+    fin = lambda x: bool(np.isfinite(x))  # noqa: E731
+    now = run(PerModalityLossMixin, 3.0, 3.0)
+    ok = (not fin(now["train1"]) and now["train2"] == 3.0 and not fin(now["eval1"])
+          and now["eval2"] == 2.0 and now["eval1_DEM"] == now["eval2_DEM"] == 3.0)
+    print(f"    nan batch in interval 1, none in 2: train {now['train1']} -> {now['train2']}, "
+          f"eval {now['eval1']} -> {now['eval2']} (DEM {now['eval2_DEM']}) = {ok}")
+    was = run(old.PerModalityLossMixin, 3.0, 3.0)
+    c_old = not fin(was["train2"]) and not fin(was["eval2"])
+    print(f"    control: the reset at {_STICKY_RESET_COMMIT} stays nan in interval 2 "
+          f"(train {was['train2']}, eval {was['eval2']}) = {c_old}")
+    both = run(PerModalityLossMixin, nan, nan)
+    c_nan = not fin(both["train2"]) and not fin(both["eval2"])
+    print(f"    control: a nan batch in interval 2 shows as nan = {c_nan}")
+    return bool(ok and c_old and c_nan)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2104,6 +2184,7 @@ def main() -> int:
         ("W20  stage 1 freezes, handoff, stage 2      [CLEVR init]", w20_clevr_stages),
         ("W22  LLM-init arms differ only as intended  [LLM init]", w22_smollm_init_arms),
         ("W23  stage 1 freezes, handoff, stage 2      [LLM init]", w23_smollm_stages),
+        ("W24  a nan per-modality CE marks one interval [LLM init]", w24_per_modality_reset),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]
