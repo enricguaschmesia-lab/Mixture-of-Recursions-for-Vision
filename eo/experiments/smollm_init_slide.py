@@ -1,13 +1,15 @@
-"""One slide: B10cL (SmolLM-135M's layers) against B10c (from scratch), with B10cV (CLEVR's) for reference.
+"""One slide: B10cL (SmolLM-135M's layers) against B10c (from scratch), with B10cLS (the same layers, each
+tensor's entries shuffled) and B10cV (CLEVR's layers) for reference.
 `.venv` or any python with matplotlib.
 
 clevr_init_slide.py's figure for the LLM init. Left, what B10cL is, in the same diagram language. Right,
 B10cL - B10c on the trainer's logged held-out loss and on the training loss (same sequences, seed 42), with
-B10cV - B10c's held-out curve as a thin reference line and the seed-to-seed gap of A10c (seeds 42 and 43)
-as the noise scale.
+B10cLS - B10c's and B10cV - B10c's held-out curves as thin lines and the seed-to-seed gap of A10c (seeds 42
+and 43) as the noise scale.
 
 Every number is read from a stored result:
   /data/enric/logs/smollm_init/b10cl-s2-*.log     B10cL stage 2, `runai logs` (its eval and loss dicts)
+  /data/enric/logs/smollm_init/b10cls-s2-*.log    B10cLS stage 2
   /data/enric/logs/clevr_init/b10cv-s2-*.log      B10cV stage 2
   runs/pretrain/phase3/vanilla10c_20261011_172253/checkpoint-3300/trainer_state.json        B10c
   runs/pretrain/phase3/{mor10c_20261012_013533,mor10cs2_20261012_181812}/checkpoint-3300/trainer_state.json
@@ -36,10 +38,13 @@ from matplotlib.patches import FancyBboxPatch  # noqa: E402
 LOGS = Path("/data/enric/logs/smollm_init")
 OUT = Path("/data/enric/reports/smollm_init/figs")
 L_LOG = "b10cl-s2-20261028-133225.log"
+LS_LOG = "b10cls-s2-20261028-221458.log"
 SPE, EVAL, LOGSTEP = cs.SPE, cs.EVAL, cs.LOGSTEP
 
-#: B10cL blue: min simulated-CVD OKLab dE 16.1 against B10cV's plum, 26.1 against B10c's orange (2026-10-28)
-COL = {**cs.COL, "b10cl": "#3266cc"}
+#: B10cL blue: min simulated-CVD OKLab dE 16.1 against B10cV's plum, 26.1 against B10c's orange (2026-10-28).
+#: B10cLS a lighter step of the same blue: 16.7 against B10cL, 23.4 against plum, 24.3 against orange;
+#: 2.4:1 on the surface (2026-10-29)
+COL = {**cs.COL, "b10cl": "#3266cc", "b10cls": "#6da7ec"}
 SURF, INK, INK2, MUTED, GRIDC, BAND = cs.SURF, cs.INK, cs.INK2, cs.MUTED, cs.GRIDC, cs.BAND
 
 
@@ -59,11 +64,14 @@ def from_log(path):
 def numbers():
     bev, btr = cs.from_state(cs.B10C)
     lev, ltr = from_log(LOGS / L_LOG)
+    sev, _ = from_log(LOGS / LS_LOG)
     vev, _ = cs.from_log(cs.LOGS / cs.V_LOG)
     steps = [s for s in sorted(bev) if s > 0]
-    assert steps == [s for s in sorted(lev) if s > 0] == list(range(EVAL, 3301, EVAL)), "eval steps differ"
+    assert steps == [s for s in sorted(lev) if s > 0] == [s for s in sorted(sev) if s > 0] \
+        == list(range(EVAL, 3301, EVAL)), "eval steps differ"
     assert sorted(btr) == sorted(ltr) == list(range(LOGSTEP, 3301, LOGSTEP)), "loss steps differ"
-    assert all(lev[s] is not None for s in steps) and all(v is not None for v in ltr.values()), "a nan in use"
+    assert all(lev[s] is not None and sev[s] is not None for s in steps) \
+        and all(v is not None for v in ltr.values()), "a nan in use"
     m1, m2 = (cs.from_state(r)[0] for r in (cs.MOR, cs.MOR2))
     seed = [abs(m2[s] - m1[s]) for s in steps]
     return dict(
@@ -71,7 +79,8 @@ def numbers():
         heldout=[lev[s] - bev[s] for s in steps],
         training=[cs.window_mean(ltr, s) - cs.window_mean(btr, s) for s in steps],
         b10cv_heldout=[vev[s] - bev[s] for s in steps],
-        b10c_final=bev[3300], b10cl_final=lev[3300], b10cv_final=vev[3300],
+        b10cls_heldout=[sev[s] - bev[s] for s in steps],
+        b10c_final=bev[3300], b10cl_final=lev[3300], b10cls_final=sev[3300], b10cv_final=vev[3300],
         seed_max=max(seed), seed_mean=sum(seed) / len(seed))
 
 
@@ -138,15 +147,16 @@ def schematic(ax):
 
 def comparison(ax, n):
     ep = [s / SPE for s in n["steps"]]
-    lo, hi = -0.56, 0.14
+    lo, hi = -0.56, 0.2
     ax.set_xlim(0, 10.25); ax.set_ylim(lo, hi)
     ax.axhspan(-n["seed_max"], n["seed_max"], color=BAND, lw=0, zorder=0)
-    ax.text(0.15, n["seed_max"] + 0.006, "seed-to-seed", ha="left", va="bottom", fontsize=13, color=MUTED)
+    ax.text(2.4, n["seed_max"] + 0.006, "seed-to-seed", ha="left", va="bottom", fontsize=13, color=MUTED)
     ax.axhline(0, color=COL["b10c"], lw=2.4, zorder=2)
     ax.text(10.22, 0.006, "B10c", ha="right", va="bottom", fontsize=16, fontweight="bold", color=COL["b10c"])
 
-    # B10cV (CLEVR layers) for reference: thin, no markers
+    # B10cLS (shuffled SmolLM) and B10cV (CLEVR layers) for reference: thin, no markers
     ax.plot(ep, n["b10cv_heldout"], color=COL["b10cv"], lw=1.6, zorder=3)
+    ax.plot(ep, n["b10cls_heldout"], color=COL["b10cls"], lw=2, zorder=3)
 
     clip = lo + 0.012
     tr = [max(v, clip) for v in n["training"]]
@@ -162,16 +172,17 @@ def comparison(ax, n):
     key = [plt.Line2D([], [], color=COL["b10cl"], lw=2.6, marker="o", ms=7, markeredgecolor=SURF,
                       markeredgewidth=1.5, label="B10cL, held-out"),
            plt.Line2D([], [], color=COL["b10cl"], lw=2, ls=(0, (5, 3)), label="B10cL, training"),
+           plt.Line2D([], [], color=COL["b10cls"], lw=2, label="B10cLS (shuffled), held-out"),
            plt.Line2D([], [], color=COL["b10cv"], lw=1.6, label="B10cV (CLEVR layers), held-out")]
-    ax.legend(handles=key, loc="lower right", bbox_to_anchor=(1.0, 0.09), frameon=False, fontsize=14,
+    ax.legend(handles=key, loc="lower right", bbox_to_anchor=(1.0, 0.155), frameon=False, fontsize=14,
               handlelength=2.6)
     ax.annotate(cs.signed(n["heldout"][0], 2), (ep[0], n["heldout"][0]), xytext=(10, -4),
                 textcoords="offset points", fontsize=14, color=INK2, va="center")
     ax.annotate(cs.signed(n["heldout"][-1], 3), (ep[-1], n["heldout"][-1]), xytext=(-6, 12),
                 textcoords="offset points", fontsize=16, fontweight="bold", color=INK, ha="right")
-    ax.annotate(f"B10cL {n['b10cl_final']:.3f} · B10cV {n['b10cv_final']:.3f} · B10c {n['b10c_final']:.3f}",
-                (ep[-1], n["heldout"][-1]), xytext=(-6, 34), textcoords="offset points", fontsize=13,
-                color=INK2, ha="right")
+    ax.text(0.99, 0.075, f"final held-out: B10cL {n['b10cl_final']:.3f} · B10cLS {n['b10cls_final']:.3f}\n"
+            f"B10cV {n['b10cv_final']:.3f} · B10c {n['b10c_final']:.3f}", transform=ax.transAxes, fontsize=13,
+            color=INK2, ha="right", va="bottom", multialignment="right", linespacing=1.25)
 
     ax.text(0.15, hi - 0.012, "▲ worse than B10c", fontsize=13, color=INK2, va="top", ha="left")
     ax.text(10.15, lo + 0.012, "▼ better than B10c", fontsize=13, color=INK2, va="bottom", ha="right")
@@ -192,7 +203,7 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT / "smollm_init_slide.png", dpi=200)
     (OUT / "numbers.json").write_text(json.dumps(n, indent=1))
-    print(json.dumps({k: v for k, v in n.items() if k not in ("steps", "b10cv_heldout")}, indent=1))
+    print(json.dumps({k: v for k, v in n.items() if k not in ("steps", "b10cv_heldout", "b10cls_heldout")}, indent=1))
 
 
 if __name__ == "__main__":
