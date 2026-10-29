@@ -129,13 +129,12 @@ def apply_head(model, n_old_vocab: int) -> Dict:
             "total_params": int(sum(p.numel() for p in model.parameters()))}
 
 
-def apply_lora(model, r: int, alpha: float, n_old_vocab: int) -> Dict:
-    """In place. Freezes everything, then adds adapters and the split vocabulary."""
-    if getattr(model.config, "_lora_applied", False):
-        raise RuntimeError("LoRA already applied")
-    for p in model.parameters():
-        p.requires_grad_(False)
+def add_adapters(model, r: int, alpha: float) -> Dict:
+    """In place: every target projection, once per distinct module, becomes a `LoRALinear`
+    (its base frozen, B = 0, so the function is unchanged). Touches nothing else.
 
+    Shared by `apply_lora` (the BEN fine-tunes) and the LLM-init LoRA arm, which keeps the
+    whole table trainable instead of splitting it (eo/train/clevr_init.lora_body)."""
     targets = _unique_linears(model)
     wrapped = {id(m): LoRALinear(m, r, alpha) for m in targets}
     n_sites = 0
@@ -144,15 +143,25 @@ def apply_lora(model, r: int, alpha: float, n_old_vocab: int) -> Dict:
             if id(child) in wrapped:
                 setattr(parent, cname, wrapped[id(child)])
                 n_sites += 1
+    adapters = sum(p.numel() for m in wrapped.values() for p in (m.lora_A, m.lora_B))
+    return {"rank": r, "alpha": alpha, "targets": list(TARGETS),
+            "unique_projections": len(targets), "wrap_sites": n_sites,
+            "adapter_params": int(adapters)}
 
+
+def apply_lora(model, r: int, alpha: float, n_old_vocab: int) -> Dict:
+    """In place. Freezes everything, then adds adapters and the split vocabulary."""
+    if getattr(model.config, "_lora_applied", False):
+        raise RuntimeError("LoRA already applied")
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+    rep = add_adapters(model, r, alpha)
     split = _split_vocab(model, n_old_vocab)
     model.config._lora_applied = True
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    adapters = sum(p.numel() for m in wrapped.values() for p in (m.lora_A, m.lora_B))
-    return {"rank": r, "alpha": alpha, "targets": list(TARGETS),
-            "unique_projections": len(targets), "wrap_sites": n_sites,
-            "adapter_params": int(adapters), "new_row_params": int(split.new.numel()),
+    return {**rep, "new_row_params": int(split.new.numel()),
             "trainable_params": int(trainable),
             "total_params": int(sum(p.numel() for p in model.parameters()))}
 

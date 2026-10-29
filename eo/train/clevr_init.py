@@ -303,23 +303,29 @@ def load_rgb_rows(path: Path, expect_sha256: Optional[str] = None) -> Dict[str, 
 #     variant: clevr|shuffled|smollm|smollm_shuffled   must be the conversion's
 #     freeze_body: true|false   true = stage 1: only the embedding table trains
 #     from_stage1: <ckpt>|null  stage 2: stage 1's FINAL checkpoint, handoff checked
+#     lora: {r, alpha}          OPTIONAL (2026-10-29), absent = null: stage 2 trains rank-r
+#                               adapters on the frozen body plus the table (`lora_body`)
 #
 # Stage 1 is (true, null) and stage 2 is (false, <ckpt>). B10cV0, the arm without stage 1,
-# would be (false, null). (true, <ckpt>) is refused.
+# would be (false, null). (true, <ckpt>) is refused, and so is lora with freeze_body.
+# `lora` is the one optional key, so every record and config written before it still reads
+# the same (absent = null = full fine-tune); a misspelt key is still refused as unknown.
 # ⚠ Stage 2's configs say `from_stage1: ???`. A forgotten override must not turn into
 # B10cV0, and OmegaConf's `.get()` returns None for a MISSING value (measured 2026-10-27).
 # So read_block() converts the block and refuses "???" by name; never read it with `.get`.
 
 BLOCK_KEYS = ("conversion", "variant", "freeze_body", "from_stage1")
+OPTIONAL_KEYS = ("lora",)
+LORA_KEYS = ("r", "alpha")
 RECORD = "pretrain_init.json"          # written by pretrain.py into the run directory
 #: The fields that must agree between a run's record and its config on --resume, and
 #: between stage 1's record and stage 2's config at the handoff.
-RECORD_IDENTITY = ("conversion_weights_sha256", "variant", "freeze_body", "from_stage1")
+RECORD_IDENTITY = ("conversion_weights_sha256", "variant", "freeze_body", "from_stage1", "lora")
 _OC_ENV = re.compile(r"\$\{oc\.env:([A-Za-z_][A-Za-z0-9_]*)(?:,([^}]*))?\}")
 
 
 def read_block(block, env: Optional[Mapping[str, str]] = None) -> Dict:
-    """The `pretrain_init` block as {conversion, variant, freeze_body, from_stage1}. Raises ValueError.
+    """The `pretrain_init` block as {conversion, variant, freeze_body, from_stage1, lora}. Raises ValueError.
 
     `block` is the run's DictConfig node (pretrain.py), or the plain unresolved dict that
     preflight composes, in which case `${oc.env:KEY,default}` is resolved against `env`.
@@ -327,9 +333,10 @@ def read_block(block, env: Optional[Mapping[str, str]] = None) -> Dict:
     from omegaconf import OmegaConf
     if OmegaConf.is_config(block):
         block = OmegaConf.to_container(block, resolve=True)      # MISSING stays "???"
-    extra = sorted(set(block) - set(BLOCK_KEYS))
+    extra = sorted(set(block) - set(BLOCK_KEYS) - set(OPTIONAL_KEYS))
     if extra:
-        raise ValueError(f"pretrain_init has unknown keys {extra} (known: {list(BLOCK_KEYS)})")
+        raise ValueError(f"pretrain_init has unknown keys {extra} "
+                         f"(known: {list(BLOCK_KEYS) + list(OPTIONAL_KEYS)})")
     out = {}
     for k in BLOCK_KEYS:
         if k not in block:
@@ -355,9 +362,29 @@ def read_block(block, env: Optional[Mapping[str, str]] = None) -> Dict:
     if out["freeze_body"] and out["from_stage1"] is not None:
         raise ValueError("pretrain_init: freeze_body with from_stage1. Stage 1 freezes the body and "
                          "starts from the conversion; from_stage1 is stage 2's")
+    out["lora"] = _read_lora(block.get("lora"))
+    if out["lora"] is not None and out["freeze_body"]:
+        raise ValueError("pretrain_init: lora with freeze_body. freeze_body is stage 1 (the table "
+                         "alone trains); lora is a stage-2 regime (adapters on the frozen body)")
     out["conversion"] = Path(str(out["conversion"]))
     out["from_stage1"] = None if out["from_stage1"] is None else Path(str(out["from_stage1"]))
     return out
+
+
+def _read_lora(v) -> Optional[Dict]:
+    """`pretrain_init.lora`: null, or exactly {r: int > 0, alpha: > 0}. Raises ValueError."""
+    if v is None:
+        return None
+    if v == "???":
+        raise ValueError("pretrain_init.lora is ??? : give {r, alpha}, or null for a full fine-tune")
+    if not isinstance(v, dict) or set(v) != set(LORA_KEYS):
+        raise ValueError(f"pretrain_init.lora must be null or exactly {list(LORA_KEYS)}, got {v!r}")
+    r, a = v["r"], v["alpha"]
+    if isinstance(r, bool) or not isinstance(r, int) or r <= 0:
+        raise ValueError(f"pretrain_init.lora.r must be a positive integer, got {r!r}")
+    if isinstance(a, bool) or not isinstance(a, (int, float)) or a <= 0:
+        raise ValueError(f"pretrain_init.lora.alpha must be positive, got {a!r}")
+    return {"r": int(r), "alpha": float(a)}
 
 
 def check_arm(cfg) -> None:
@@ -390,6 +417,42 @@ def freeze_body(model) -> int:
     return n
 
 
+def lora_body(model, r: int, alpha: float) -> Dict:
+    """Stage 2 under LoRA (2026-10-29): the pretrained body FROZEN, a rank-r adapter on each of
+    the 7 projections of every layer (eo/finetune/lora.add_adapters, B = 0 so the function is
+    stage 1's), and the whole embedding table (tied to lm_head) training. Returns the counts.
+
+    The table trains in full, unlike the BEN fine-tunes' split one: every EO row is new to an
+    LLM. The norms stay frozen with the body. Like `freeze_body`, this must run before the
+    Trainer exists, so the frozen tensors get no Adam state and no weight decay.
+    """
+    from eo.finetune import lora as LR
+    from eo.finetune.extend import assert_tied
+    for p in model.parameters():
+        p.requires_grad_(False)
+    rep = LR.add_adapters(model, r, alpha)
+    model.get_input_embeddings().weight.requires_grad_(True)
+    assert_tied(model)
+    cfg = model.config
+    d, ffn, kv = int(cfg.hidden_size), int(cfg.intermediate_size), \
+        int(cfg.num_key_value_heads) * (int(cfg.hidden_size) // int(cfg.num_attention_heads))
+    n_layers = int(cfg.num_hidden_layers)
+    # q, k, v, o, gate, up, down: r x (in + out) each
+    per_layer = r * ((d + d) + 2 * (d + kv) + (d + d) + 3 * (d + ffn))
+    table = int(cfg.vocab_size) * d
+    names = [n for n, p in model.named_parameters() if p.requires_grad]
+    n = int(sum(p.numel() for p in model.parameters() if p.requires_grad))
+    want_names = 1 + 2 * len(LR.TARGETS) * n_layers
+    if (rep["adapter_params"] != n_layers * per_layer or n != table + n_layers * per_layer
+            or len(names) != want_names or EMBED_KEY not in names
+            or not all(x == EMBED_KEY or x.endswith((".lora_A", ".lora_B")) for x in names)):
+        raise RuntimeError(f"LoRA left {n:,} trainable parameters in {len(names)} tensors; expected the "
+                           f"table ({table:,}) plus {n_layers} x {per_layer:,} adapter parameters in "
+                           f"{want_names} tensors")
+    return {**rep, "per_layer_adapter_params": per_layer, "table_params": table,
+            "trainable_tensors": len(names)}
+
+
 def check_handoff(stage1_ckpt: Path, conversion: Path, variant: str, conv_doc: Dict) -> Dict:
     """Stage 2 starts from stage 1's final weights. Raises RuntimeError unless:
 
@@ -405,7 +468,7 @@ def check_handoff(stage1_ckpt: Path, conversion: Path, variant: str, conv_doc: D
         raise RuntimeError(f"{rec_path} missing: {stage1_ckpt} is not from a pretrain_init run")
     rec = json.loads(rec_path.read_text())
     want = {"conversion_weights_sha256": conv_doc["weights_sha256"], "variant": variant,
-            "freeze_body": True, "from_stage1": None}
+            "freeze_body": True, "from_stage1": None, "lora": None}
     bad = {k: rec.get(k) for k, v in want.items() if rec.get(k) != v}
     if bad:
         raise RuntimeError(f"{rec_path} is not a stage 1 of this init: {bad} (want {want})")
@@ -441,7 +504,9 @@ def check_handoff(stage1_ckpt: Path, conversion: Path, variant: str, conv_doc: D
 
 
 def pretrain_init(model, cfg) -> Dict:
-    """pretrain.py's hook: load the verified init, then freeze the body for stage 1.
+    """pretrain.py's hook: load the verified init, then freeze the body for stage 1, or (stage 2
+    with `lora`) freeze it and add the adapters. LoRA wraps AFTER the load: the init files hold
+    plain weights, and a LoRA run's own checkpoints (adapter keys) load over it on --resume.
 
     Not a resume: HF builds a fresh optimizer and scheduler. On --resume this runs first and
     HF then loads the run's own checkpoint over it; the freeze (set here, before the
@@ -466,8 +531,12 @@ def pretrain_init(model, cfg) -> Dict:
     if off:
         raise RuntimeError(f"after loading {src}: {len(off)} tensors differ from the file "
                            f"(model dtype {sd[off[0]].dtype}, file {state[off[0]].dtype}), e.g. {off[0]}")
+    lora = None
     if plan["freeze_body"]:
         trainable = freeze_body(model)
+    elif plan["lora"] is not None:
+        lora = lora_body(model, plan["lora"]["r"], plan["lora"]["alpha"])
+        trainable = int(sum(p.numel() for p in model.parameters() if p.requires_grad))
     else:
         for p in model.parameters():
             p.requires_grad_(True)
@@ -475,6 +544,7 @@ def pretrain_init(model, cfg) -> Dict:
     return {"conversion": str(plan["conversion"]), "conversion_weights_sha256": doc["weights_sha256"],
             "variant": plan["variant"], "freeze_body": plan["freeze_body"],
             "from_stage1": None if plan["from_stage1"] is None else str(plan["from_stage1"]),
+            "lora": plan["lora"], "lora_report": lora,
             "loaded_from": str(src), "load": load, "handoff": handoff,
             "source": {k: doc["source"].get(k) for k in ("repo", "revision", "weights_sha256", "global_step")},
             "trainable_params": trainable,

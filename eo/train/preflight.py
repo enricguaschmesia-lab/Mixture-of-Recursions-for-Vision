@@ -803,9 +803,19 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
         if ctx.resuming:
             want = {"conversion_weights_sha256": doc["weights_sha256"], "variant": plan["variant"],
                     "freeze_body": plan["freeze_body"],
-                    "from_stage1": None if plan["from_stage1"] is None else str(plan["from_stage1"])}
+                    "from_stage1": None if plan["from_stage1"] is None else str(plan["from_stage1"]),
+                    "lora": plan["lora"]}
             if CI.check_record(ctx.run_dir, want) is None:
                 raise RuntimeError(f"resuming, but {ctx.run_dir / CI.RECORD} is missing")
+            # The record could be right and the checkpoint another regime's: HF loads non-strictly,
+            # so LoRA keys into a plain model (or the reverse) would be a warning and a partial load.
+            ck = _latest_checkpoint(ctx.run_dir)
+            keys = _checkpoint_param_keys(ck) if ck is not None else None
+            if keys is not None:
+                has = any(k.endswith((".lora_A", ".lora_B")) for k in keys)
+                if has != (plan["lora"] is not None):
+                    raise RuntimeError(f"{ck.name} {'holds' if has else 'has no'} LoRA adapters, "
+                                       f"but the config's pretrain_init.lora is {plan['lora']}")
     except (ValueError, RuntimeError, FileNotFoundError, KeyError) as e:
         return CheckResult("pretrain init", False, str(e).splitlines()[0],
                            "Stage 1: launch arm_b10c{v,s,l,ls}_stage1 as it is. Stage 2: pass "
@@ -813,6 +823,8 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
     stage = ("stage 1 (body frozen)" if plan["freeze_body"] else
              f"stage 2 from {plan['from_stage1'].parent.name}/{plan['from_stage1'].name}"
              if plan["from_stage1"] else "no stage 1 (body trains from the conversion)")
+    if plan["lora"] is not None:
+        stage += f", LoRA r {plan['lora']['r']} alpha {plan['lora']['alpha']:g} on the frozen body"
     detail = f"{plan['variant']}, {stage}, conversion sha {doc['weights_sha256'][:10]}"
     if handoff:
         detail += (f"; handoff: {handoff['body_tensors_identical']} body tensors identical, "

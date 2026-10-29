@@ -65,6 +65,16 @@ unverified deliverable:
   W24 a nan per-modality CE marks one    [LLM init, 2026-10-28] the train and eval
       logging interval, not the run                 accumulators reset with zero_(); control:
                                                     the old `x -= x` reset stays nan
+  W25 LoRA on the frozen LLM body        [LLM LoRA, 2026-10-29] B10cL-LoRA differs from
+                                                    B10cL in lora and precision alone; built
+                                                    on B10cL's stage 1 it is that model exactly
+                                                    (B = 0) and trains the table and 406 adapter
+                                                    tensors; through pretrain.py (2 steps, then
+                                                    a resume to 4) the body stays stage 1's bit
+                                                    for bit and the checkpoint reloads strictly.
+                                                    Controls: a stray key, B != 0, the full
+                                                    fine-tune moving the body, an unwrapped
+                                                    strict load refused. One card or CPU, fp32
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -697,6 +707,13 @@ STAGE1_K = 330                     # Enric, 2026-10-27
 #: control (LS). Each L config is its CLEVR counterpart with another conversion and variant.
 ARM_B10CL, ARM_B10CLS = "eo_terramesh/arm_b10cl_vanilla", "eo_terramesh/arm_b10cls_vanilla"
 ARM_B10CL1, ARM_B10CLS1 = "eo_terramesh/arm_b10cl_stage1", "eo_terramesh/arm_b10cls_stage1"
+#: The LLM-init LoRA arm (2026-10-29): B10cL's stage 2 with rank-16 adapters on the FROZEN body,
+#: from B10cL's own stage 1. It differs from B10cL in the lora block and bf16 alone.
+ARM_B10CLORA = "eo_terramesh/arm_b10cl_lora"
+LORA_DIFF_KEYS = {"pretrain_init.lora.r", "pretrain_init.lora.alpha", "precision"}
+LORA_R, LORA_ALPHA, LORA_TARGETS = 16, 32.0, 7
+#: B10cL's stage 1 (RCP run vanilla10cl_s1_20261028_123122, its final checkpoint copied here).
+B10CL_STAGE1 = Path("/data/enric/runs/pretrain/phase3/vanilla10cl_s1_20261028_123122/checkpoint-330")
 INIT_FAMILIES = {
     "clevr": dict(v=ARM_B10CV, s=ARM_B10CS, v1=ARM_B10CV1, s1=ARM_B10CS1, variant="clevr",
                   swapped="shuffled", foreign=None, same_table_as=None,
@@ -2081,6 +2098,195 @@ def _stages(fam) -> bool:
     return passed
 
 
+def w25_smollm_lora() -> bool:
+    """B10cL-LoRA (2026-10-29): rank-16 adapters on SmolLM's FROZEN body plus the table, from
+    B10cL's own stage 1.
+
+      1. The config differs from B10cL's in the lora block and the precision alone.
+         CONTROL: a stray learning rate is caught.
+      2. Built through the hook from B10cL's stage 1 it computes stage 1's function exactly
+         (B = 0), and trains the table and 2 x 7 x 29 adapter tensors, nothing else.
+         CONTROL: with B != 0 the logits move.
+      3. Through pretrain.py (2 steps from the real stage 1, batch 1): the body (base weights and
+         norms) is stage 1's bit for bit, the table and every B moved, the optimizer holds the
+         trainable tensors alone. A resume to step 4 continues it with no missing or unexpected
+         key, and the body still has not moved. The checkpoint reloads STRICTLY through
+         G.build_model, tensor for tensor. CONTROLS: B10cL's full fine-tune from the same stage 1
+         moves the body (so the bitwise comparison can fail); an unwrapped model's strict load
+         of the LoRA checkpoint is refused (the silent partial load G.build_model must avoid).
+    At fp32: on the one visible card when given exactly one, else on CPU. bf16 needs an A100
+    (HF refuses it below Ampere), which the RCP smoke covers.
+    """
+    import gc
+    import json
+    import shutil
+    import time
+    import torch
+    from util.env import load_dotenv
+    from eo.finetune.init import strict_load
+    from eo.generate import conditional as G
+    from eo.train import clevr_init as CI
+
+    if not (B10CL_STAGE1 / "trainer_state.json").is_file():
+        print(f"    {B10CL_STAGE1} missing: copy B10cL's stage 1 from RCP")
+        return False
+    s1_over = [f"pretrain_init.from_stage1={B10CL_STAGE1}"]
+
+    # 1. The config.
+    diff = _arm_diff(_compose(ARM_B10CL), _compose(ARM_B10CLORA))
+    d_ok = diff == LORA_DIFF_KEYS
+    print(f"    {ARM_B10CLORA.split('/')[-1]} vs {ARM_B10CL.split('/')[-1]}: differs in exactly "
+          f"{sorted(LORA_DIFF_KEYS)} = {d_ok}" + ("" if d_ok else f" (measured {sorted(diff)})"))
+    c_stray = _arm_diff(_compose(ARM_B10CL), _compose(ARM_B10CLORA, ["learning_rate=0.001"])) != LORA_DIFF_KEYS
+    print(f"    control: a stray learning_rate is caught = {c_stray}")
+    lc = _compose(ARM_B10CLORA).pretrain_init.lora
+    l_ok = int(lc.r) == LORA_R and float(lc.alpha) == LORA_ALPHA
+    print(f"    lora r {lc.r}, alpha {lc.alpha} = {l_ok}")
+
+    # 2. Through the hook, on CPU.
+    torch.manual_seed(0)
+    ids = torch.randint(0, EMBED_ROWS - 1, (2, 96))
+    m, cfg = G.build_model(ARM_B10CLORA, None, device="cpu", overrides=s1_over)
+    rep = CI.pretrain_init(m, cfg)
+    n_layers = int(m.config.num_hidden_layers)
+    names = [n for n, p in m.named_parameters() if p.requires_grad]
+    lr_ = rep["lora_report"]
+    want_tr = EMBED_ROWS * HIDDEN + lr_["per_layer_adapter_params"] * n_layers
+    t_ok = (rep["lora"] == {"r": LORA_R, "alpha": LORA_ALPHA} and rep["trainable_params"] == want_tr
+            and len(names) == 1 + 2 * LORA_TARGETS * n_layers and lr_["wrap_sites"] == LORA_TARGETS * n_layers)
+    print(f"    through the hook: {rep['trainable_params']:,} trainable (table {EMBED_ROWS * HIDDEN:,} + "
+          f"{n_layers} x {lr_['per_layer_adapter_params']:,} adapter) in {len(names)} tensors, "
+          f"{lr_['wrap_sites']} projections wrapped = {t_ok}")
+    ref, rcfg = G.build_model(ARM_B10CL, None, device="cpu", overrides=s1_over)
+    CI.pretrain_init(ref, rcfg)
+    with torch.no_grad():
+        a, b = m(input_ids=ids).logits, ref(input_ids=ids).logits
+        f_ok = torch.equal(a, b)
+        for mod in m.modules():
+            if hasattr(mod, "lora_B"):
+                mod.lora_B.normal_(0, 1e-3)
+        c_b = not torch.equal(m(input_ids=ids).logits, b)
+    print(f"    at init it is stage 1's model: logits equal bit for bit = {f_ok}")
+    print(f"    control: with B ~ N(0, 1e-3) the logits move = {c_b}")
+    del m, ref
+    gc.collect()
+
+    # 3. Through pretrain.py.
+    load_dotenv()
+    SAVE_DIR = os.environ.get("MOR_SAVE_DIR", "")
+    if not SAVE_DIR.startswith("/data/"):
+        print(f"    MOR_SAVE_DIR {SAVE_DIR!r} is not under /data: refusing to write checkpoints")
+        return False
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    on_gpu = vis.strip() != "" and "," not in vis
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false")
+    common = ["wandb=false", "num_warmup_steps=0", "lr_scheduler_kwargs.num_decay_steps=0",
+              "save_steps=2", "eval_on_start=false", "eval_steps=1000", "total_batch_size=1",
+              "per_device_train_batch_size=1", "logging_steps=1", "dataloader_num_workers=0",
+              "precision=fp32"]
+    if not on_gpu:
+        env["CUDA_VISIBLE_DEVICES"] = ""
+    print(f"    device: {('GPU ' + vis) if on_gpu else 'CPU'} at fp32")
+    rel = f"gate_w25/{time.strftime('%Y%m%d_%H%M%S')}"
+    root = Path(SAVE_DIR) / "pretrain" / rel
+
+    def run(name, arm, extra, steps=2, out_name=None):
+        out = f"{rel}/{out_name or name}"
+        rc, log = _pretrain(arm, out, common + [f"num_train_steps={steps}", f"stop_steps={steps}",
+                                                f"hydra.run.dir={root}/hydra/{name}"] + s1_over + extra, env)
+        (root / f"{name}.log").parent.mkdir(parents=True, exist_ok=True)
+        (root / f"{name}.log").write_text(log)
+        return rc, log, Path(SAVE_DIR) / "pretrain" / out
+
+    s1 = CI._state(B10CL_STAGE1)
+    body = [k for k in s1 if k not in CI.EMBED_KEYS]
+
+    def as_stage1(k):           # a LoRA checkpoint's frozen key -> stage 1's
+        return k.replace(".base.weight", ".weight")
+
+    def unmoved(state):
+        frozen = [k for k in state if k not in CI.EMBED_KEYS and not k.endswith((".lora_A", ".lora_B"))]
+        same = [k for k in frozen if torch.equal(state[k], s1[as_stage1(k)])]
+        return len(same), len(frozen)
+
+    def tail(log):
+        return "      " + "\n      ".join(log.strip().splitlines()[-8:])
+
+    rc, log, d_l = run("lora", ARM_B10CLORA, [])
+    ck = d_l / "checkpoint-2"
+    if rc != 0 or not ck.is_dir():
+        print(f"    LoRA run FAILED (exit {rc}); log {root / 'lora.log'}")
+        print(tail(log))
+        return False
+    st = CI._state(ck)
+    rec = json.loads((d_l / CI.RECORD).read_text())
+    n_same, n_frozen = unmoved(st)
+    bs = [k for k in st if k.endswith(".lora_B")]
+    b_moved = sum(bool(st[k].abs().max() > 0) for k in bs)
+    table_moved = not torch.equal(st[CI.EMBED_KEY], s1[CI.EMBED_KEY])
+    opt = torch.load(ck / "optimizer.pt", map_location="cpu", weights_only=True)["state"]
+    losses = [h["loss"] for h in json.loads((ck / "trainer_state.json").read_text())["log_history"] if "loss" in h]
+    r_ok = (rec["lora"] == {"r": LORA_R, "alpha": LORA_ALPHA} and rec["trainable_params"] == want_tr
+            and n_same == n_frozen == len(body) and b_moved == len(bs) == LORA_TARGETS * n_layers
+            and table_moved and len(opt) == len(names) and len(losses) == 2 and all(np.isfinite(losses)))
+    print(f"    2 steps: body {n_same} of {n_frozen} tensors stage 1's bit for bit (of {len(body)}); "
+          f"table moved {table_moved}; {b_moved} of {len(bs)} B moved; optimizer {len(opt)} tensors; "
+          f"losses {[round(x, 4) for x in losses]} = {r_ok}")
+
+    m2, _ = G.build_model(ARM_B10CLORA, str(ck), device="cpu", overrides=s1_over)
+    sd = m2.state_dict()
+    re_ok = all(torch.equal(sd[k], v) for k, v in st.items())
+    print(f"    G.build_model reloads it strictly, {len(st)} tensors equal = {re_ok}")
+    del m2, sd
+    plain, _ = G.build_model(ARM_B10CL, None, device="cpu", overrides=s1_over)
+    try:
+        strict_load(plain, ck)
+        c_strict = False
+    except RuntimeError:
+        c_strict = True
+    print(f"    control: a strict load into an unwrapped model is refused = {c_strict}")
+    del plain
+    gc.collect()
+
+    mtime2 = (ck / "model.safetensors").stat().st_mtime_ns     # a fresh 4-step run would rewrite it
+    rc_r, log_r, _ = run("lora_resume", ARM_B10CLORA, ["resume_from_checkpoint=true"], steps=4, out_name="lora")
+    ck4 = d_l / "checkpoint-4"
+    if rc_r != 0 or not ck4.is_dir():
+        print(f"    resume FAILED (exit {rc_r}); log {root / 'lora_resume.log'}")
+        print(tail(log_r))
+        return False
+    # HF's load warning names lm_head.weight on every tied resume (vanilla included); anything else
+    # missing or unexpected is a partial load. "Continuing from global step" is logged below the
+    # default verbosity, so continuation is read off the trainer state: checkpoint-4 carries
+    # checkpoint-2's two losses unchanged, then two more, and checkpoint-2 itself was not rewritten.
+    keys_warn = [ln for ln in log_r.splitlines() if ("missing key" in ln.lower() or "unexpected key" in ln.lower())
+                 and ln.strip() != "There were missing keys in the checkpoint model loaded: ['lm_head.weight']."]
+    hist4 = [h["loss"] for h in json.loads((ck4 / "trainer_state.json").read_text())["log_history"] if "loss" in h]
+    cont = (len(hist4) == 4 and hist4[:2] == losses and all(np.isfinite(hist4))
+            and (ck / "model.safetensors").stat().st_mtime_ns == mtime2)
+    n4, f4 = unmoved(CI._state(ck4))
+    rs_ok = cont and not keys_warn and n4 == f4 == len(body)
+    print(f"    resume to 4: continued from step 2 (losses {[round(x, 4) for x in hist4]}) = {cont}; other key "
+          f"warnings {keys_warn[:2]}; body {n4} of {f4} still stage 1's = {rs_ok}")
+
+    rc_f, log_f, d_f = run("full", ARM_B10CL, [])
+    if rc_f != 0 or not (d_f / "checkpoint-2").is_dir():
+        print(f"    control run FAILED (exit {rc_f}); log {root / 'full.log'}")
+        print(tail(log_f))
+        return False
+    nf, ff = unmoved(CI._state(d_f / "checkpoint-2"))
+    c_full = nf < ff
+    print(f"    control: B10cL's full fine-tune moves {ff - nf} of {ff} body tensors = {c_full}")
+
+    passed = bool(d_ok and c_stray and l_ok and t_ok and f_ok and c_b and r_ok and re_ok and c_strict
+                  and rs_ok and c_full)
+    if passed:
+        shutil.rmtree(root)
+    else:
+        print(f"    (kept for inspection: {root})")
+    return passed
+
+
 #: The last commit whose per-modality accumulators were reset with `x -= x`: W24's control.
 _STICKY_RESET_COMMIT = "dadcf81"
 
@@ -2185,6 +2391,7 @@ def main() -> int:
         ("W22  LLM-init arms differ only as intended  [LLM init]", w22_smollm_init_arms),
         ("W23  stage 1 freezes, handoff, stage 2      [LLM init]", w23_smollm_stages),
         ("W24  a nan per-modality CE marks one interval [LLM init]", w24_per_modality_reset),
+        ("W25  LoRA on the frozen LLM body            [LLM LoRA]", w25_smollm_lora),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]

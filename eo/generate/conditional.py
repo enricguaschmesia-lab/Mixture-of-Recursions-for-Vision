@@ -104,7 +104,16 @@ def build_model(config_name: str, checkpoint: Optional[str], device: str = "cuda
         else:
             model.transform_layer_to_mor_token(cfg)
 
-    if checkpoint:
+    lora = (cfg.get("pretrain_init") or {}).get("lora") if checkpoint else None
+    if lora:
+        # The LLM-init LoRA arm (2026-10-29): its checkpoints hold `<proj>.base.weight` and the
+        # adapters, so wrap first, as training did, and load STRICTLY. load_checkpoint only
+        # warns, and an unwrapped model would load the table and norms alone and run.
+        from eo.finetune import lora as LR
+        from eo.finetune.init import strict_load
+        LR.add_adapters(model, int(lora.r), float(lora.alpha))
+        strict_load(model, Path(checkpoint))
+    elif checkpoint:
         # Handles BOTH formats: arm A writes pytorch_model.bin, arm B
         # model.safetensors (save_safetensors is keyed on weight sharing).
         model = load_checkpoint(model, checkpoint)

@@ -1,0 +1,43 @@
+# @package _global_
+#
+# ARM B10cL-LoRA — B10cL's stage 2 with LoRA instead of a full fine-tune.  LLM init,
+# 2026-10-29 (docs/notes/smollm_lora_2026-10-29.md).
+#
+# ┌── THE DIFF FROM B10cL (arm_b10cl_vanilla), IN FULL ─────────────────┐
+# │   pretrain_init.lora     absent (null)    {r: 16, alpha: 32}        │
+# │   precision              fp16             bf16                      │
+# │ Nothing else: B10c's recipe (LR 3e-3, weight decay 0.1, 3,300 steps │
+# │ WSD) from B10cL's OWN stage 1 (the table trained under the frozen   │
+# │ body, K = 330), so the two arms share their start bit for bit.      │
+# │ W25 in eo/scripts/verify_phase3.py asserts it.                      │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question (Enric, 2026-10-29): can a pretrained next-token predictor be the foundation
+# model, with each new modality LoRA'd into it? SmolLM-135M's 29 layers stay FROZEN; a rank-16
+# adapter (alpha 32, scale 2, B = 0 at init) on each of q, k, v, o, gate, up, down of every
+# layer trains (4,721,664 parameters), and so does the whole 87,556 x 576 table (tied to
+# lm_head, 50,432,256), since no EO token has a row in an LLM. The norms stay frozen.
+# eo/train/clevr_init.lora_body; adapters from eo/finetune/lora.py (Phase 6's, r and alpha as
+# its BEN fine-tunes).
+#
+# ⚠ bf16, not B10c's fp16: SmolLM's layer-11 MLP writes a massive activation (~33k on an
+#   ordinary batch, ~69k > 65,504 on one held-out batch) that overflowed B10cL under fp16, and
+#   a frozen body keeps it (CLAUDE.md, "A pretrained LLM body runs close to fp16's range").
+# ⚠ LR and weight decay are B10cL's on purpose, so the arms differ in what trains, not in the
+#   optimizer. Phase 6's LoRA used 1e-3 and no decay; here the table, 91% of the trainable
+#   parameters, is trained exactly as in every other arm.
+# ⚠ from_stage1 is MANDATORY (inherited ???): B10cL's stage 1, not a new one.
+#
+#   launch (RCP):  jobs/train.sh b10cl_lora eo_terramesh/arm_b10cl_lora vanilla10cl_lora_<ts> \
+#                      pretrain_init.from_stage1=$G/runs/pretrain/phase3/vanilla10cl_s1_20261028_123122/checkpoint-330
+
+defaults:
+  - arm_b10cl_vanilla
+  - _self_
+
+pretrain_init:
+  lora:
+    r: 16
+    alpha: 32
+
+precision: bf16

@@ -132,8 +132,10 @@ def _fake_conversion(d: Path, variant: str = "clevr", drop_json: bool = False, *
 
 
 def _fake_stage1(run: Path, conv: Path, *, step: int = 330, last: int = 330, move_body: bool = False,
-                 move_table: bool = True, record: Optional[dict] = None) -> Path:
-    """Stage 1's checkpoint in miniature, plus the run's pretrain_init.json (`record` overrides it)."""
+                 move_table: bool = True, record: Optional[dict] = None, lora_keys: bool = False) -> Path:
+    """Stage 1's checkpoint in miniature, plus the run's pretrain_init.json (`record` overrides it).
+    `lora_keys` adds an adapter pair, as a LoRA stage 2's checkpoints carry (2026-10-29)."""
+    import torch
     from safetensors.torch import load_file, save_file
     from eo.train.clevr_init import sha256
     s = load_file(str(conv / "model.safetensors"))
@@ -141,6 +143,9 @@ def _fake_stage1(run: Path, conv: Path, *, step: int = 330, last: int = 330, mov
         s["model.embed_tokens.weight"] = s["model.embed_tokens.weight"] + 1e-3
     if move_body:              # one ulp-scale step in one tensor: the comparison is bitwise
         s["model.layers.0.mlp.down_proj.weight"] = s["model.layers.0.mlp.down_proj.weight"] * (1 + 1e-6)
+    if lora_keys:
+        s["model.layers.0.mlp.down_proj.lora_A"] = torch.zeros(1, 2)
+        s["model.layers.0.mlp.down_proj.lora_B"] = torch.zeros(2, 1)
     ck = run / f"checkpoint-{step}"
     ck.mkdir(parents=True)
     save_file(s, str(ck / "model.safetensors"))
@@ -543,6 +548,12 @@ def main(argv=None) -> int:
         return dict(env=GOOD_ENV, config=config,
                     overrides={"pretrain_init.conversion": str(ov.pop("conversion", conv)), **ov}, **kw)
     stage2 = lambda ck, **ov: ci(s2_cfg, **{"pretrain_init.from_stage1": str(ck)}, **ov)
+    conv_llm = _fake_conversion(tmp / "ci_conv_llm", variant="smollm")
+    llm_s1 = _fake_stage1(tmp / "ci_s1_llm", conv_llm, record={"variant": "smollm"})
+    lora2 = lambda ck, **ov: ci(eo_cfg / "arm_b10cl_lora.yaml", conversion=conv_llm,
+                                **{"pretrain_init.from_stage1": str(ck), **ov})
+    lora_rec = {"variant": "smollm", "freeze_body": False, "from_stage1": str(llm_s1),
+                "lora": {"r": 16, "alpha": 32.0}}
     ci_cases = [
         ("CLEVR init: on a MoR arm",              ci(s1_cfg, **{"recursive.enable": True, "mor.enable": True})),
         ("CLEVR init: conversion.json missing",   ci(s1_cfg, conversion=_fake_conversion(tmp / "ci_nojson", drop_json=True))),
@@ -565,6 +576,18 @@ def main(argv=None) -> int:
         ("resume: run dir has no record",         ci(s1_cfg, run_dir=tmp / "ci_res_none", resuming=True)),
         # The LLM init (2026-10-28) shares the hook: its stage 1 on a CLEVR conversion is refused.
         ("LLM init: stage 1 on a CLEVR conversion", ci(eo_cfg / "arm_b10cl_stage1.yaml")),
+        # Its LoRA arm (2026-10-29): a malformed lora block, LoRA as a stage 1, and a resume whose
+        # record says LoRA while the checkpoint has no adapters (HF would load it partially).
+        ("LLM LoRA: lora with freeze_body",       lora2(llm_s1, **{"pretrain_init.freeze_body": True,
+                                                                  "pretrain_init.from_stage1": None})),
+        ("LLM LoRA: unknown key in lora",         lora2(llm_s1, **{"+pretrain_init.lora.dropout": 0.1})),
+        ("LLM LoRA: rank 0",                      lora2(llm_s1, **{"pretrain_init.lora.r": 0})),
+        ("LLM LoRA: from a CLEVR stage 1",        lora2(good_s1)),
+        ("resume: LoRA record, plain checkpoint", lora2(llm_s1, run_dir=_fake_stage1(
+            tmp / "ci_res_lora_plain", conv_llm, step=660, last=3300, record=lora_rec).parent, resuming=True)),
+        ("resume: full-FT record under the LoRA config", lora2(llm_s1, run_dir=_fake_stage1(
+            tmp / "ci_res_full", conv_llm, step=660, last=3300,
+            record={**lora_rec, "lora": None}).parent, resuming=True)),
     ]
     (tmp / "ci_s1_norec" / "pretrain_init.json").unlink()
     (tmp / "ci_res_none").mkdir()
@@ -575,7 +598,13 @@ def main(argv=None) -> int:
         ("CLEVR init: resume stage 1 as itself",  "pretrain init", _results(**ci(s1_cfg, run_dir=good_s1.parent, resuming=True))),
     ]
     ci_pos.append(("LLM init: stage 1 on an LLM conversion", "pretrain init", _results(
-        **ci(eo_cfg / "arm_b10cl_stage1.yaml", conversion=_fake_conversion(tmp / "ci_conv_llm", variant="smollm")))))
+        **ci(eo_cfg / "arm_b10cl_stage1.yaml", conversion=conv_llm))))
+    ci_pos += [
+        ("LLM LoRA: stage 2 from an LLM stage 1", "pretrain init", _results(**lora2(llm_s1))),
+        ("LLM LoRA: resume with adapters in the checkpoint", "pretrain init", _results(**lora2(
+            llm_s1, run_dir=_fake_stage1(tmp / "ci_res_lora", conv_llm, step=660, last=3300, record=lora_rec,
+                                         lora_keys=True).parent, resuming=True))),
+    ]
     for label, real, shipped in (
             ("CLEVR init", Path("/data/enric/weights/clevr_init/b10c_v1"),
              {"clevr_body": "arm_b10cv_stage1", "shuffled_body": "arm_b10cs_stage1"}),

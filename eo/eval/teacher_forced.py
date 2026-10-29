@@ -363,7 +363,8 @@ def _slot_bounds():
 
 @torch.no_grad()
 def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOverride] = None,
-             keep_tokens: bool = True, per_row_target: Optional[str] = None) -> Dict:
+             keep_tokens: bool = True, per_row_target: Optional[str] = None,
+             dtype: Optional[torch.dtype] = torch.float16) -> Dict:
     """One teacher-forced pass. Returns per-modality aggregates (+ per-token arrays).
 
     Aggregates are token-weighted. `ce_batch_mean` is the trainer's definition
@@ -377,6 +378,10 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     1..num_recursion at the positions PREDICTING target tokens (`d_pred`, the frame of
     `mean_depth_target`), ON target tokens (`d_tgt`) and on every other
     modality's tokens (`d_src`).
+
+    `dtype` is the autocast dtype: fp16 as the trainer's eval (the default, every result before
+    2026-10-29), bf16, or None for none (fp32). ⚠ An LLM-initialised body runs close to fp16's
+    range (SmolLM's layer-11 activation, CLAUDE.md), and a frozen one stays there.
     """
     model.eval()
     mor = [m for m in find_mor_layers(model)]
@@ -411,7 +416,7 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
                 override.mod_ids = mids.to(device)
                 override.att = inputs["attention_mask"]
             grabbed.clear()
-            with torch.autocast("cuda", dtype=torch.float16):
+            with torch.autocast("cuda", dtype=dtype or torch.float16, enabled=dtype is not None):
                 logits = model(**inputs).logits
             lg = logits[:, :-1].float()
             lab = labels[:, 1:].to(device)

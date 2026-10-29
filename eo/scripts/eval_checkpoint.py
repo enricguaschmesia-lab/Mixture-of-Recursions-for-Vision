@@ -59,6 +59,12 @@ check is on the predicting positions alone. A directory holding another scope
 is refused.
 --skip-target-last runs no target-last pass (a main-pass-only unit).
 
+--precision fp16|bf16|fp32 (2026-10-29) is the autocast of every pass: fp16 (the default, as
+the trainer's eval and every result before), bf16, or fp32 (no autocast). An LLM-initialised
+body runs close to fp16's range, and its LoRA arm keeps it frozen there, so the LLM-init
+comparison is scored at fp32 for every arm. One precision per --arm-tag directory: metrics.json
+records it, and a directory holding another is refused.
+
 Arm B works unchanged: it has no router, so it gets the accuracy metrics and
 no depth, and any --modes other than `router` are refused for it.
 
@@ -86,6 +92,7 @@ from eo.generate import conditional as G  # noqa: E402
 from eo.routing.telemetry import has_learned_router  # noqa: E402
 
 ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
+PRECISION = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": None}
 TARGETS = ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC", "Coords"]
 
 # --grid (PHASE3_PLAN.md Step 12.1): the source x target grid of teacher-forced
@@ -155,7 +162,8 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
             dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T, sources=sources),
                                              batch_size=bs, num_workers=args.num_workers,
                                              collate_fn=collate)
-            res = TF.run_pass(model, dl, override=ov, keep_tokens=False, per_row_target=T)
+            res = TF.run_pass(model, dl, override=ov, keep_tokens=False, per_row_target=T,
+                              dtype=PRECISION[args.precision])
             pr = res["rows"]
             row_ce = pr["ce_sum"] / np.maximum(pr["n"], 1)
             cell = {"source": S, "target": T, "hole": False, "n_rows": len(rows),
@@ -242,6 +250,8 @@ def main() -> int:
     ap.add_argument("--force-scope", choices=("all", "target"), default="all",
                     help="with --force-depth, learned router: 'target' forces only the positions predicting the "
                          "target's tokens (target-last and grid; needs --modes '')")
+    ap.add_argument("--precision", choices=tuple(PRECISION), default="fp16",
+                    help="autocast of every pass: fp16 (default, as the trainer), bf16, or fp32 (none)")
     args = ap.parse_args()
     if args.gate_seed != 0 and args.force_depth is None:
         raise SystemExit("--gate-seed applies only with --force-depth")
@@ -266,6 +276,9 @@ def main() -> int:
         if doc and args.force_depth is not None and doc.get("gate_seed", 0) != args.gate_seed:
             raise SystemExit(f"{out} holds gate_seed={doc.get('gate_seed', 0)!r} results; "
                              f"this run draws with {args.gate_seed!r}. Use another --arm-tag.")
+        if doc and doc.get("precision", "fp16") != args.precision:
+            raise SystemExit(f"{out} holds precision={doc.get('precision', 'fp16')!r} results; "
+                             f"this run scores at {args.precision!r}. Use another --arm-tag.")
         if doc and args.force_depth is not None and doc.get("force_scope", "all") != args.force_scope:
             raise SystemExit(f"{out} holds force_scope={doc.get('force_scope', 'all')!r} results; "
                              f"this run forces {args.force_scope!r}. Use another --arm-tag.")
@@ -316,7 +329,7 @@ def main() -> int:
                     "token_set": token_set, "token_root": str(ds.root_dir),
                     "step": step, "gpu": gpu, "n_eval_rows": len(ds),
                     "has_router": ov is not None,
-                    "force_depth": args.force_depth,
+                    "force_depth": args.force_depth, "precision": args.precision,
                     "logged_eval": logged_eval(run_dir, step) if ck != "untrained" else None})
         if rf is not None:
             doc["trained_recursions"] = rf.n_trained
@@ -333,7 +346,7 @@ def main() -> int:
                 TF.install_override(model, base if mode == "router" else mode, seed=0)
             if rf is not None:
                 rf.reseed(args.gate_seed)
-            res = TF.run_pass(model, loader, override=ov)
+            res = TF.run_pass(model, loader, override=ov, dtype=PRECISION[args.precision])
             tok = res.pop("tokens")
             if forced and not (tok["depth"] == args.force_depth).all():
                 raise SystemExit(f"{ck}: forced depth {args.force_depth}, captured "
@@ -373,7 +386,7 @@ def main() -> int:
                 if ov is not None:
                     ov.only_mod = TF.MODALITY_TO_ID[T] if args.force_scope == "target" else None
                 res = TF.run_pass(model, dl, override=ov, keep_tokens=ov is not None or rf is not None,
-                                  per_row_target=T)
+                                  per_row_target=T, dtype=PRECISION[args.precision])
                 r = {"n_rows": len(rows), **res["per_modality"][T]}
                 tl_rows[f"{T}|rows"] = np.asarray(rows)
                 for k, v in res["rows"].items():
