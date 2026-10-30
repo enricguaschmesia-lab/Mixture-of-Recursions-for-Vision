@@ -84,8 +84,11 @@ def load_point(tag, ck):
     if not f.is_file():
         return None
     d = json.loads(f.read_text())
-    if d.get("precision") != "fp32" or "router" not in d.get("modes", {}) or "target_last" not in d:
-        raise SystemExit(f"{f}: not a complete fp32 evaluation")
+    if d.get("precision") != "fp32":
+        raise SystemExit(f"{f}: scored at {d.get('precision', 'fp16')}, not fp32")
+    if "router" not in d.get("modes", {}) or "target_last" not in d:
+        print(f"  (skipped, still being scored: {f.parent})")
+        return None
     pm = d["modes"]["router"]["per_modality"]
     return {"overall": overall(pm), "per_modality": {m: {k: pm[m][k] for k in ("top1", "top5", "ce")} for m in MODS},
             "target_last": {m: {k: d["target_last"][m][k] for k in ("top1", "ce")} for m in MODS},
