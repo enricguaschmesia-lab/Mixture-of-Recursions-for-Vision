@@ -7,6 +7,7 @@ result, nothing is recomputed from a model:
   reports/t360_eval/e2_compare.json      E2: the source x target grid, fp32, paired by row
   runs/pretrain/phase3/vanilla10c_20261011_172253/checkpoint-3300/trainer_state.json   B10c's curve
   reports/t360_probe/final/trainer_state.json                                           T360's curve
+  reports/ben/summary_t360/summary.json  BEN: test_a micro-mAP, paired CIs and forgetting (ben_t360_summary.py)
 Training FLOPs use curves.py's "full" definition (every position of the 1,048, attention, the output
 layer; training = 3 x forward) with each model's own geometry.
 
@@ -230,12 +231,164 @@ def fig_context(num):
     save(fig, "context.png")
 
 
+# ------------------------------------------------------------------------------------------ BEN (Phase 6 protocol)
+# reports/ben/summary_t360/summary.json (eo/experiments/ben_t360_summary.py): test_a micro-mAP of the checkpoint each
+# model selected on its own val role, paired bootstrap CIs over the 103,944 test patches, forgetting per base.
+BEN_SUM = REP / "ben/summary_t360/summary.json"
+CONDS = ("S1", "S2", "S1S2")
+CNAME = {"S1": "S1 (radar)", "S2": "S2 (optical)", "S1S2": "S1 + S2"}
+COL_B10 = "#a8461c"    # B10, BEN's original base (B10c's twin on the original tokens): a darker step of B10c's orange;
+                       # all-pairs with B10c and T360: CVD dE 13.8, normal-vision 15.7, contrast >= 3:1 (dataviz validator)
+SMC = "#3d3c39"                                  # SMARTIES, context (another protocol): dark ink, diamonds
+
+
+def ben():
+    d = json.loads(BEN_SUM.read_text())
+    m = d["models"]
+    get = lambda t, c: m[t][f"test_{c}"]["micro_map"]
+    return d, m, get
+
+
+def sgn(v, nd=3):
+    return f"{v:+.{nd}f}".replace("-", "−")
+
+
+def dumbbell(ax, y, a, b, ca, cb, diff=None, span=0.2):
+    """a -> b on row y: an arrow between two dots, the values below them (b's in bold) and, with `diff`, the change
+    above the arrow. When the two nearly coincide, a's dot is drawn larger, so that a ring of it shows."""
+    near = abs(b - a) <= 0.03 * span                  # the dots overlap
+    if abs(b - a) > 0.09 * span:                      # room for an arrow between them, its head included
+        ax.annotate("", (b, y), (a, y), arrowprops=dict(arrowstyle="-|>", color=MUTED, lw=2, mutation_scale=16,
+                                                        shrinkA=8, shrinkB=8))
+    ax.scatter([a], [y], s=320 if near else 190, color=ca, zorder=3, edgecolor=SURF, lw=2)
+    ax.scatter([b], [y], s=120 if near else 190, color=cb, zorder=4, edgecolor=SURF, lw=2)
+    g, up = (0.012 * span if near else 0.0), b >= a  # near: pull the two labels apart
+    ax.text(a - g if up else a + g, y - 0.3, f"{a:.3f}", ha="right" if up else "left", va="top", fontsize=14,
+            color=INK2)
+    ax.text(b + g if up else b - g, y - 0.3, f"{b:.3f}", ha="left" if up else "right", va="top", fontsize=14,
+            color=INK, fontweight="bold")
+    if diff is not None:
+        ax.text((a + b) / 2, y + 0.2, sgn(diff), ha="center", va="bottom", fontsize=15, color=INK, fontweight="bold")
+
+
+def fig_ben_inputs(num):
+    d, m, get = ben()
+    sm = d["smarties"]["ViT-B, 10%"]
+    cmp_ = d["comparisons"]["t360_lora - b10c_lora"]
+    num["ben_inputs"] = {c: {"b10c_lora": get("b10c_lora", c), "t360_lora": get("t360_lora", c),
+                             "b10_lora": get("b10_lora", c), "smarties_vitb": sm[c], "d": cmp_[c]} for c in CONDS}
+    fig, ax = plt.subplots(figsize=(12.5, 4.6))
+    ys = np.arange(len(CONDS))[::-1].astype(float)
+    x0, x1 = 0.67, 0.885
+    col = ax.get_yaxis_transform()                    # x in axes fractions, y in rows: the column right of the plot
+    for y, c in zip(ys, CONDS):
+        dumbbell(ax, y, get("b10c_lora", c), get("t360_lora", c), COL["b10c"], COL["t360"], span=x1 - x0)
+        ax.scatter([sm[c]], [y], s=170, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
+        ax.text(sm[c], y + 0.24, f"{sm[c]:.3f}", ha="center", va="bottom", fontsize=14, color=INK2)
+        ax.text(x0 - 0.005, y, CNAME[c], ha="right", va="center", fontsize=16, color=INK)
+        ax.text(1.13, y, sgn(cmp_[c]["diff"]), transform=col, ha="right", va="center", fontsize=17, color=INK,
+                fontweight="bold")
+    ax.text(1.13, ys[0] + 0.62, "T360 − B10c", transform=col, ha="right", va="bottom", fontsize=14, color=INK2)
+    ax.scatter([], [], s=150, color=COL["b10c"], label="B10c, LoRA")
+    ax.scatter([], [], s=150, color=COL["t360"], label="T360, LoRA")
+    ax.scatter([], [], s=130, marker="D", color=SMC, label="SMARTIES ViT-B (another protocol)")
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.2), ncol=3, fontsize=14, handletextpad=0.3, columnspacing=1.6)
+    ax.set_xlim(x0, x1); ax.set_ylim(-0.75, len(CONDS) - 0.25)
+    ax.set_yticks([]); ax.spines["left"].set_visible(False)
+    ax.set_xlabel("micro-mAP on the 103,944 test patches")
+    mf.xgrid(ax)
+    save(fig, "ben_inputs.png")
+
+
+def fig_ben_regimes(num):
+    """S1 + S2 micro-mAP and forgetting per training regime, B10 -> T360. B10c is left out: its LoRA run equals B10's
+    (summary: +0.000 on S1 + S2, forgetting 0.267 vs 0.278), and its dot would hide B10's. SMARTIES ViT-B is drawn on
+    the head-only row alone: its S1 + S2 number is a linear probe of a frozen encoder, the regime head-only is closest to."""
+    d, m, get = ben()
+    rows = [(r, b, t) for r, b, t in [("head only", "b10_head", "t360_head"), ("LoRA", "b10_lora", "t360_lora"),
+                                      ("full fine-tune", "b10_full", "t360_full")] if "test_S1S2" in m[t]]
+    fo = lambda t: m[t]["forgetting"]["ce_all"]
+    sm = d["smarties"]["ViT-B, 10%"]["S1S2"]
+    num["ben_regimes"] = {r: {"b10": get(b, "S1S2"), "t360": get(t, "S1S2"), "d": d["comparisons"][f"{t} - {b}"]["S1S2"],
+                              "forget_b10": fo(b), "forget_t360": fo(t)} for r, b, t in rows}
+    num["ben_regimes"]["head only"]["smarties_vitb_linear_probe"] = sm
+    h = 1.2 + 1.15 * len(rows)
+    fig, (ax, af) = plt.subplots(1, 2, figsize=(13.5, h), gridspec_kw={"width_ratios": [1.5, 1], "wspace": 0.1})
+    ys = np.arange(len(rows))[::-1].astype(float)
+    fmax = max(max(fo(b), fo(t)) for _, b, t in rows)
+    (x0, x1), (f0, f1) = (0.70, 0.88), (-0.04 * max(1.0, fmax / 0.3), max(0.34, 1.1 * fmax))
+    for y, (r, b, t) in zip(ys, rows):
+        dumbbell(ax, y, get(b, "S1S2"), get(t, "S1S2"), COL_B10, COL["t360"],
+                 diff=d["comparisons"][f"{t} - {b}"]["S1S2"]["diff"], span=x1 - x0)
+        dumbbell(af, y, fo(b), fo(t), COL_B10, COL["t360"], diff=fo(t) - fo(b), span=f1 - f0)
+        ax.text(x0 - 0.004, y, r, ha="right", va="center", fontsize=16, color=INK)
+        if r == "head only":
+            ax.scatter([sm], [y], s=170, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
+            ax.text(sm, y + 0.24, f"{sm:.3f}", ha="center", va="bottom", fontsize=14, color=INK2)
+    ax.set_xlim(x0, x1); ax.set_xlabel("micro-mAP, S1 + S2 (higher is better)")
+    af.set_xlim(f0, f1); af.set_xlabel("forgetting (nats; lower is better)")
+    for a in (ax, af):
+        a.set_ylim(-0.75, len(rows) - 0.25); a.set_yticks([]); a.spines["left"].set_visible(False)
+        mf.xgrid(a)
+    ax.scatter([], [], s=150, color=COL_B10, label="B10 (BEN's small model)")
+    ax.scatter([], [], s=150, color=COL["t360"], label="T360")
+    ax.scatter([], [], s=130, marker="D", color=SMC, label="SMARTIES ViT-B, linear probe of a frozen encoder")
+    ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=3, fontsize=14, handletextpad=0.3, columnspacing=1.6,
+              borderaxespad=0.1)
+    save(fig, "ben_regimes.png")
+
+
+def fig_ben_labels(num):
+    """S1 + S2 micro-mAP at 10% and 1% of the labels, B10 -> T360 (LoRA), in fig_ben_inputs' layout. B10, not B10c:
+    only B10 was run at 1%, and at 10% the two score the same (0.811)."""
+    d, m, get = ben()
+    loc = {"10%": 0.7820, "1%": 0.6843}          # location-only kNN (k = 10), reports/ben/t360_plan/leak_by_budget.txt
+    sml = {"10%": d["smarties"]["ViT-L, 10%"]["S1S2"], "1%": d["smarties"]["ViT-L, 1%"]["S1S2"]}
+    rows = [("10%", "b10_lora", "t360_lora", "10% of the labels\n31,166 patches"),
+            ("1%", "b10_lora_1pct", "t360_lora_1pct", "1% of the labels\n3,116 patches")]
+    num["ben_labels"] = {k: {"b10_lora": get(b, "S1S2"), "t360_lora": get(t, "S1S2"), "location_knn10": loc[k],
+                             "smarties_vitl": sml[k], "d": d["comparisons"][f"{t} - {b}"]["S1S2"]} for k, b, t, _ in rows}
+    fig, ax = plt.subplots(figsize=(12.5, 3.5))
+    ys = np.arange(len(rows))[::-1].astype(float)
+    x0, x1 = 0.665, 0.885
+    col = ax.get_yaxis_transform()
+    for y, (k, b, t, lab) in zip(ys, rows):
+        dumbbell(ax, y, get(b, "S1S2"), get(t, "S1S2"), COL_B10, COL["t360"], span=x1 - x0)
+        ax.scatter([sml[k]], [y], s=170, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
+        ax.text(sml[k], y + 0.24, f"{sml[k]:.3f}", ha="center", va="bottom", fontsize=14, color=INK2)
+        ax.scatter([loc[k]], [y], s=420, marker="|", color=MUTED, zorder=2, lw=3)
+        ax.text(loc[k], y + 0.24, f"{loc[k]:.3f}", ha="center", va="bottom", fontsize=14, color=MUTED)
+        ax.text(x0 - 0.005, y, lab, ha="right", va="center", fontsize=16, color=INK, linespacing=1.3)
+        ax.text(1.13, y, sgn(d["comparisons"][f"{t} - {b}"]["S1S2"]["diff"]), transform=col, ha="right", va="center",
+                fontsize=17, color=INK, fontweight="bold")
+    ax.text(1.13, ys[0] + 0.62, "T360 − B10", transform=col, ha="right", va="bottom", fontsize=14, color=INK2)
+    ax.scatter([], [], s=150, color=COL_B10, label="B10, LoRA")
+    ax.scatter([], [], s=150, color=COL["t360"], label="T360, LoRA")
+    ax.scatter([], [], s=130, marker="D", color=SMC, label="SMARTIES ViT-L, linear probe")
+    ax.scatter([], [], s=300, marker="|", color=MUTED, lw=3, label="location only")
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.3), ncol=4, fontsize=14, handletextpad=0.3, columnspacing=1.6)
+    ax.set_xlim(x0, x1); ax.set_ylim(-0.75, len(rows) - 0.25)
+    ax.set_yticks([]); ax.spines["left"].set_visible(False)
+    ax.set_xlabel("micro-mAP, S1 + S2, on the 103,944 test patches")
+    mf.xgrid(ax)
+    save(fig, "ben_labels.png")
+
+
 def main():
     num = {}
     fig_setup(num)
     fig_curve(num)
     fig_modalities(num)
     fig_context(num)
+    if BEN_SUM.exists():                       # each BEN figure once its models have test results
+        m = json.loads(BEN_SUM.read_text())["models"]
+        have = lambda *tags: all("test_S1S2" in m[t] for t in tags)
+        if have("b10c_lora", "t360_lora"):
+            fig_ben_inputs(num)
+        if have("b10_lora", "t360_lora", "b10c_lora"):
+            fig_ben_regimes(num)
+        if have("b10_lora_1pct", "t360_lora_1pct", "b10_lora", "t360_lora"):
+            fig_ben_labels(num)
     (OUT / "numbers.json").write_text(json.dumps(num, indent=1, default=float))
     print("->", OUT / "numbers.json")
 
