@@ -301,7 +301,7 @@ def x5():
 
 
 # ---------------------------------------------------------------- X6
-def x6(run_dir):
+def x6(run_dir, ext=EXT, prefix="b10"):
     from eo.finetune import lora as LR
     from eo.finetune.init import strict_load
     from eo.generate.conditional import build_model
@@ -318,13 +318,13 @@ def x6(run_dir):
         emb(torch.tensor([1, 8, 9])).sum().backward()
         opt.step()
     moved = float((emb.weight.detach()[:8] - before[:8]).abs().max())
-    # (b) the real thing on B10: identity at init, and the frozen set.
-    if not (EXT / "extension.json").exists():
+    # (b) the real thing on the base (B10; --x6-base t360 for T360): identity at init, and the frozen set.
+    if not (ext / "extension.json").exists():
         return record("X6 LoRA", None, "no extended checkpoint")
-    base, _ = build_model("eo_ben/b10_lora", None, device="cpu", overrides=[f"finetune.init_from={EXT}"])
-    strict_load(base, EXT)
-    lm, _ = build_model("eo_ben/b10_lora", None, device="cpu", overrides=[f"finetune.init_from={EXT}"])
-    strict_load(lm, EXT)
+    base, _ = build_model(f"eo_ben/{prefix}_lora", None, device="cpu", overrides=[f"finetune.init_from={ext}"])
+    strict_load(base, ext)
+    lm, _ = build_model(f"eo_ben/{prefix}_lora", None, device="cpu", overrides=[f"finetune.init_from={ext}"])
+    strict_load(lm, ext)
     rep = LR.apply_lora(lm, 16, 32, BV.BASE)
     x = torch.randint(0, BV.TOTAL_VOCAB_SIZE, (2, 48))
     with torch.no_grad():
@@ -348,22 +348,22 @@ def x6(run_dir):
         ok = ok and not diff and moved_new > 0
         detail += (f"; after {cks[-1].name}: {len(frozen_names) - len(diff)}/{len(frozen_names)} frozen "
                    f"tensors bit-identical, new rows moved {moved_new:.2e}")
-    record("X6 LoRA", ok, detail, moved > 0, f"masked-grad + AdamW(wd 0.1) moved 'frozen' rows by {moved:.2e}")
+    record(f"X6 LoRA ({prefix})", ok, detail, moved > 0, f"masked-grad + AdamW(wd 0.1) moved 'frozen' rows by {moved:.2e}")
 
 
-def x6h(run_dir):
+def x6h(run_dir, ext=EXT, prefix="b10"):
     """L5's head-only regime: identity at init, only the 21 new rows trainable, and after training
     every frozen tensor bit-identical. Control: X6's masked-grad + AdamW trap, on a head run's
     shape (the old rows must stay put only because they are a separate frozen Parameter)."""
     from eo.finetune import lora as LR
     from eo.finetune.init import strict_load
     from eo.generate.conditional import build_model
-    if not (EXT / "extension.json").exists():
-        return record("X6h head only", None, "no extended checkpoint")
-    base, _ = build_model("eo_ben/b10_head", None, device="cpu", overrides=[f"finetune.init_from={EXT}"])
-    strict_load(base, EXT)
-    hm, _ = build_model("eo_ben/b10_head", None, device="cpu", overrides=[f"finetune.init_from={EXT}"])
-    strict_load(hm, EXT)
+    if not (ext / "extension.json").exists():
+        return record(f"X6h head only ({prefix})", None, "no extended checkpoint")
+    base, _ = build_model(f"eo_ben/{prefix}_head", None, device="cpu", overrides=[f"finetune.init_from={ext}"])
+    strict_load(base, ext)
+    hm, _ = build_model(f"eo_ben/{prefix}_head", None, device="cpu", overrides=[f"finetune.init_from={ext}"])
+    strict_load(hm, ext)
     rep = LR.apply_head(hm, BV.BASE)
     x = torch.randint(0, BV.TOTAL_VOCAB_SIZE, (2, 48))
     with torch.no_grad():
@@ -375,7 +375,7 @@ def x6h(run_dir):
     if run_dir is not None:
         cks = sorted(Path(run_dir).glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[1]))
         if not cks:
-            return record("X6h head only", False, f"no checkpoint in {run_dir}")
+            return record(f"X6h head only ({prefix})", False, f"no checkpoint in {run_dir}")
         ref = {n: p.detach().clone() for n, p in hm.named_parameters() if not p.requires_grad}
         strict_load(hm, cks[-1])
         cur = dict(hm.named_parameters())
@@ -385,10 +385,10 @@ def x6h(run_dir):
         detail += (f"; after {cks[-1].name}: {len(frozen_names) - len(diff)}/{len(frozen_names)} frozen "
                    f"tensors bit-identical, new rows moved {moved_new:.2e}")
     # control: the same model with the LoRA structure instead must expose more than the new rows
-    lm, _ = build_model("eo_ben/b10_lora", None, device="cpu", overrides=[f"finetune.init_from={EXT}"])
+    lm, _ = build_model(f"eo_ben/{prefix}_lora", None, device="cpu", overrides=[f"finetune.init_from={ext}"])
     LR.apply_lora(lm, 16, 32, BV.BASE)
     n_lora = sum(p.requires_grad for p in lm.parameters())
-    record("X6h head only", ok, detail, n_lora > 1, f"the LoRA structure exposes {n_lora} trainable tensors, not 1")
+    record(f"X6h head only ({prefix})", ok, detail, n_lora > 1, f"the LoRA structure exposes {n_lora} trainable tensors, not 1")
 
 
 # ---------------------------------------------------------------- X7
@@ -778,6 +778,8 @@ def main():
     ap.add_argument("--lora-run", default=None, help="a finished B10 LoRA run dir, for X6's trained half")
     ap.add_argument("--x7", nargs=3, default=None, metavar=("TAG", "CKPT", "ROLE"))
     ap.add_argument("--head-run", default=None, help="a finished B10 head-only run dir, for X6h's trained half")
+    ap.add_argument("--x6-base", choices=("b10", "t360"), default="b10",
+                    help="X6/X6h on B10 (default) or T360: the eo_ben/<base>_{lora,head} configs and that extended base")
     ap.add_argument("--chain-root", type=Path, default=REPORTS / "chain", help="ben_chain.py's --out-root (X9)")
     a = ap.parse_args()
     want = lambda x: a.only is None or x in a.only
@@ -795,8 +797,9 @@ def main():
     if want("X5"):
         x5()
     if want("X6"):
-        x6(a.lora_run)
-        x6h(a.head_run)
+        ext = {"b10": EXT, "t360": EXT.parent / "t360_ext_ckpt17441"}[a.x6_base]
+        x6(a.lora_run, ext, a.x6_base)
+        x6h(a.head_run, ext, a.x6_base)
     if want("X7") and a.x7:
         x7(*a.x7)
     if want("X8"):
