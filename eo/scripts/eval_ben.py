@@ -35,6 +35,25 @@ from eo.finetune.init import build_finetuned  # noqa: E402
 CACHE_TOL, derangement = E.CACHE_TOL, E.derangement   # moved to eo/eval/ben.py (2026-10-13)
 
 
+def refusal(cc, tol, res=None):
+    """Why this condition's numbers must not be kept, or None (2026-11-02).
+
+    `diff > tol` is False for a NaN, so non-finite values are refused explicitly: an fp16 overflow
+    would otherwise pass the cache check and write NaN marginals (T360 is decoded at fp16, since a
+    trained T360's logits reach 32-64, where one bf16 rounding step, 0.25, exceeds bf16's tolerance).
+    """
+    d = cc["max_abs_logit_diff"]
+    if not np.isfinite(d):
+        return f"non-finite cached-vs-uncached logit difference: {cc}"
+    if d > tol:
+        return f"KV cache disagrees with uncached decoding: {cc}"
+    if res is not None:
+        bad = [k for k in ("marginal", "sample_freq", "slot_mass") if not np.isfinite(res[k]).all()]
+        if bad:
+            return f"non-finite {bad}: an overflow under this autocast; nothing written"
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -85,8 +104,9 @@ def main():
         probe = torch.stack([ds.prompt(int(p), cond, input_row=int(r))
                              for p, r in zip(pos[:4], inp_rows[:4])]).to(dev)
         cc = E.cache_check(model, probe, autocast=ac)
-        if cc["max_abs_logit_diff"] > CACHE_TOL[a.autocast]:
-            sys.exit(f"KV cache disagrees with uncached decoding: {cc}")
+        why = refusal(cc, CACHE_TOL[a.autocast])
+        if why:
+            sys.exit(why)
 
         t0 = time.time()
         acc = {k: [] for k in ("greedy", "marginal", "sample_freq", "slot_mass")}
@@ -103,6 +123,9 @@ def main():
                 print(f"  {cond}{' wrong' if a.wrong_input else ''}: {b0 + len(bp)}/{len(pos)} "
                       f"{(b0 + len(bp)) / (time.time() - t0):.1f} patches/s", flush=True)
         res = {k: np.concatenate(v) for k, v in acc.items()}
+        why = refusal(cc, CACHE_TOL[a.autocast], res)
+        if why:
+            sys.exit(why)
         truth = np.stack([np.isin(np.arange(L.N_CLASSES), ds.classes(int(rw))) for rw in rows])
         np.savez_compressed(npz, rows=rows, input_rows=inp_rows, truth=truth, **res)
         m = {"condition": cond, "wrong_input": a.wrong_input, "n": int(len(rows)), "k": a.k,
