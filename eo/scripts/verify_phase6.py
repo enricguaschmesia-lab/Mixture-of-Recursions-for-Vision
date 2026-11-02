@@ -48,6 +48,11 @@ that must FIRE, so a pass means something.
                                                        | b10_lora_l11b is flagged
       d  plumbing on the A100 (ben_chain cls): the real-block chain prompt reproduces the L10 run's
          eval_ben S1+S2 outputs                        | another patch's S2 does not
+  X12 BEN with T360 and B10c (2026-11-02, notes/ben_t360_2026-11-02.md):
+      each t360_* overlay differs from its b10_* twin in exactly t360_base's keys (T360's geometry,
+      token_set clean, bf16), with the geometry of arm_t360_vanilla; b10c_lora differs from b10_lora
+      in exactly multimodal.token_set                  | t360_full against b10_lora, and b10c_lora
+                                                         against b10_full, are flagged
 
 Artifacts it reads are named in each check. A check whose artifact does not exist yet is
 SKIPPED and reported as such, never passed.
@@ -727,6 +732,44 @@ def x11(gen_dir: str = L10_GEN, l10_root: Path = REPORTS / "l10"):
            "; ".join(f"{q['control_marginal_max_abs_diff']:.3f}" for q in p))
 
 
+
+# ---------------------------------------------------------------- X12
+def x12():
+    """BEN with T360 and B10c: the overlays change the base and nothing else (2026-11-02)."""
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+
+    def flat(d, p=""):
+        o = {}
+        for k, v in d.items():
+            o.update(flat(v, p + k + ".") if isinstance(v, dict) else {p + k: v})
+        return o
+    twins = {"t360_lora": "b10_lora", "t360_head": "b10_head", "t360_full": "b10_full", "t360_lora_1pct": "b10_lora_1pct"}
+    with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
+        c = {n: flat(OmegaConf.to_container(compose(f"eo_ben/{n}", overrides=["finetune.init_from=/x"]), resolve=False))
+             for n in [*twins, *twins.values(), "b10c_lora"]}
+        arm = flat(OmegaConf.to_container(compose("eo_terramesh/arm_t360_vanilla"), resolve=False))
+    diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
+    geom = ["model_config.hidden_size", "model_config.intermediate_size", "model_config.num_attention_heads",
+            "model_config.num_hidden_layers", "model_config.num_key_value_heads"]
+    want = sorted(geom + ["multimodal.token_set", "precision"])
+    ds = {t: diff(b, t) for t, b in twins.items()}
+    # every model key of the pretraining arm but the vocabulary, which BEN extends by its 21 ids
+    model_keys = [k for k in arm if k.startswith("model_config.") and k != "model_config.vocab_size"]
+    same_model = all(c[t].get(k) == arm[k] for t in twins for k in model_keys) and all(
+        c[t]["model_config.vocab_size"] == BV.TOTAL_VOCAB_SIZE for t in twins)
+    ok = all(d == want for d in ds.values()) and same_model and all(
+        c[t]["multimodal.token_set"] == "clean" and c[t]["precision"] == "bf16" for t in twins)
+    d_ctl = diff("b10_lora", "t360_full")
+    record("X12 T360 overlays", ok, f"each t360_* vs its b10_* twin differs in {want if ok else ds}; "
+           f"model_config = arm_t360_vanilla's ({len(model_keys)} keys): {same_model}",
+           d_ctl != want, f"t360_full vs b10_lora differs in {len(d_ctl)} keys")
+    d_c, d_cctl = diff("b10_lora", "b10c_lora"), diff("b10_full", "b10c_lora")
+    record("X12 B10c overlay", d_c == ["multimodal.token_set"] and c["b10c_lora"]["multimodal.token_set"] == "clean",
+           f"b10c_lora vs b10_lora: {d_c}",
+           d_cctl != ["multimodal.token_set"], f"b10c_lora vs b10_full differs in {d_cctl}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", default=None)
@@ -765,6 +808,8 @@ def main():
         x10d()
     if want("X11"):
         x11()
+    if want("X12"):
+        x12()
     fails = [r for r in RESULTS if r[1] is False or r[3] is False]
     skips = [r for r in RESULTS if r[1] is None]
     print(f"\n{len(RESULTS) - len(fails) - len(skips)} pass, {len(fails)} fail, {len(skips)} skipped")

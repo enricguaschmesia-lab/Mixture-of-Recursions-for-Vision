@@ -1,0 +1,20 @@
+# @package _global_
+#
+# BEN with T360 (2026-11-02, docs/notes/ben_t360_2026-11-02.md): what changes when B10's BEN recipe
+# (ben_b10 and its regime overlays) runs on T360 instead. A fragment, not a config: each t360_* overlay
+# lists it after its b10_* twin, so the twin's data, roles, budget, schedule and regime stay as they are.
+#   * T360's geometry (arm_t360_vanilla: the SmolLM-360M shape); every other model key is B10's already.
+#   * token_set clean: T360 was trained offset-free (as arm_b10c is arm_b10 + this key). BEN reads its own
+#     tokens, so this only reaches the TerraMesh side (preflight's token-set check, forgetting).
+#   * bf16: fp16 overflowed T360's own pretraining (CLAUDE.md: train in bf16 on A100s).
+# Gate X12 asserts every t360_* overlay differs from its b10_* twin in exactly these keys, and that the
+# geometry equals arm_t360_vanilla's.
+model_config:
+  hidden_size: 960
+  intermediate_size: 2560
+  num_hidden_layers: 32
+  num_attention_heads: 15
+  num_key_value_heads: 5
+multimodal:
+  token_set: clean
+precision: bf16

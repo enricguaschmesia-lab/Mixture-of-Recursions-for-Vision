@@ -1,0 +1,9 @@
+# @package _global_
+#
+# T360 on BEN (2026-11-02, docs/notes/ben_t360_2026-11-02.md): b10_full's recipe on T360. Differs from
+# b10_full in exactly t360_base's keys (gate X12).
+#   launch (RCP): /data/enric/rcp_p6/chain_ben2.sh t360full t360_full t360_ext_ckpt17441 bf16 eo_terramesh/arm_t360_vanilla
+defaults:
+  - b10_full
+  - t360_base
+  - _self_
