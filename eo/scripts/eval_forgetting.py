@@ -17,6 +17,10 @@ differs slightly from the original's even though every old logit is identical.
 
 Writes <out-root>/<tag>/<checkpoint>/forgetting.json and tokens_ce.npz (per-token CE, so the
 before/after difference can be paired by token and bootstrapped over rows).
+
+--precision fp16|bf16|fp32 (2026-11-02) is the autocast of the pass: fp16, the default, as every
+result before it (B10's); fp32 for T360, whose own pretraining overflowed fp16. Before and after
+must be scored at the same precision: a tag directory refuses a second precision.
 """
 from __future__ import annotations
 
@@ -47,7 +51,13 @@ def main():
     ap.add_argument("--checkpoint", default=None)
     ap.add_argument("--tag", required=True)
     ap.add_argument("--out-root", type=Path, default=Path("/data/enric/reports/ben/forgetting"))
+    ap.add_argument("--precision", choices=("fp16", "bf16", "fp32"), default="fp16")
     a = ap.parse_args()
+    dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": None}[a.precision]
+    for prev in (a.out_root / a.tag).glob("*/forgetting.json"):          # one precision per tag
+        got = json.loads(prev.read_text()).get("precision", "fp16")
+        if got != a.precision:
+            sys.exit(f"{prev} was scored at {got}; this run scores at {a.precision}. Use another --tag.")
 
     gpu = torch.cuda.get_device_name(0)
     if "TITAN V" in gpu:
@@ -69,13 +79,13 @@ def main():
     torch.manual_seed(42)
     ds, loader = TF.eval_loader(arm_cfg, num_workers=int(arm_cfg.dataloader_num_workers))
     t0 = time.time()
-    res = TF.run_pass(model, loader, keep_tokens=True)
+    res = TF.run_pass(model, loader, keep_tokens=True, dtype=dtype)
     tok = res.pop("tokens")
     np.savez_compressed(out / "tokens_ce.npz", ce=tok["ce"], label_mod=tok["label_mod"],
                         rows=np.asarray(ds.rows))
     doc = {"model": a.model, "checkpoint": ck, "ben_config": a.ben_config if a.model != "pretrained" else None,
            "arm_config": a.arm_config, "token_set": (arm_cfg.get("multimodal") or {}).get("token_set", "original"),
-           "n_rows": len(ds), "vocab": int(model.config.vocab_size), "gpu": gpu,
+           "n_rows": len(ds), "vocab": int(model.config.vocab_size), "gpu": gpu, "precision": a.precision,
            "seconds": round(time.time() - t0, 1),
            "fork_commit": subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[2]),
                                           "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip(),
