@@ -370,7 +370,7 @@ def x6h(run_dir, ext=EXT, prefix="b10"):
         d0 = float((base(input_ids=x).logits - hm(input_ids=x).logits).abs().max())
     trainable = [n for n, p in hm.named_parameters() if p.requires_grad]
     frozen_names = [n for n, p in hm.named_parameters() if not p.requires_grad]
-    ok = d0 < 1e-4 and trainable == ["model.embed_tokens.new"] and rep["trainable_params"] == 21 * 576
+    ok = d0 < 1e-4 and trainable == ["model.embed_tokens.new"] and rep["trainable_params"] == 21 * hm.config.hidden_size
     detail = f"init identity max |dlogit| {d0:.1e}; trainable {trainable} ({rep['trainable_params']:,})"
     if run_dir is not None:
         cks = sorted(Path(run_dir).glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[1]))
