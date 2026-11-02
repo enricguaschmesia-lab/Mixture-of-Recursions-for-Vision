@@ -69,10 +69,31 @@ def select(tag, val):
     return (max(s, key=s.get), s) if s else (None, s)
 
 
+def _sorted(y, s):
+    o = np.argsort(-s.ravel(), kind="mergesort")
+    ss = s.ravel()[o]
+    return o, y.ravel()[o].astype(np.float64), np.r_[np.where(np.diff(ss))[0], ss.size - 1]
+
+
+def _wap(w, o, ys, thr):
+    """E.average_precision of the sample in which element i appears w[i] times (ties grouped, as there)."""
+    ww = w[o]
+    tps, tot = np.cumsum(ww * ys)[thr], np.cumsum(ww)[thr]
+    prec = np.divide(tps, tot, out=np.zeros_like(tps), where=tot > 0)
+    return float(np.sum(np.diff(np.r_[0.0, tps / tps[-1]]) * prec))
+
+
 def boot(y, a, b, n=100, seed=0):
+    """Paired bootstrap over patches, with ben_summary's draws. A resample is a count per patch, so each model's
+    scores are sorted once and each resample is a weighted AP: equal to the AP of the duplicated sample (tested to
+    3e-16, and exactly with ties), ~5x faster."""
     rng = np.random.default_rng(seed)
     mm = lambda yy, ss: E.average_precision(yy.ravel(), ss.ravel())
-    d = [mm(y[i], a[i]) - mm(y[i], b[i]) for i in (rng.integers(0, len(y), len(y)) for _ in range(n))]
+    sa, sb = _sorted(y, a), _sorted(y, b)
+    d = []
+    for _ in range(n):
+        w = np.repeat(np.bincount(rng.integers(0, len(y), len(y)), minlength=len(y)).astype(np.float64), y.shape[1])
+        d.append(_wap(w, *sa) - _wap(w, *sb))
     return float(mm(y, a) - mm(y, b)), [float(np.percentile(d, 2.5)), float(np.percentile(d, 97.5))]
 
 
