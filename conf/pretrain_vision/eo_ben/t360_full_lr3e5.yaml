@@ -1,0 +1,11 @@
+# @package _global_
+#
+# T360 full fine-tune at 3e-5 (2026-11-02, worklog §4 item 48): at b10_full's 1e-4, T360's full
+# fine-tune scores as its LoRA run but forgets 1.36 nats of TerraMesh. This asks whether the
+# learning rate is the cause. Differs from t360_full in exactly learning_rate (gate X12).
+#   launch (RCP): /data/enric/rcp_p6/chain_ben3.sh t360fulllr3e5 t360_full_lr3e5 t360_ext_ckpt17441 fp16 eo_terramesh/arm_t360_vanilla
+defaults:
+  - t360_full
+  - _self_
+
+learning_rate: 3.0e-5

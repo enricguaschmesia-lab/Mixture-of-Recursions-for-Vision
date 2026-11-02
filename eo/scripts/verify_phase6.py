@@ -53,6 +53,7 @@ that must FIRE, so a pass means something.
       token_set clean, bf16), with the geometry of arm_t360_vanilla; b10c_lora differs from b10_lora
       in exactly multimodal.token_set                  | t360_full against b10_lora, and b10c_lora
                                                          against b10_full, are flagged
+      t360_full_lr3e5 differs from t360_full in exactly learning_rate (3e-5) | against t360_lora it is flagged
 
 Artifacts it reads are named in each check. A check whose artifact does not exist yet is
 SKIPPED and reported as such, never passed.
@@ -747,7 +748,7 @@ def x12():
     twins = {"t360_lora": "b10_lora", "t360_head": "b10_head", "t360_full": "b10_full", "t360_lora_1pct": "b10_lora_1pct"}
     with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
         c = {n: flat(OmegaConf.to_container(compose(f"eo_ben/{n}", overrides=["finetune.init_from=/x"]), resolve=False))
-             for n in [*twins, *twins.values(), "b10c_lora"]}
+             for n in [*twins, *twins.values(), "b10c_lora", "t360_full_lr3e5"]}
         arm = flat(OmegaConf.to_container(compose("eo_terramesh/arm_t360_vanilla"), resolve=False))
     diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
     geom = ["model_config.hidden_size", "model_config.intermediate_size", "model_config.num_attention_heads",
@@ -768,6 +769,10 @@ def x12():
     record("X12 B10c overlay", d_c == ["multimodal.token_set"] and c["b10c_lora"]["multimodal.token_set"] == "clean",
            f"b10c_lora vs b10_lora: {d_c}",
            d_cctl != ["multimodal.token_set"], f"b10c_lora vs b10_full differs in {d_cctl}")
+    d_lr, d_lctl = diff("t360_full", "t360_full_lr3e5"), diff("t360_lora", "t360_full_lr3e5")
+    record("X12 T360 LR overlay", d_lr == ["learning_rate"] and c["t360_full_lr3e5"]["learning_rate"] == 3e-5,
+           f"t360_full_lr3e5 vs t360_full: {d_lr}; lr {c['t360_full_lr3e5']['learning_rate']} (full's {c['t360_full']['learning_rate']})",
+           d_lctl != ["learning_rate"], f"t360_full_lr3e5 vs t360_lora differs in {d_lctl}")
 
 
 def main():
