@@ -62,6 +62,13 @@ that must FIRE, so a pass means something.
       step 0, the peak from the warmup's end to the decay's start, and falls linearly to ~0
                                                        | t360_lora_e50 against t360_full is flagged; a save
                                                          interval of 1,000 fails the budget check
+  X14 Stage 2 of the 50-epoch plan (2026-11-04, notes/ben_t360_budget_2026-11-03.md §5), the overlays in STAGE2:
+      each differs from its 3-epoch twin in exactly the four budget keys (steps, stop, warmup, decay); its budget
+      is N x ceil(31,166/64) steps, N the epoch of its e50 run's best val checkpoint (read from the local
+      reports), warmup and decay int(5%) and int(20%), a checkpoint every epoch; HF's WSD schedule keeps the shape
+                                                       | a twin pair at another LR is flagged; a budget one
+                                                         epoch past the peak fails; the 3-epoch warmup and a
+                                                         cosine decay are caught
 
 Artifacts it reads are named in each check. A check whose artifact does not exist yet is
 SKIPPED and reported as such, never passed.
@@ -784,15 +791,39 @@ def x12():
 
 
 # ---------------------------------------------------------------- X13
+def _hf_lrs(cfg, steps):
+    """HF's scheduler, as the trainer builds it (pretrain.py: warmup_steps, max_steps, lr_scheduler_kwargs)."""
+    from transformers import get_scheduler
+    opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=cfg["learning_rate"])
+    kw = {k.split(".", 1)[1]: v for k, v in cfg.items() if k.startswith("lr_scheduler_kwargs.")}
+    sch = get_scheduler(cfg["lr_scheduler_type"], optimizer=opt, num_warmup_steps=cfg["num_warmup_steps"],
+                        num_training_steps=cfg["num_train_steps"], scheduler_specific_kwargs=kw)
+    out, at = {}, set(steps)
+    for s in range(cfg["num_train_steps"] + 1):
+        if s in at:
+            out[s] = opt.param_groups[0]["lr"]
+        opt.step(); sch.step()
+    return out
+
+
+def _wsd_shape(cfg, ref):
+    """The composed schedule, at fixed steps of the run, against linear warmup to the peak, a flat
+    stable phase and a linear decay to ~0 (ref: the run's intended warmup and decay)."""
+    n, w, d, pk = ref["num_train_steps"], ref["num_warmup_steps"], ref["lr_scheduler_kwargs.num_decay_steps"], ref["learning_rate"]
+    probe = [0, w // 2, w, (w + n - d) // 2, n - d, n - d + d // 2, n - d + 3 * d // 4, n - 1]
+    want = {0: 0.0, w // 2: (w // 2) / w, w: 1.0, (w + n - d) // 2: 1.0, n - d: 1.0,
+            n - d + d // 2: (d - d // 2) / d, n - d + 3 * d // 4: (d - 3 * d // 4) / d, n - 1: 1 / d}
+    got = _hf_lrs(cfg, probe)
+    return all(abs(got[s] / pk - want[s]) <= 1e-3 for s in probe), got
+
+
 def x13():
     """T360 on BEN for 50 epochs: the e50 overlays change the budget (and the LR overlays the LR) and
     nothing else, and the stretched schedule keeps the 3-epoch shape (2026-11-03)."""
     import math
 
-    import torch
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
-    from transformers import get_scheduler
 
     def flat(d, p=""):
         o = {}
@@ -836,32 +867,11 @@ def x13():
            f"{t['lr_scheduler_kwargs.num_decay_steps']}); save and eval every {e['save_steps']}",
            not budget_ok(e, t, save=1000), "save every 1,000: fails")
 
-    def lrs(cfg, steps):
-        """HF's scheduler, as the trainer builds it (pretrain.py: warmup_steps, max_steps, lr_scheduler_kwargs)."""
-        opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=cfg["learning_rate"])
-        kw = {k.split(".", 1)[1]: v for k, v in cfg.items() if k.startswith("lr_scheduler_kwargs.")}
-        sch = get_scheduler(cfg["lr_scheduler_type"], optimizer=opt, num_warmup_steps=cfg["num_warmup_steps"],
-                            num_training_steps=cfg["num_train_steps"], scheduler_specific_kwargs=kw)
-        out, at = {}, set(steps)
-        for s in range(cfg["num_train_steps"] + 1):
-            if s in at:
-                out[s] = opt.param_groups[0]["lr"]
-            opt.step(); sch.step()
-        return out
-    def shape(cfg, ref):
-        """The composed schedule, at fixed steps of the e50 run, against linear warmup to the peak, a flat
-        stable phase and a linear decay to ~0 (ref: the run's intended warmup and decay)."""
-        n, w, d, pk = ref["num_train_steps"], ref["num_warmup_steps"], ref["lr_scheduler_kwargs.num_decay_steps"], ref["learning_rate"]
-        probe = [0, w // 2, w, (w + n - d) // 2, n - d, n - d + d // 2, n - d + 3 * d // 4, n - 1]
-        want = {0: 0.0, w // 2: (w // 2) / w, w: 1.0, (w + n - d) // 2: 1.0, n - d: 1.0,
-                n - d + d // 2: (d - d // 2) / d, n - d + 3 * d // 4: (d - 3 * d // 4) / d, n - 1: 1 / d}
-        got = lrs(cfg, probe)
-        return all(abs(got[s] / pk - want[s]) <= 1e-3 for s in probe), got
-    ok_shape, got = shape(e, e)
+    ok_shape, got = _wsd_shape(e, e)
     # the 3-epoch schedule at the same fractions of its run: the same shape, stretched
     tn, td = t["num_train_steps"], t["lr_scheduler_kwargs.num_decay_steps"]
     n, d, pk = e["num_train_steps"], e["lr_scheduler_kwargs.num_decay_steps"], e["learning_rate"]
-    short = lrs(t, [tn - td + td // 2])[tn - td + td // 2] / pk
+    short = _hf_lrs(t, [tn - td + td // 2])[tn - td + td // 2] / pk
     same = abs(short - got[n - d + d // 2] / pk) < 0.01
     # controls: the 3-epoch warmup left in, and HF's default (cosine) decay if decay_type were lost
     bad_w = {**e, "num_warmup_steps": t["num_warmup_steps"]}
@@ -869,8 +879,76 @@ def x13():
     record("X13 e50 schedule", ok_shape and same,
            "lr/peak at " + ", ".join(f"{s}: {v / pk:.4f}" for s, v in got.items()) + f" (peak {pk:g}); "
            f"mid-decay {got[n - d + d // 2] / pk:.4f} vs 3 epochs {short:.4f}",
-           not shape(bad_w, e)[0] and not shape(bad_d, e)[0],
+           not _wsd_shape(bad_w, e)[0] and not _wsd_shape(bad_d, e)[0],
            "a 73-step warmup and a cosine decay are both caught")
+
+
+# ---------------------------------------------------------------- X14
+# Stage 2 of the 50-epoch plan (notes/ben_t360_budget_2026-11-03.md §5): overlay -> (its 3-epoch twin, the e50
+# run whose val peak sets its budget, the keys beyond the budget it may change)
+STAGE2 = {"t360_full_e6": ("t360_full", "t360_full_e50", []),
+          "t360_full_e10_lr3e5": ("t360_full_lr3e5", "t360_full_e50_lr3e5", [])}
+
+
+def val_peak(tag, role="ft_valsel", root=REPORTS):
+    """{step: mean micro-mAP over S1 / S2 / S1+S2 on val} for every checkpoint of `tag` scored locally, and the
+    best step by the chains' selection rule (None while nothing is scored)."""
+    score = {}
+    for ck in (root / tag).glob("checkpoint-*"):
+        fs = [ck / role / f"{c}.json" for c in ("S1", "S2", "S1S2")]
+        if all(f.exists() for f in fs):
+            score[int(ck.name.split("-")[1])] = sum(json.loads(f.read_text())["micro_map"] for f in fs) / 3
+    return (max(score, key=score.get) if score else None), score
+
+
+def x14():
+    """Stage 2 (2026-11-04): each overlay is its 3-epoch twin with an N-epoch budget, N the epoch at which its
+    e50 run peaked on val, and the schedule keeps the WSD shape."""
+    import math
+    names = sorted({*STAGE2, *(t for t, _, _ in STAGE2.values())})
+    c = _flat_configs(names)
+    diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
+    budget = sorted(["num_train_steps", "stop_steps", "num_warmup_steps", "lr_scheduler_kwargs.num_decay_steps"])
+    ds = {n: diff(t, n) for n, (t, _, x) in STAGE2.items()}
+    ok = all(ds[n] == sorted(budget + x) for n, (_, _, x) in STAGE2.items())
+    n0, (t0, _, _) = next(iter(STAGE2.items()))
+    ctl = next(t for t, _, _ in STAGE2.values() if c[t]["learning_rate"] != c[t0]["learning_rate"])
+    d_ctl = diff(ctl, n0)
+    record("X14 stage-2 overlays", ok, "; ".join(f"{n} vs {STAGE2[n][0]}: {d}" for n, d in ds.items()),
+           d_ctl != budget, f"{n0} vs {ctl} differs in {d_ctl}")
+
+    per_epoch = math.ceil(31_166 / c[n0]["total_batch_size"])
+
+    def budget_ok(e, t, epochs):
+        n = e["num_train_steps"]
+        return (n == e["stop_steps"] == epochs * per_epoch and e["num_warmup_steps"] == int(0.05 * n)
+                and e["lr_scheduler_kwargs.num_decay_steps"] == int(0.2 * n)
+                and e["save_steps"] == t["save_steps"] == per_epoch and n % e["save_steps"] == 0
+                and e["eval_steps"] == t["eval_steps"])
+    peaks, rows, scored = {}, [], True
+    for n, (t, e50, _) in STAGE2.items():
+        best, score = val_peak(e50)
+        scored &= best is not None
+        peaks[n] = None if best is None else best / per_epoch
+        if best is not None:
+            rows.append(f"{n}: {c[n]['num_train_steps']} steps = {c[n]['num_train_steps'] / per_epoch:g} epochs; "
+                        f"{e50} peaked at epoch {peaks[n]:g} ({score[best]:.4f} of {len(score)} scored)")
+    if not scored:
+        record("X14 stage-2 budget", None, "an e50 run's val reports are not local yet")
+    else:
+        ok = all(budget_ok(c[n], c[t], peaks[n]) for n, (t, _, _) in STAGE2.items())
+        # control: the epoch after each peak (the budget one epoch too long) fails
+        bad = any(budget_ok(c[n], c[t], peaks[n] + 1) for n, (t, _, _) in STAGE2.items())
+        record("X14 stage-2 budget", ok, "; ".join(rows) + f"; warmup int(5%), decay int(20%), save every {per_epoch}",
+               not bad, "a budget one epoch past each peak fails")
+
+    shapes = {n: _wsd_shape(c[n], c[n]) for n in STAGE2}
+    bad_d = {n: _wsd_shape({**c[n], "lr_scheduler_kwargs.decay_type": "cosine"}, c[n])[0] for n in STAGE2}
+    bad_w = {n: _wsd_shape({**c[n], "num_warmup_steps": c[STAGE2[n][0]]["num_warmup_steps"]}, c[n])[0] for n in STAGE2}
+    record("X14 stage-2 schedule", all(ok for ok, _ in shapes.values()),
+           "; ".join(f"{n}: lr/peak " + ", ".join(f"{s}: {v / c[n]['learning_rate']:.3f}" for s, v in got.items())
+                     for n, (_, got) in shapes.items()),
+           not any(bad_d.values()) and not any(bad_w.values()), "the twins' 73-step warmup and a cosine decay are caught")
 
 
 def main():
@@ -918,6 +996,8 @@ def main():
         x12()
     if want("X13"):
         x13()
+    if want("X14"):
+        x14()
     fails = [r for r in RESULTS if r[1] is False or r[3] is False]
     skips = [r for r in RESULTS if r[1] is None]
     print(f"\n{len(RESULTS) - len(fails) - len(skips)} pass, {len(fails)} fail, {len(skips)} skipped")

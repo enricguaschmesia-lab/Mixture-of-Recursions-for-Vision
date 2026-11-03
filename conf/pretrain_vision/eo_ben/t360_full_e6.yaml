@@ -1,0 +1,10 @@
+# @package _global_
+#
+# T360 full fine-tune on BEN for 6 epochs (2026-11-04, docs/notes/ben_t360_budget_2026-11-03.md §5, stage 2):
+# t360_full with budget_e6's keys, the epoch where t360_full_e50 peaked on val. Differs from t360_full in
+# exactly those keys (gate X14).
+#   launch (RCP): VAL_EP="1 2 3 4 5 6" FORGET_EP=6 /data/enric/rcp_p6/chain_ben4.sh t360fulle6 t360_full_e6 t360_ext_ckpt17441 fp16 eo_terramesh/arm_t360_vanilla
+defaults:
+  - t360_full
+  - budget_e6
+  - _self_

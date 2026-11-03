@@ -1,0 +1,15 @@
+# @package _global_
+#
+# 10 epochs (2026-11-04, docs/notes/ben_t360_budget_2026-11-03.md §5, stage 2): for a run whose 50-epoch
+# version peaked on val at epoch 10 and then fell, while its learning rate stayed at the peak until epoch 40.
+# This budget ends at the peak, so the decay lands there. A fragment like budget_e50: each *_e10 overlay
+# lists it after its 3-epoch twin, so only the budget changes.
+#   * 10 x 487 = 4,870 steps; the same warmup-stable-decay shape: warmup int(5%) = 243, decay int(20%) = 974.
+#   * The twin's checkpoint every epoch and eval every half epoch are kept.
+# Gate X14 asserts each *_e10 overlay differs from its twin in exactly these keys, and that 10 is the val
+# peak of its e50 run.
+num_train_steps: 4870
+stop_steps: 4870
+num_warmup_steps: 243
+lr_scheduler_kwargs:
+  num_decay_steps: 974
