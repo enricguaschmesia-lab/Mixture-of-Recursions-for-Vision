@@ -1,0 +1,9 @@
+# @package _global_
+#
+# T360 LoRA on BEN for 50 epochs (2026-11-03, docs/notes/ben_t360_budget_2026-11-03.md): t360_lora with
+# budget_e50's keys. Differs from t360_lora in exactly those keys (gate X13).
+#   launch (RCP): /data/enric/rcp_p6/chain_ben4.sh t360lorae50 t360_lora_e50 t360_ext_ckpt17441 fp16 eo_terramesh/arm_t360_vanilla
+defaults:
+  - t360_lora
+  - budget_e50
+  - _self_

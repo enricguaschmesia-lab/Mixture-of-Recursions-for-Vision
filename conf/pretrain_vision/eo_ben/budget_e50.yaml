@@ -1,0 +1,18 @@
+# @package _global_
+#
+# 50 epochs instead of 3 (2026-11-03, docs/notes/ben_t360_budget_2026-11-03.md): SoftCon's fine-tune budget
+# (arXiv 2405.20462). A fragment, not a config: each *_e50 overlay lists it after its 3-epoch twin, so the
+# twin's data, roles, batch, regime and optimizer stay as they are and only the budget changes.
+#   * 50 x 487 = 24,350 steps (ceil(31,166 / 64) = 487 per epoch).
+#   * The same warmup-stable-decay shape, stretched: warmup int(5%), decay the last int(20%), linear
+#     (the 3-epoch runs: 73 and 292 of 1,461).
+#   * A checkpoint and a teacher-forced eval every 2 epochs (25 of each); the last step is a save step.
+# Gate X13 asserts every *_e50 overlay differs from its twin in exactly these keys (and learning_rate
+# for the LR overlays), and the schedule's shape.
+num_train_steps: 24350
+stop_steps: 24350
+num_warmup_steps: 1217
+lr_scheduler_kwargs:
+  num_decay_steps: 4870
+save_steps: 974
+eval_steps: 974

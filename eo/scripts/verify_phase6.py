@@ -54,6 +54,14 @@ that must FIRE, so a pass means something.
       in exactly multimodal.token_set                  | t360_full against b10_lora, and b10c_lora
                                                          against b10_full, are flagged
       t360_full_lr3e5 differs from t360_full in exactly learning_rate (3e-5) | against t360_lora it is flagged
+  X13 T360 on BEN for 50 epochs (2026-11-03, notes/ben_t360_budget_2026-11-03.md):
+      t360_{lora,full}_e50 differ from their 3-epoch twins in exactly budget_e50's six keys; the LR overlays
+      from their e50 base in exactly learning_rate, and t360_full_e50_lr3e5 from t360_full_lr3e5 in exactly
+      the budget keys; the budget is 50 x ceil(31,166/64) steps, warmup and decay int(5%) and int(20%) as in
+      the twins, the save interval divides the run; HF's WSD scheduler built from the composed config is 0 at
+      step 0, the peak from the warmup's end to the decay's start, and falls linearly to ~0
+                                                       | t360_lora_e50 against t360_full is flagged; a save
+                                                         interval of 1,000 fails the budget check
 
 Artifacts it reads are named in each check. A check whose artifact does not exist yet is
 SKIPPED and reported as such, never passed.
@@ -775,6 +783,96 @@ def x12():
            d_lctl != ["learning_rate"], f"t360_full_lr3e5 vs t360_lora differs in {d_lctl}")
 
 
+# ---------------------------------------------------------------- X13
+def x13():
+    """T360 on BEN for 50 epochs: the e50 overlays change the budget (and the LR overlays the LR) and
+    nothing else, and the stretched schedule keeps the 3-epoch shape (2026-11-03)."""
+    import math
+
+    import torch
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+    from transformers import get_scheduler
+
+    def flat(d, p=""):
+        o = {}
+        for k, v in d.items():
+            o.update(flat(v, p + k + ".") if isinstance(v, dict) else {p + k: v})
+        return o
+    names = ["t360_lora", "t360_full", "t360_full_lr3e5", "t360_lora_e50", "t360_full_e50",
+             "t360_lora_e50_lr3e4", "t360_full_e50_lr3e5"]
+    with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision"), version_base=None):
+        c = {n: flat(OmegaConf.to_container(compose(f"eo_ben/{n}", overrides=["finetune.init_from=/x"]), resolve=False))
+             for n in names}
+    diff = lambda a, b: sorted(k for k in set(c[a]) | set(c[b]) if c[a].get(k) != c[b].get(k))
+    budget = sorted(["num_train_steps", "stop_steps", "num_warmup_steps", "lr_scheduler_kwargs.num_decay_steps",
+                     "save_steps", "eval_steps"])
+    pairs = {"t360_lora_e50": "t360_lora", "t360_full_e50": "t360_full", "t360_full_e50_lr3e5": "t360_full_lr3e5"}
+    ds = {e: diff(t, e) for e, t in pairs.items()}
+    d_ctl = diff("t360_full", "t360_lora_e50")
+    record("X13 e50 overlays", all(d == budget for d in ds.values()),
+           f"each vs its 3-epoch twin differs in {budget if all(d == budget for d in ds.values()) else ds}",
+           d_ctl != budget, f"t360_lora_e50 vs t360_full differs in {d_ctl}")
+    lr = {"t360_lora_e50_lr3e4": ("t360_lora_e50", 3e-4), "t360_full_e50_lr3e5": ("t360_full_e50", 3e-5)}
+    dl = {n: diff(b, n) for n, (b, _) in lr.items()}
+    ok = all(dl[n] == ["learning_rate"] and c[n]["learning_rate"] == v for n, (_, v) in lr.items())
+    d_lctl = diff("t360_full_e50", "t360_lora_e50_lr3e4")
+    record("X13 e50 LR overlays", ok, "; ".join(f"{n}: {dl[n]} = {c[n]['learning_rate']}" for n in lr),
+           d_lctl != ["learning_rate"], f"t360_lora_e50_lr3e4 vs t360_full_e50 differs in {d_lctl}")
+
+    per_epoch = math.ceil(31_166 / c["t360_lora"]["total_batch_size"])
+
+    def budget_ok(e, t, save=None):
+        n, s = e["num_train_steps"], save if save is not None else e["save_steps"]
+        return (n == e["stop_steps"] == 50 * per_epoch and t["num_train_steps"] == 3 * per_epoch
+                and e["num_warmup_steps"] == int(0.05 * n) and t["num_warmup_steps"] == int(0.05 * t["num_train_steps"])
+                and e["lr_scheduler_kwargs.num_decay_steps"] == int(0.2 * n)
+                and t["lr_scheduler_kwargs.num_decay_steps"] == int(0.2 * t["num_train_steps"])
+                and n % s == 0 and e["eval_steps"] == s)
+    e, t = c["t360_full_e50"], c["t360_full"]
+    record("X13 e50 budget", all(budget_ok(c[n], c[pairs.get(n, "t360_lora")]) for n in names if "_e50" in n),
+           f"{e['num_train_steps']} steps = 50 x {per_epoch}; warmup {e['num_warmup_steps']}, decay "
+           f"{e['lr_scheduler_kwargs.num_decay_steps']} (3 epochs: {t['num_warmup_steps']}, "
+           f"{t['lr_scheduler_kwargs.num_decay_steps']}); save and eval every {e['save_steps']}",
+           not budget_ok(e, t, save=1000), "save every 1,000: fails")
+
+    def lrs(cfg, steps):
+        """HF's scheduler, as the trainer builds it (pretrain.py: warmup_steps, max_steps, lr_scheduler_kwargs)."""
+        opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=cfg["learning_rate"])
+        kw = {k.split(".", 1)[1]: v for k, v in cfg.items() if k.startswith("lr_scheduler_kwargs.")}
+        sch = get_scheduler(cfg["lr_scheduler_type"], optimizer=opt, num_warmup_steps=cfg["num_warmup_steps"],
+                            num_training_steps=cfg["num_train_steps"], scheduler_specific_kwargs=kw)
+        out, at = {}, set(steps)
+        for s in range(cfg["num_train_steps"] + 1):
+            if s in at:
+                out[s] = opt.param_groups[0]["lr"]
+            opt.step(); sch.step()
+        return out
+    def shape(cfg, ref):
+        """The composed schedule, at fixed steps of the e50 run, against linear warmup to the peak, a flat
+        stable phase and a linear decay to ~0 (ref: the run's intended warmup and decay)."""
+        n, w, d, pk = ref["num_train_steps"], ref["num_warmup_steps"], ref["lr_scheduler_kwargs.num_decay_steps"], ref["learning_rate"]
+        probe = [0, w // 2, w, (w + n - d) // 2, n - d, n - d + d // 2, n - d + 3 * d // 4, n - 1]
+        want = {0: 0.0, w // 2: (w // 2) / w, w: 1.0, (w + n - d) // 2: 1.0, n - d: 1.0,
+                n - d + d // 2: (d - d // 2) / d, n - d + 3 * d // 4: (d - 3 * d // 4) / d, n - 1: 1 / d}
+        got = lrs(cfg, probe)
+        return all(abs(got[s] / pk - want[s]) <= 1e-3 for s in probe), got
+    ok_shape, got = shape(e, e)
+    # the 3-epoch schedule at the same fractions of its run: the same shape, stretched
+    tn, td = t["num_train_steps"], t["lr_scheduler_kwargs.num_decay_steps"]
+    n, d, pk = e["num_train_steps"], e["lr_scheduler_kwargs.num_decay_steps"], e["learning_rate"]
+    short = lrs(t, [tn - td + td // 2])[tn - td + td // 2] / pk
+    same = abs(short - got[n - d + d // 2] / pk) < 0.01
+    # controls: the 3-epoch warmup left in, and HF's default (cosine) decay if decay_type were lost
+    bad_w = {**e, "num_warmup_steps": t["num_warmup_steps"]}
+    bad_d = {**e, "lr_scheduler_kwargs.decay_type": "cosine"}
+    record("X13 e50 schedule", ok_shape and same,
+           "lr/peak at " + ", ".join(f"{s}: {v / pk:.4f}" for s, v in got.items()) + f" (peak {pk:g}); "
+           f"mid-decay {got[n - d + d // 2] / pk:.4f} vs 3 epochs {short:.4f}",
+           not shape(bad_w, e)[0] and not shape(bad_d, e)[0],
+           "a 73-step warmup and a cosine decay are both caught")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", default=None)
@@ -818,6 +916,8 @@ def main():
         x11()
     if want("X12"):
         x12()
+    if want("X13"):
+        x13()
     fails = [r for r in RESULTS if r[1] is False or r[3] is False]
     skips = [r for r in RESULTS if r[1] is None]
     print(f"\n{len(RESULTS) - len(fails) - len(skips)} pass, {len(fails)} fail, {len(skips)} skipped")
