@@ -8,6 +8,9 @@ result, nothing is recomputed from a model:
   runs/pretrain/phase3/vanilla10c_20261011_172253/checkpoint-3300/trainer_state.json   B10c's curve
   reports/t360_probe/final/trainer_state.json                                           T360's curve
   reports/ben/summary_t360/summary.json  BEN: test_a micro-mAP, paired CIs and forgetting (ben_t360_summary.py)
+  reports/tm_compare/summary.json        TerraMind's nine generation tasks, every model on the same scenes
+                                         (tm_compare_gen.py, tm_compare_eval.py)
+The published numbers drawn beside ours (SOFTCON, TM_PUB) are constants, each with its table.
 Training FLOPs use curves.py's "full" definition (every position of the 1,048, attention, the output
 layer; training = 3 x forward) with each model's own geometry.
 
@@ -20,6 +23,7 @@ Writes /data/enric/reports/slides/t360/figs/*.png and numbers.json beside them.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -391,6 +395,151 @@ def fig_ben_labels(num):
     save(fig, "ben_labels.png")
 
 
+#: Published BEN numbers on our exact test split (SeCo's 103,944 val patches, 10% of the labels, micro-mAP), checked
+#: against the papers on 2026-11-03 (docs notes/sota_compare_2026-11-03.md). SMARTIES' come from summary.json.
+SOFTCON = {("S1", "LP"): 0.825, ("S2", "LP"): 0.868, ("S2", "FT"): 0.887}   # arXiv 2405.20462, Tables II and I (ViT-B)
+
+
+def fig_ben_published(num):
+    """T360 against the best published BEN models on the same 103,944 test patches, per input: SoftCon ViT-B (the best
+    on S1 and S2) and SMARTIES ViT-L and ViT-B (the best on S1 + S2). Mode is the marker's fill: a linear probe of a
+    frozen encoder hollow, a fine-tune filled; T360's head-only run (frozen body, only the 21 label rows train) is
+    hollow too, its LoRA run filled. SMARTIES' S1 and S1 + S2 are linear probes and its S2 a fine-tune (Table 1)."""
+    d, m, get = ben()
+    sm = {"SMARTIES ViT-L": d["smarties"]["ViT-L, 10%"], "SMARTIES ViT-B": d["smarties"]["ViT-B, 10%"]}
+    mode = {"S1": "LP", "S2": "FT", "S1S2": "LP"}
+    rows = [("SoftCon ViT-B", {(c, md): v for (c, md), v in SOFTCON.items()}),
+            *[(k, {(c, mode[c]): v[c] for c in CONDS}) for k, v in sm.items()],
+            ("T360 (ours)", {**{(c, "LP"): get("t360_head", c) for c in CONDS},
+                             **{(c, "FT"): get("t360_lora", c) for c in CONDS}})]
+    best = {c: max(((v, k, md) for k, dd in rows[:-1] for (cc, md), v in dd.items() if cc == c)) for c in CONDS}
+    num["ben_published"] = {"rows": {k: {f"{c} {md}": v for (c, md), v in dd.items()} for k, dd in rows},
+                            "best": {c: {"value": v, "model": k, "mode": md, "t360_lora_minus_best":
+                                         get("t360_lora", c) - v} for c, (v, k, md) in best.items()}}
+    fig, axs = plt.subplots(1, 3, figsize=(13.5, 4.3), sharey=True, gridspec_kw={"wspace": 0.08})
+    ys = np.arange(len(rows))[::-1].astype(float)
+    for ax, c in zip(axs, CONDS):
+        lo = {"S1": 0.64, "S2": 0.70, "S1S2": 0.70}[c]
+        for y, (k, dd) in zip(ys, rows):
+            ours = k.startswith("T360")
+            col = COL["t360"] if ours else SMC
+            vals = [dd[(c, md)] for md in ("LP", "FT") if (c, md) in dd]
+            close = len(vals) == 2 and abs(vals[1] - vals[0]) < 0.03     # labels beside the dots, not above
+            for md in ("LP", "FT"):
+                if (c, md) not in dd:
+                    continue
+                v = dd[(c, md)]
+                ax.scatter([v], [y], s=150, marker="o" if ours else "D", zorder=3, lw=2.2,
+                           facecolor=col if md == "FT" else SURF, edgecolor=col)
+                kw = dict(fontsize=13, color=INK if ours and md == "FT" else INK2,
+                          fontweight="bold" if ours and md == "FT" else None)
+                if close:
+                    hi = v == max(vals)
+                    ax.text(v + (0.007 if hi else -0.007), y, f"{v:.3f}", ha="left" if hi else "right", va="center", **kw)
+                else:
+                    ax.text(v, y + 0.22, f"{v:.3f}", ha="center", va="bottom", **kw)
+        v, k, md = best[c]
+        ax.set_title(f"{CNAME[c]}\nT360 {sgn(get('t360_lora', c) - v)} to the best", fontsize=15, color=INK, pad=8)
+        ax.set_xlim(lo, lo + 0.225)                       # one scale in all three panels
+        ax.set_ylim(-0.6, len(rows) - 0.35)
+        ax.tick_params(axis="y", length=0)
+        mf.xgrid(ax)
+    axs[0].set_yticks(ys)
+    axs[0].set_yticklabels([k for k, _ in rows], fontsize=15)
+    for t in axs[0].get_yticklabels():
+        if t.get_text().startswith("T360"):
+            t.set_color(COL["t360"]); t.set_fontweight("bold")
+    axs[1].set_xlabel("micro-mAP on the 103,944 test patches, 10% of the labels")
+    for a in axs[1:]:
+        a.spines["left"].set_visible(False)
+    h = [axs[0].scatter([], [], s=130, marker="D", facecolor=SURF, edgecolor=SMC, lw=2.2, label="linear probe (frozen)"),
+         axs[0].scatter([], [], s=130, marker="D", color=SMC, label="fine-tune"),
+         axs[0].scatter([], [], s=150, facecolor=SURF, edgecolor=COL["t360"], lw=2.2, label="T360, frozen body"),
+         axs[0].scatter([], [], s=150, color=COL["t360"], label="T360, LoRA (3 epochs)")]
+    fig.legend(handles=h, loc="lower center", bbox_to_anchor=(0.52, 0.99), ncol=4, fontsize=14, handletextpad=0.3,
+               columnspacing=1.6, frameon=False)
+    save(fig, "ben_published.png")
+
+
+TMC_SUM = Path(os.environ.get("TMC_SUMMARY", REP / "tm_compare/summary.json"))   # override: smoke tests only
+#: TerraMind's nine generation tasks in its Table 3's order; S2L2A as S2.
+TM_TASKS = ["S1GRD-S2L2A", "S1GRD-DEM", "S1GRD-NDVI", "S1RTC-S2L2A", "S1RTC-DEM", "S1RTC-NDVI",
+            "S2L2A-S1GRD", "S2L2A-S1RTC", "S2L2A-DEM"]
+TM_PUB = {  # TerraMind's published MAE: Table 3 (pixel inputs) and Table 14 (token inputs), arXiv 2504.11171
+    "S1GRD-S2L2A": (0.074, 0.0820), "S1GRD-DEM": (163.0, 327.4), "S1GRD-NDVI": (0.180, 0.1949),
+    "S1RTC-S2L2A": (0.113, 0.1195), "S1RTC-DEM": (298.8, 457.9), "S1RTC-NDVI": (0.172, 0.1895),
+    "S2L2A-S1GRD": (2.942, 3.3180), "S2L2A-S1RTC": (2.636, 3.0544), "S2L2A-DEM": (215.8, 572.5)}
+TMC = "#7a7974"      # TerraMind: muted ink, diamonds (the other models' marker, as SMARTIES' on the BEN pages). A neutral
+                     # by design, so it fails the validator's chroma floor; against T360: CVD dE 14.2, normal-vision 16.1
+
+
+def task_name(k):
+    s, t = k.split("-")
+    nm = {"S2L2A": "S2", "S1GRD": "S1 GRD", "S1RTC": "S1 RTC", "DEM": "DEM", "NDVI": "NDVI"}
+    return f"{nm[s]} → {nm[t]}"
+
+
+def fig_gen_terramind(num):
+    """T360 against TerraMind on TerraMind's nine generation tasks, on the same 256 held-out scenes per task, every
+    model's tokens decoded by the same TerraMind decoder (10 steps): MAE in physical units as a ratio to TerraMind-B
+    from pixels (its native input, Table 3's), on a log axis. TerraMind-B from TOKENS is the like-for-like model (the
+    input T360 gets; Table 14's setting). T360 samples as TerraMind does (temperature 1, top-p 0.8). The ceiling is the
+    true tokens decoded; the level to beat is another scene's true tokens (a sharp but unrelated image)."""
+    d = json.loads(TMC_SUM.read_text())["pairs"]
+    tasks = [k for k in TM_TASKS if k in d]
+    rat = lambda k, c: d[k]["conditions"][c]["mae"] / d[k]["conditions"]["tm_base"]["mae"]
+    num["gen_terramind"] = {k: {c: d[k]["conditions"][c]["mae"] for c in d[k]["conditions"]}
+                            | {"paired_mae": {p: v["mae"] for p, v in d[k]["paired"].items()},
+                               "published_tm_pixels_tokens": TM_PUB[k], "n": d[k]["n"]} for k in tasks}
+    fig, ax = plt.subplots(figsize=(12.5, 4.9))
+    grp = {"S1GRD": 2, "S1RTC": 1, "S2L2A": 0}                     # a gap between the three sources
+    ys = np.arange(len(tasks))[::-1].astype(float) + np.array([0.5 * grp[k.split("-")[0]] for k in tasks])
+    x0, x1 = 0.3, 5.7
+    col = ax.get_yaxis_transform()                    # x in axes fractions, y in rows: the column right of the plot
+    unit = {"S1GRD": " dB", "S1RTC": " dB", "DEM": " m"}
+    for y, k in zip(ys, tasks):
+        c = d[k]["conditions"]
+        lo, hi = rat(k, "ceiling"), rat(k, "wrong_scene")
+        ax.plot([max(lo, x0), hi], [y, y], color=GRIDC, lw=6, solid_capstyle="round", zorder=1)
+        if lo >= x0:
+            ax.scatter([lo], [y], s=260, marker="|", color=MUTED, lw=3, zorder=2)
+        else:                                         # off the axis: an arrowhead at the edge, with its value
+            ax.scatter([x0 * 1.02], [y], s=110, marker="<", color=MUTED, zorder=2)
+            ax.text(x0 * 1.07, y + 0.2, f"{lo:.2f}×", ha="left", va="bottom", fontsize=12, color=MUTED)
+        ax.scatter([hi], [y], s=90, marker="x", color=MUTED, lw=2.5, zorder=2)
+        dy = 0.17                                            # TerraMind just below, T360 just above: never hidden
+        if "tm_large" in c:
+            ax.scatter([rat(k, "tm_large")], [y - dy], s=120, marker="D", color=TMC, zorder=3, edgecolor=SURF, lw=1.5)
+        ax.scatter([rat(k, "tm_base_tok")], [y - dy], s=120, marker="D", facecolor=SURF, edgecolor=TMC, lw=2.2,
+                   zorder=3)
+        ax.scatter([rat(k, "t360_p08")], [y + dy], s=190, color=COL["t360"], zorder=4, edgecolor=SURF, lw=2)
+        ax.text(-0.01, y, task_name(k), transform=col, ha="right", va="center", fontsize=15, color=INK)
+        tgt = k.split("-")[1]
+        fmt = (lambda v: f"{v:.0f}") if tgt == "DEM" else (lambda v: f"{v:.3f}" if v < 1 else f"{v:.2f}")
+        ax.text(1.24, y, f"{fmt(c['t360_p08']['mae'])} / {fmt(c['tm_base']['mae'])}{unit.get(tgt, '')}",
+                transform=col, ha="right", va="center", fontsize=14, color=INK2)
+    ax.axvline(1.0, color=TMC, lw=2, zorder=1)
+    ax.text(1.03, ys[0] + 0.55, "TerraMind-B from pixels", ha="left", va="bottom", fontsize=13, color=TMC)
+    ax.text(1.24, ys[0] + 0.55, "MAE: T360 / TerraMind-B (pixels)", transform=col, ha="right", va="bottom",
+            fontsize=13, color=INK2)
+    ax.set_xscale("log")
+    ax.set_xlim(x0, x1)
+    ax.set_xticks([0.5, 1, 2, 3]); ax.set_xticklabels(["0.5×", "1×", "2×", "3×"])
+    ax.minorticks_off()
+    ax.set_ylim(ys[-1] - 0.7, ys[0] + 1.05)
+    ax.set_yticks([]); ax.spines["left"].set_visible(False)
+    ax.set_xlabel("MAE relative to TerraMind-B from pixels (log scale; left is better)")
+    mf.xgrid(ax)
+    h = [ax.scatter([], [], s=150, color=COL["t360"], label="T360, from tokens"),
+         ax.scatter([], [], s=110, marker="D", facecolor=SURF, edgecolor=TMC, lw=2.2, label="TerraMind-B, from tokens"),
+         ax.scatter([], [], s=110, marker="D", color=TMC, label="TerraMind-L, from pixels"),
+         ax.scatter([], [], s=220, marker="|", color=MUTED, lw=3, label="true tokens decoded"),
+         ax.scatter([], [], s=80, marker="x", color=MUTED, lw=2.5, label="another scene")]
+    ax.legend(handles=h, loc="lower left", bbox_to_anchor=(-0.02, 1.0), ncol=5, fontsize=13, handletextpad=0.2,
+              columnspacing=1.1, frameon=False, borderaxespad=0.1)
+    save(fig, "gen_terramind.png")
+
+
 def main():
     num = {}
     fig_setup(num)
@@ -406,6 +555,10 @@ def main():
             fig_ben_regimes(num)
         if have("b10_lora_1pct", "t360_lora_1pct", "b10_lora", "t360_lora"):
             fig_ben_labels(num)
+        if have("t360_head", "t360_lora"):
+            fig_ben_published(num)
+    if TMC_SUM.exists():
+        fig_gen_terramind(num)
     (OUT / "numbers.json").write_text(json.dumps(num, indent=1, default=float))
     print("->", OUT / "numbers.json")
 
