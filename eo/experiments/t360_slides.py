@@ -271,6 +271,12 @@ def dumbbell(ax, y, a, b, ca, cb, diff=None, span=0.2):
         ax.text((a + b) / 2, y + 0.2, sgn(diff), ha="center", va="bottom", fontsize=15, color=INK, fontweight="bold")
 
 
+def solo(ax, y, v, c):
+    """One model alone on row y (no twin to compare with): its dot, and its value below in bold, as dumbbell's b."""
+    ax.scatter([v], [y], s=190, color=c, zorder=4, edgecolor=SURF, lw=2)
+    ax.text(v, y - 0.3, f"{v:.3f}", ha="center", va="top", fontsize=14, color=INK, fontweight="bold")
+
+
 def fig_ben_inputs(num):
     d, m, get = ben()
     sm = d["smarties"]["ViT-B, 10%"]
@@ -303,24 +309,35 @@ def fig_ben_inputs(num):
 def fig_ben_regimes(num):
     """S1 + S2 micro-mAP and forgetting per training regime, B10 -> T360. B10c is left out: its LoRA run equals B10's
     (summary: +0.000 on S1 + S2, forgetting 0.267 vs 0.278), and its dot would hide B10's. SMARTIES ViT-B is drawn on
-    the head-only row alone: its S1 + S2 number is a linear probe of a frozen encoder, the regime head-only is closest to."""
+    the head-only row alone: its S1 + S2 number is a linear probe of a frozen encoder, the regime head-only is closest to.
+    T360's full fine-tune at 3e-5 (worklog item 48) gets a row of its own, T360 alone: B10 was not run at 3e-5."""
     d, m, get = ben()
+    lr = "t360_full_lr3e5" in m and "test_S1S2" in m["t360_full_lr3e5"]
     rows = [(r, b, t) for r, b, t in [("head only", "b10_head", "t360_head"), ("LoRA", "b10_lora", "t360_lora"),
-                                      ("full fine-tune", "b10_full", "t360_full")] if "test_S1S2" in m[t]]
+                                      ("full, LR 1e-4" if lr else "full fine-tune", "b10_full", "t360_full"),
+                                      ("full, LR 3e-5", None, "t360_full_lr3e5")] if t in m and "test_S1S2" in m[t]]
     fo = lambda t: m[t]["forgetting"]["ce_all"]
     sm = d["smarties"]["ViT-B, 10%"]["S1S2"]
-    num["ben_regimes"] = {r: {"b10": get(b, "S1S2"), "t360": get(t, "S1S2"), "d": d["comparisons"][f"{t} - {b}"]["S1S2"],
-                              "forget_b10": fo(b), "forget_t360": fo(t)} for r, b, t in rows}
+    num["ben_regimes"] = {r: {"t360": get(t, "S1S2"), "forget_t360": fo(t)} | ({} if b is None else {
+        "b10": get(b, "S1S2"), "d": d["comparisons"][f"{t} - {b}"]["S1S2"], "forget_b10": fo(b)}) for r, b, t in rows}
     num["ben_regimes"]["head only"]["smarties_vitb_linear_probe"] = sm
-    h = 1.2 + 1.15 * len(rows)
+    if lr:
+        num["ben_regimes"]["full, LR 3e-5"] |= {k: d["comparisons"][f"t360_full_lr3e5 - {o}"]["S1S2"]
+                                                for k, o in (("d_vs_lr1e4", "t360_full"), ("d_vs_lora", "t360_lora"))}
+    h = 1.2 + (1.15 if len(rows) <= 3 else 0.95) * len(rows)       # a fourth row in the page's height
     fig, (ax, af) = plt.subplots(1, 2, figsize=(13.5, h), gridspec_kw={"width_ratios": [1.5, 1], "wspace": 0.1})
     ys = np.arange(len(rows))[::-1].astype(float)
-    fmax = max(max(fo(b), fo(t)) for _, b, t in rows)
-    (x0, x1), (f0, f1) = (0.70, 0.88), (-0.04 * max(1.0, fmax / 0.3), max(0.34, 1.1 * fmax))
+    fmax = max(fo(x) for _, b, t in rows for x in (b, t) if x)
+    vmin = min(get(x, "S1S2") for _, b, t in rows for x in (b, t) if x)
+    (x0, x1), (f0, f1) = (min(0.70, np.floor(100 * vmin - 2) / 100), 0.88), (-0.04 * max(1.0, fmax / 0.3), max(0.34, 1.1 * fmax))
     for y, (r, b, t) in zip(ys, rows):
-        dumbbell(ax, y, get(b, "S1S2"), get(t, "S1S2"), COL_B10, COL["t360"],
-                 diff=d["comparisons"][f"{t} - {b}"]["S1S2"]["diff"], span=x1 - x0)
-        dumbbell(af, y, fo(b), fo(t), COL_B10, COL["t360"], diff=fo(t) - fo(b), span=f1 - f0)
+        if b is None:
+            solo(ax, y, get(t, "S1S2"), COL["t360"])
+            solo(af, y, fo(t), COL["t360"])
+        else:
+            dumbbell(ax, y, get(b, "S1S2"), get(t, "S1S2"), COL_B10, COL["t360"],
+                     diff=d["comparisons"][f"{t} - {b}"]["S1S2"]["diff"], span=x1 - x0)
+            dumbbell(af, y, fo(b), fo(t), COL_B10, COL["t360"], diff=fo(t) - fo(b), span=f1 - f0)
         ax.text(x0 - 0.004, y, r, ha="right", va="center", fontsize=16, color=INK)
         if r == "head only":
             ax.scatter([sm], [y], s=170, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)

@@ -38,6 +38,7 @@ MODELS = [
     ("t360_lora", "T360", "LoRA", "ft_valsel", "10%"),
     ("t360_full", "T360", "full", "ft_valsel", "10%"),
     ("t360_lora_1pct", "T360", "LoRA", "ft_valsel1", "1%"),
+    ("t360_full_lr3e5", "T360", "full, LR 3e-5", "ft_valsel", "10%"),   # worklog item 48
 ]
 BASE_TAG = {"B10": "b10_base", "B10c": "b10c_base", "T360": "t360_base"}
 PAIRS = [("t360_lora", "b10c_lora", "data and size, same tokens (LoRA)"),
@@ -49,7 +50,9 @@ PAIRS = [("t360_lora", "b10c_lora", "data and size, same tokens (LoRA)"),
          ("t360_lora", "t360_lora_1pct", "label budget on T360 (10% vs 1%)"),
          ("b10_lora", "b10_lora_1pct", "label budget on B10 (10% vs 1%)"),
          ("t360_lora", "t360_head", "what the adapters add on T360"),
-         ("t360_full", "t360_lora", "full vs LoRA on T360")]
+         ("t360_full", "t360_lora", "full vs LoRA on T360"),
+         ("t360_full_lr3e5", "t360_full", "full fine-tune at 3e-5 vs 1e-4 on T360"),
+         ("t360_full_lr3e5", "t360_lora", "full at 3e-5 vs LoRA on T360")]
 SMARTIES = {"ViT-B, 10%": {"S1": 0.789, "S2": 0.869, "S1S2": 0.854},
             "ViT-L, 10%": {"S1": 0.805, "S2": 0.877, "S1S2": 0.867},
             "ViT-L, 1%": {"S1S2": 0.792}}
