@@ -101,7 +101,7 @@ def fig_setup(num):
         ("training compute", train_flops(b), train_flops(t), "0.9 → 48 × 10¹⁸ FLOPs"),
     ]
     num["setup"] = {r[0]: {"b10c": r[1], "t360": r[2], "ratio": r[2] / r[1]} for r in rows}
-    fig, ax = plt.subplots(figsize=(11.0, 5.4))
+    fig, ax = plt.subplots(figsize=(12.5, 7.3))
     ys = np.arange(len(rows))[::-1]
     for y, (lab, bv, tv, txt) in zip(ys, rows):
         ratio = tv / bv
@@ -110,16 +110,17 @@ def fig_setup(num):
         ax.scatter([ratio], [y], s=170, color=COL["t360"], zorder=3, edgecolor=SURF, lw=2)
         rtxt = f"{ratio:.1f}×" if ratio < 10 else f"{ratio:.0f}×"
         ax.text(ratio * (1.2 if ratio > 1 else 1 / 1.2), y, rtxt, ha="left" if ratio > 1 else "right",
-                va="center", fontsize=18, fontweight="bold", color=INK)
-        ax.text(0.042, y + 0.13, lab, ha="right", va="center", fontsize=17, color=INK)
-        ax.text(0.042, y - 0.24, txt, ha="right", va="center", fontsize=13.5, color=INK2)
+                va="center", fontsize=20, fontweight="bold", color=INK)
+        ax.text(0.042, y + 0.14, lab, ha="right", va="center", fontsize=19, color=INK)
+        ax.text(0.042, y - 0.25, txt, ha="right", va="center", fontsize=15, color=INK2)
     ax.axvline(1, color=COL["b10c"], lw=1.2, zorder=0, alpha=0.6)
     ax.set_xscale("log"); ax.set_xlim(0.05, 400); ax.set_ylim(-0.75, len(rows) - 0.25)
     ax.set_yticks([]); ax.spines["left"].set_visible(False)
     ax.set_xticks([0.1, 1, 10, 100]); ax.set_xticklabels(["0.1×", "1×", "10×", "100×"])
-    ax.set_xlabel("T360 relative to B10c")
+    ax.set_xlabel("T360 relative to B10c", fontsize=16)
+    ax.tick_params(axis="x", labelsize=15)
     mf.xgrid(ax)
-    ax.text(1, len(rows) - 0.4, "B10c", ha="center", va="bottom", fontsize=16, fontweight="bold", color=COL["b10c"])
+    ax.text(1, len(rows) - 0.4, "B10c", ha="center", va="bottom", fontsize=18, fontweight="bold", color=COL["b10c"])
     save(fig, "setup.png")
 
 
@@ -135,22 +136,23 @@ def fig_curve(num):
                     "t360_tokens_B": RUN["t360"]["steps"] * RUN["t360"]["batch"] * ROWLEN / 1e9,
                     "t360_crosses_b10c_final_at_tokens_B": cross,
                     "t360_evals_bracketing": [[int(st[i - 1]), float(vt[i - 1])], [int(st[i]), float(vt[i])]]}
-    fig, ax = plt.subplots(figsize=(12.5, 5.0))
+    fig, ax = plt.subplots(figsize=(12.5, 5.9))
     mb, mt = sb > 0, st > 0
     ax.plot(xb[mb], vb[mb], color=COL["b10c"], lw=2.6, marker="o", ms=5, zorder=3)
     ax.plot(xt[mt], vt[mt], color=COL["t360"], lw=2.6, zorder=3)
     ax.axhline(final_b, color=COL["b10c"], lw=1, ls=(0, (4, 3)), alpha=0.8, zorder=1)
     ax.scatter([cross], [final_b], s=110, color=COL["t360"], edgecolor=SURF, lw=2, zorder=4)
     ax.annotate(f"T360 reaches B10c's final loss\nafter {cross:.1f} B tokens",
-                (cross, final_b), xytext=(-12, -62), textcoords="offset points", ha="right", fontsize=14.5,
+                (cross, final_b), xytext=(-12, -66), textcoords="offset points", ha="right", fontsize=17,
                 color=INK, arrowprops=dict(arrowstyle="-", color=INK2, lw=1))
     ax.text(0.115, 6.86, "B10c\n10 passes over 85 k scenes", ha="left", va="top",
-            fontsize=15, color=COL["b10c"], fontweight="bold")
+            fontsize=17, color=COL["b10c"], fontweight="bold")
     ax.text(2.4, 4.98, "T360\n2 passes over 8.9 M scenes", ha="left", va="top",
-            fontsize=15, color=COL["t360"], fontweight="bold")
+            fontsize=17, color=COL["t360"], fontweight="bold")
     ax.set_xscale("log"); ax.set_xlim(0.04, 25); ax.set_ylim(4.6, 6.9)
     ax.set_xticks([0.1, 1, 10]); ax.set_xticklabels(["0.1 B", "1 B", "10 B"])
-    ax.set_xlabel("training tokens seen"); ax.set_ylabel("held-out loss (nats)")
+    ax.set_xlabel("training tokens seen", fontsize=16); ax.set_ylabel("held-out loss (nats)", fontsize=16)
+    ax.tick_params(labelsize=15)
     mf.ygrid(ax)
     save(fig, "curve.png")
 
@@ -162,7 +164,7 @@ def fig_modalities(num):
     num["e1"] = {m: {"b10c_ce": b[m]["ce"], "t360_ce": t[m]["ce"], "diff": t[m]["vs_b10c"]["ce"]["diff"],
                      "lo": t[m]["vs_b10c"]["ce"]["lo"], "hi": t[m]["vs_b10c"]["ce"]["hi"],
                      "b10c_top1": b[m]["top1"], "t360_top1": t[m]["top1"]} for m in rows}
-    fig, ax = plt.subplots(figsize=(12.5, 5.2))
+    fig, ax = plt.subplots(figsize=(12.5, 5.9))
     ys = np.arange(len(rows))[::-1].astype(float)
     ys[0] += 0.35                                    # "all tokens" set apart at the top
     for y, m in zip(ys, rows):
@@ -173,22 +175,27 @@ def fig_modalities(num):
         ax.scatter([bv], [y], s=170, color=COL["b10c"], zorder=3, edgecolor=SURF, lw=2)
         ax.scatter([tv], [y], s=170, color=COL["t360"], zorder=3, edgecolor=SURF, lw=2)
         lab = "all tokens" if m == "all" else NICE[m]
-        ax.text(0.55, y, lab, ha="right", va="center", fontsize=16, color=INK,
+        ax.text(0.55, y, lab, ha="right", va="center", fontsize=18, color=INK,
                 fontweight="bold" if m == "all" else "normal")
         ax.text(10.6, y, f"{t[m]['vs_b10c']['ce']['diff']:+.2f}".replace("-", "−"), ha="right", va="center",
-                fontsize=16, color=INK, fontweight="bold" if m == "all" else "normal")
-    ax.text(10.6, ys[0] + 0.75, "T360 − B10c", ha="right", va="bottom", fontsize=14, color=INK2)
+                fontsize=18, color=INK, fontweight="bold" if m == "all" else "normal")
+    ax.text(10.6, ys[0] + 0.75, "T360 − B10c", ha="right", va="bottom", fontsize=15, color=INK2)
     yb = ys[0]
-    ax.text(b["all"]["ce"] + 0.22, yb, "B10c", ha="left", va="center", fontsize=15, fontweight="bold", color=COL["b10c"])
-    ax.text(t["all"]["ce"] - 0.22, yb, "T360", ha="right", va="center", fontsize=15, fontweight="bold", color=COL["t360"])
+    ax.text(b["all"]["ce"] + 0.22, yb, "B10c", ha="left", va="center", fontsize=17, fontweight="bold", color=COL["b10c"])
+    ax.text(t["all"]["ce"] - 0.22, yb, "T360", ha="right", va="center", fontsize=17, fontweight="bold", color=COL["t360"])
     ax.set_xlim(0.6, 10.7); ax.set_ylim(-0.6, ys[0] + 1.1)
     ax.set_yticks([]); ax.spines["left"].set_visible(False)
-    ax.set_xlabel("held-out cross-entropy (nats, lower is better)")
+    ax.set_xlabel("held-out cross-entropy (nats, lower is better)", fontsize=16)
+    ax.tick_params(axis="x", labelsize=15)
     mf.xgrid(ax)
     save(fig, "modalities.png")
 
 
 def fig_context(num):
+    """What each context modality is worth to T360 and to B10c: one row per source, the loss drop it brings to its
+    targets (loss of the target alone minus loss with the source before it, nats per target token), averaged over
+    its 4-6 targets, B10c -> T360 in fig_modalities' layout; the top row is the full context (every other modality
+    before the target). All 40 cells drop significantly for T360, and by more than for B10c (asserted)."""
     d = json.loads(E2.read_text())
     cb, ct = d["arms"]["B10c"]["cells"], d["arms"]["T360"]["cells"]
     keys = [k for k in ct if "gain" in ct[k]]
@@ -205,34 +212,37 @@ def fig_context(num):
                                     "d_gain": d["split"][k]["d_gain"]["mean"],
                                     "gain_share": d["split"][k]["d_gain"]["mean"] / d["paired"][k]["mean"]} for k in allk},
                  "odd_cells": {k: {"b10c": cb[k]["gain"], "t360": ct[k]["gain"]} for k in odd}}
-    fig, ax = plt.subplots(figsize=(8.6, 7.0))
-    lim = (-0.25, 1.75)
-    ax.fill_between(lim, lim, [lim[1]] * 2, color=mf.tint(COL["t360"], 0.9), lw=0, zorder=0)
-    ax.plot(lim, lim, color=MUTED, lw=1.2, zorder=1)
-    ax.axvline(0, color=INK2, lw=1, zorder=1)
-    ax.text(-0.18, 1.32, "T360 gets more\nfrom the context", ha="left", va="top", fontsize=15, color=COL["t360"],
-            fontweight="bold")
-    ax.text(1.62, 1.55, "same", ha="right", va="top", fontsize=13, color=MUTED, rotation=45, rotation_mode="anchor")
-    ax.text(-0.02, 1.70, "◀ hurt B10c", ha="right", va="top", fontsize=13, color=INK2)
-    for k in one:
-        ax.scatter([gx[k]], [gy[k]], s=70, color=COL["t360"], edgecolor=SURF, lw=1.5, zorder=3)
-    for k in allk:
-        ax.scatter([gx[k]], [gy[k]], s=95, marker="s", facecolor=SURF, edgecolor=COL["t360"], lw=2.2, zorder=3)
-    for k in odd:
-        ax.scatter([gx[k]], [gy[k]], s=260, facecolor="none", edgecolor=COL["b10c"], lw=2.2, zorder=4)
-    lab = {"S1GRD->LULC": ("S1 GRD → LULC", (-0.21, 0.74), "left"), "S2L2A->NDVI": ("S2 → NDVI", (0.52, 1.30), "left"),
-           "NDVI->S2L2A": ("NDVI → S2", (1.10, 1.12), "left"), "all->DEM": ("all others → DEM", (0.34, 0.20), "left"),
-           "Coords->S1RTC": ("location → 5 targets", (-0.22, -0.14), "left")}
-    for k, (txt, xy, ha) in lab.items():
-        ax.annotate(txt, (gx[k], gy[k]), xytext=xy, textcoords="data", ha=ha, va="center", fontsize=14, color=INK,
-                    arrowprops=dict(arrowstyle="-", color=INK2, lw=0.9, shrinkA=2, shrinkB=6))
-    ax.scatter([], [], s=70, color=COL["t360"], label="one source")
-    ax.scatter([], [], s=95, marker="s", facecolor=SURF, edgecolor=COL["t360"], lw=2.2, label="all other modalities")
-    ax.scatter([], [], s=200, facecolor="none", edgecolor=COL["b10c"], lw=2.2, label="hurt or did nothing in B10c")
-    ax.legend(loc="lower right", fontsize=13.5, handletextpad=0.4, borderaxespad=0.2)
-    ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
-    ax.set_xlabel("B10c: loss drop from the context (nats)")
-    ax.set_ylabel("T360: loss drop from the context (nats)")
+    rows = ["all"] + MODS                            # 2026-11-04: replaces the 40-cell scatter, for a first-sight read
+    drop = lambda cells, s: float(np.mean([-cells[k]["gain"]["mean"] for k in keys if k.startswith(f"{s}->")]))
+    num["e2"]["per_source"] = {s: {"b10c": drop(cb, s), "t360": drop(ct, s),
+                                   "n_targets": sum(k.startswith(f"{s}->") for k in keys)} for s in rows}
+    fig, ax = plt.subplots(figsize=(12.5, 6.7))
+    col = ax.get_yaxis_transform()                    # x in axes fractions, y in rows: the columns beside the plot
+    ys = np.arange(len(rows))[::-1].astype(float)
+    ys[0] += 0.35                                    # the full context set apart at the top
+    for y, s in zip(ys, rows):
+        bv, tv = drop(cb, s), drop(ct, s)
+        assert tv > bv
+        if tv - bv > 0.06:                           # room for an arrow between the two dots
+            ax.annotate("", (tv - 0.025, y), (bv, y), arrowprops=dict(arrowstyle="-|>", color=MUTED, lw=2.2,
+                                                                      mutation_scale=18, shrinkA=8, shrinkB=0))
+        ax.scatter([bv], [y], s=230, color=COL["b10c"], zorder=3, edgecolor=SURF, lw=2)
+        ax.scatter([tv], [y], s=230, color=COL["t360"], zorder=4, edgecolor=SURF, lw=2)
+        lab = "all other modalities" if s == "all" else NICE[s]
+        ax.text(-0.01, y, lab, transform=col, ha="right", va="center", fontsize=18, color=INK,
+                fontweight="bold" if s == "all" else "normal")
+        ax.text(1.11, y, sgn(tv - bv, 2), transform=col, ha="right", va="center", fontsize=18, color=INK,
+                fontweight="bold" if s == "all" else "normal")
+    ax.text(1.11, ys[0] + 0.98, "T360 − B10c", transform=col, ha="right", va="bottom", fontsize=15, color=INK2)
+    yb, bv, tv = ys[0], drop(cb, "all"), drop(ct, "all")
+    ax.text(bv, yb + 0.36, "B10c", ha="center", va="bottom", fontsize=16, fontweight="bold", color=COL["b10c"])
+    ax.text(tv, yb + 0.36, "T360", ha="center", va="bottom", fontsize=16, fontweight="bold", color=COL["t360"])
+    ax.axvline(0, color=INK2, lw=1.2, zorder=1)
+    ax.set_xlim(-0.05, 1.05); ax.set_ylim(-0.6, ys[0] + 1.35)
+    ax.set_yticks([]); ax.spines["left"].set_visible(False)
+    ax.set_xlabel("loss drop it brings to the other modalities (nats per token; higher is better)", fontsize=16)
+    ax.tick_params(axis="x", labelsize=15)
+    mf.xgrid(ax)
     save(fig, "context.png")
 
 
@@ -258,7 +268,7 @@ def sgn(v, nd=3):
     return f"{v:+.{nd}f}".replace("-", "−")
 
 
-def dumbbell(ax, y, a, b, ca, cb, diff=None, span=0.2):
+def dumbbell(ax, y, a, b, ca, cb, diff=None, span=0.2, fs=14):
     """a -> b on row y: an arrow between two dots, the values below them (b's in bold) and, with `diff`, the change
     above the arrow. When the two nearly coincide, a's dot is drawn larger, so that a ring of it shows."""
     near = abs(b - a) <= 0.03 * span                  # the dots overlap
@@ -268,18 +278,18 @@ def dumbbell(ax, y, a, b, ca, cb, diff=None, span=0.2):
     ax.scatter([a], [y], s=320 if near else 190, color=ca, zorder=3, edgecolor=SURF, lw=2)
     ax.scatter([b], [y], s=120 if near else 190, color=cb, zorder=4, edgecolor=SURF, lw=2)
     g, up = (0.012 * span if near else 0.0), b >= a  # near: pull the two labels apart
-    ax.text(a - g if up else a + g, y - 0.3, f"{a:.3f}", ha="right" if up else "left", va="top", fontsize=14,
+    ax.text(a - g if up else a + g, y - 0.3, f"{a:.3f}", ha="right" if up else "left", va="top", fontsize=fs,
             color=INK2)
-    ax.text(b + g if up else b - g, y - 0.3, f"{b:.3f}", ha="left" if up else "right", va="top", fontsize=14,
+    ax.text(b + g if up else b - g, y - 0.3, f"{b:.3f}", ha="left" if up else "right", va="top", fontsize=fs,
             color=INK, fontweight="bold")
     if diff is not None:
-        ax.text((a + b) / 2, y + 0.2, sgn(diff), ha="center", va="bottom", fontsize=15, color=INK, fontweight="bold")
+        ax.text((a + b) / 2, y + 0.2, sgn(diff), ha="center", va="bottom", fontsize=fs + 1, color=INK, fontweight="bold")
 
 
-def solo(ax, y, v, c):
+def solo(ax, y, v, c, fs=14):
     """One model alone on row y (no twin to compare with): its dot, and its value below in bold, as dumbbell's b."""
     ax.scatter([v], [y], s=190, color=c, zorder=4, edgecolor=SURF, lw=2)
-    ax.text(v, y - 0.3, f"{v:.3f}", ha="center", va="top", fontsize=14, color=INK, fontweight="bold")
+    ax.text(v, y - 0.3, f"{v:.3f}", ha="center", va="top", fontsize=fs, color=INK, fontweight="bold")
 
 
 def fig_ben_inputs(num):
@@ -288,25 +298,27 @@ def fig_ben_inputs(num):
     cmp_ = d["comparisons"]["t360_lora - b10c_lora"]
     num["ben_inputs"] = {c: {"b10c_lora": get("b10c_lora", c), "t360_lora": get("t360_lora", c),
                              "b10_lora": get("b10_lora", c), "smarties_vitb": sm[c], "d": cmp_[c]} for c in CONDS}
-    fig, ax = plt.subplots(figsize=(12.5, 4.6))
+    fig, ax = plt.subplots(figsize=(12.5, 5.9))
     ys = np.arange(len(CONDS))[::-1].astype(float)
     x0, x1 = 0.67, 0.885
     col = ax.get_yaxis_transform()                    # x in axes fractions, y in rows: the column right of the plot
     for y, c in zip(ys, CONDS):
-        dumbbell(ax, y, get("b10c_lora", c), get("t360_lora", c), COL["b10c"], COL["t360"], span=x1 - x0)
-        ax.scatter([sm[c]], [y], s=170, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
-        ax.text(sm[c], y + 0.24, f"{sm[c]:.3f}", ha="center", va="bottom", fontsize=14, color=INK2)
-        ax.text(x0 - 0.005, y, CNAME[c], ha="right", va="center", fontsize=16, color=INK)
-        ax.text(1.13, y, sgn(cmp_[c]["diff"]), transform=col, ha="right", va="center", fontsize=17, color=INK,
+        dumbbell(ax, y, get("b10c_lora", c), get("t360_lora", c), COL["b10c"], COL["t360"], span=x1 - x0, fs=16)
+        ax.scatter([sm[c]], [y], s=190, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
+        ax.text(sm[c], y + 0.24, f"{sm[c]:.3f}", ha="center", va="bottom", fontsize=16, color=INK2)
+        ax.text(-0.01, y, CNAME[c], transform=col, ha="right", va="center", fontsize=19, color=INK)
+        ax.text(1.15, y, sgn(cmp_[c]["diff"]), transform=col, ha="right", va="center", fontsize=19, color=INK,
                 fontweight="bold")
-    ax.text(1.13, ys[0] + 0.62, "T360 − B10c", transform=col, ha="right", va="bottom", fontsize=14, color=INK2)
-    ax.scatter([], [], s=150, color=COL["b10c"], label="B10c, LoRA")
-    ax.scatter([], [], s=150, color=COL["t360"], label="T360, LoRA")
-    ax.scatter([], [], s=130, marker="D", color=SMC, label="SMARTIES ViT-B (another protocol)")
-    ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.2), ncol=3, fontsize=14, handletextpad=0.3, columnspacing=1.6)
+    ax.text(1.15, ys[0] + 0.62, "T360 − B10c", transform=col, ha="right", va="bottom", fontsize=15, color=INK2)
+    ax.scatter([], [], s=170, color=COL["b10c"], label="B10c, LoRA")
+    ax.scatter([], [], s=170, color=COL["t360"], label="T360, LoRA")
+    ax.scatter([], [], s=150, marker="D", color=SMC, label="SMARTIES ViT-B (another protocol)")
+    ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=3, fontsize=16, handletextpad=0.3, columnspacing=1.6,
+              frameon=False)
     ax.set_xlim(x0, x1); ax.set_ylim(-0.75, len(CONDS) - 0.25)
     ax.set_yticks([]); ax.spines["left"].set_visible(False)
-    ax.set_xlabel("micro-mAP on the 103,944 test patches")
+    ax.set_xlabel("micro-mAP on the 103,944 test patches", fontsize=16)
+    ax.tick_params(axis="x", labelsize=15)
     mf.xgrid(ax)
     save(fig, "ben_inputs.png")
 
@@ -329,7 +341,7 @@ def fig_ben_regimes(num):
     if lr:
         num["ben_regimes"]["full, LR 3e-5"] |= {k: d["comparisons"][f"t360_full_lr3e5 - {o}"]["S1S2"]
                                                 for k, o in (("d_vs_lr1e4", "t360_full"), ("d_vs_lora", "t360_lora"))}
-    h = 1.2 + (1.15 if len(rows) <= 3 else 0.95) * len(rows)       # a fourth row in the page's height
+    h = 1.5 + 1.15 * len(rows)
     fig, (ax, af) = plt.subplots(1, 2, figsize=(13.5, h), gridspec_kw={"width_ratios": [1.5, 1], "wspace": 0.1})
     ys = np.arange(len(rows))[::-1].astype(float)
     fmax = max(fo(x) for _, b, t in rows for x in (b, t) if x)
@@ -337,26 +349,26 @@ def fig_ben_regimes(num):
     (x0, x1), (f0, f1) = (min(0.70, np.floor(100 * vmin - 2) / 100), 0.88), (-0.04 * max(1.0, fmax / 0.3), max(0.34, 1.1 * fmax))
     for y, (r, b, t) in zip(ys, rows):
         if b is None:
-            solo(ax, y, get(t, "S1S2"), COL["t360"])
-            solo(af, y, fo(t), COL["t360"])
-        else:
-            dumbbell(ax, y, get(b, "S1S2"), get(t, "S1S2"), COL_B10, COL["t360"],
-                     diff=d["comparisons"][f"{t} - {b}"]["S1S2"]["diff"], span=x1 - x0)
-            dumbbell(af, y, fo(b), fo(t), COL_B10, COL["t360"], diff=fo(t) - fo(b), span=f1 - f0)
-        ax.text(x0 - 0.004, y, r, ha="right", va="center", fontsize=16, color=INK)
+            solo(ax, y, get(t, "S1S2"), COL["t360"], fs=16)
+            solo(af, y, fo(t), COL["t360"], fs=16)
+        else:                                         # 2026-11-04: no difference labels; the two values stay
+            dumbbell(ax, y, get(b, "S1S2"), get(t, "S1S2"), COL_B10, COL["t360"], span=x1 - x0, fs=16)
+            dumbbell(af, y, fo(b), fo(t), COL_B10, COL["t360"], span=f1 - f0, fs=16)
+        ax.text(-0.01, y, r, transform=ax.get_yaxis_transform(), ha="right", va="center", fontsize=18, color=INK)
         if r == "head only":
-            ax.scatter([sm], [y], s=170, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
-            ax.text(sm, y + 0.24, f"{sm:.3f}", ha="center", va="bottom", fontsize=14, color=INK2)
-    ax.set_xlim(x0, x1); ax.set_xlabel("micro-mAP, S1 + S2 (higher is better)")
-    af.set_xlim(f0, f1); af.set_xlabel("forgetting (nats; lower is better)")
+            ax.scatter([sm], [y], s=190, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
+            ax.text(sm, y + 0.24, f"{sm:.3f}", ha="center", va="bottom", fontsize=16, color=INK2)
+    ax.set_xlim(x0, x1); ax.set_xlabel("micro-mAP, S1 + S2 (higher is better)", fontsize=16)
+    af.set_xlim(f0, f1); af.set_xlabel("forgetting (nats; lower is better)", fontsize=16)
     for a in (ax, af):
         a.set_ylim(-0.75, len(rows) - 0.25); a.set_yticks([]); a.spines["left"].set_visible(False)
+        a.tick_params(axis="x", labelsize=15)
         mf.xgrid(a)
-    ax.scatter([], [], s=150, color=COL_B10, label="B10 (BEN's small model)")
-    ax.scatter([], [], s=150, color=COL["t360"], label="T360")
-    ax.scatter([], [], s=130, marker="D", color=SMC, label="SMARTIES ViT-B, linear probe of a frozen encoder")
-    ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=3, fontsize=14, handletextpad=0.3, columnspacing=1.6,
-              borderaxespad=0.1)
+    ax.scatter([], [], s=170, color=COL_B10, label="B10 (BEN's small model)")
+    ax.scatter([], [], s=170, color=COL["t360"], label="T360")
+    ax.scatter([], [], s=150, marker="D", color=SMC, label="SMARTIES ViT-B, linear probe")
+    ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncol=3, fontsize=16, handletextpad=0.3, columnspacing=1.6,
+              borderaxespad=0.1, frameon=False)
     save(fig, "ben_regimes.png")
 
 
@@ -370,28 +382,30 @@ def fig_ben_labels(num):
             ("1%", "b10_lora_1pct", "t360_lora_1pct", "1% of the labels\n3,116 patches")]
     num["ben_labels"] = {k: {"b10_lora": get(b, "S1S2"), "t360_lora": get(t, "S1S2"), "location_knn10": loc[k],
                              "smarties_vitl": sml[k], "d": d["comparisons"][f"{t} - {b}"]["S1S2"]} for k, b, t, _ in rows}
-    fig, ax = plt.subplots(figsize=(12.5, 3.5))
+    fig, ax = plt.subplots(figsize=(12.5, 5.3))
     ys = np.arange(len(rows))[::-1].astype(float)
     x0, x1 = 0.665, 0.885
     col = ax.get_yaxis_transform()
     for y, (k, b, t, lab) in zip(ys, rows):
-        dumbbell(ax, y, get(b, "S1S2"), get(t, "S1S2"), COL_B10, COL["t360"], span=x1 - x0)
-        ax.scatter([sml[k]], [y], s=170, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
-        ax.text(sml[k], y + 0.24, f"{sml[k]:.3f}", ha="center", va="bottom", fontsize=14, color=INK2)
-        ax.scatter([loc[k]], [y], s=420, marker="|", color=MUTED, zorder=2, lw=3)
-        ax.text(loc[k], y + 0.24, f"{loc[k]:.3f}", ha="center", va="bottom", fontsize=14, color=MUTED)
-        ax.text(x0 - 0.005, y, lab, ha="right", va="center", fontsize=16, color=INK, linespacing=1.3)
-        ax.text(1.13, y, sgn(d["comparisons"][f"{t} - {b}"]["S1S2"]["diff"]), transform=col, ha="right", va="center",
-                fontsize=17, color=INK, fontweight="bold")
-    ax.text(1.13, ys[0] + 0.62, "T360 − B10", transform=col, ha="right", va="bottom", fontsize=14, color=INK2)
-    ax.scatter([], [], s=150, color=COL_B10, label="B10, LoRA")
-    ax.scatter([], [], s=150, color=COL["t360"], label="T360, LoRA")
-    ax.scatter([], [], s=130, marker="D", color=SMC, label="SMARTIES ViT-L, linear probe")
-    ax.scatter([], [], s=300, marker="|", color=MUTED, lw=3, label="location only")
-    ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.3), ncol=4, fontsize=14, handletextpad=0.3, columnspacing=1.6)
+        dumbbell(ax, y, get(b, "S1S2"), get(t, "S1S2"), COL_B10, COL["t360"], span=x1 - x0, fs=16)
+        ax.scatter([sml[k]], [y], s=190, marker="D", color=SMC, zorder=3, edgecolor=SURF, lw=2)
+        ax.text(sml[k], y + 0.24, f"{sml[k]:.3f}", ha="center", va="bottom", fontsize=16, color=INK2)
+        ax.scatter([loc[k]], [y], s=480, marker="|", color=MUTED, zorder=2, lw=3)
+        ax.text(loc[k], y + 0.24, f"{loc[k]:.3f}", ha="center", va="bottom", fontsize=16, color=MUTED)
+        ax.text(-0.01, y, lab, transform=col, ha="right", va="center", fontsize=18, color=INK, linespacing=1.3)
+        ax.text(1.15, y, sgn(d["comparisons"][f"{t} - {b}"]["S1S2"]["diff"]), transform=col, ha="right", va="center",
+                fontsize=19, color=INK, fontweight="bold")
+    ax.text(1.15, ys[0] + 0.62, "T360 − B10", transform=col, ha="right", va="bottom", fontsize=15, color=INK2)
+    ax.scatter([], [], s=170, color=COL_B10, label="B10, LoRA")
+    ax.scatter([], [], s=170, color=COL["t360"], label="T360, LoRA")
+    ax.scatter([], [], s=150, marker="D", color=SMC, label="SMARTIES ViT-L, linear probe")
+    ax.scatter([], [], s=340, marker="|", color=MUTED, lw=3, label="location only")
+    ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.02), ncol=4, fontsize=16, handletextpad=0.3, columnspacing=1.6,
+              frameon=False)
     ax.set_xlim(x0, x1); ax.set_ylim(-0.75, len(rows) - 0.25)
     ax.set_yticks([]); ax.spines["left"].set_visible(False)
-    ax.set_xlabel("micro-mAP, S1 + S2, on the 103,944 test patches")
+    ax.set_xlabel("micro-mAP, S1 + S2, on the 103,944 test patches", fontsize=16)
+    ax.tick_params(axis="x", labelsize=15)
     mf.xgrid(ax)
     save(fig, "ben_labels.png")
 
@@ -417,7 +431,7 @@ def fig_ben_published(num):
     num["ben_published"] = {"rows": {k: {f"{c} {md}": v for (c, md), v in dd.items()} for k, dd in rows},
                             "best": {c: {"value": v, "model": k, "mode": md, "t360_lora_minus_best":
                                          get("t360_lora", c) - v} for c, (v, k, md) in best.items()}}
-    fig, axs = plt.subplots(1, 3, figsize=(13.5, 4.3), sharey=True, gridspec_kw={"wspace": 0.08})
+    fig, axs = plt.subplots(1, 3, figsize=(13.5, 5.5), sharey=True, gridspec_kw={"wspace": 0.08})
     ys = np.arange(len(rows))[::-1].astype(float)
     for ax, c in zip(axs, CONDS):
         lo = {"S1": 0.64, "S2": 0.70, "S1S2": 0.70}[c]
@@ -432,7 +446,7 @@ def fig_ben_published(num):
                 v = dd[(c, md)]
                 ax.scatter([v], [y], s=150, marker="o" if ours else "D", zorder=3, lw=2.2,
                            facecolor=col if md == "FT" else SURF, edgecolor=col)
-                kw = dict(fontsize=13, color=INK if ours and md == "FT" else INK2,
+                kw = dict(fontsize=15, color=INK if ours and md == "FT" else INK2,
                           fontweight="bold" if ours and md == "FT" else None)
                 if close:
                     hi = v == max(vals)
@@ -440,24 +454,26 @@ def fig_ben_published(num):
                 else:
                     ax.text(v, y + 0.22, f"{v:.3f}", ha="center", va="bottom", **kw)
         v, k, md = best[c]
-        ax.set_title(f"{CNAME[c]}\nT360 {sgn(get('t360_lora', c) - v)} to the best", fontsize=15, color=INK, pad=8)
+        ax.set_title(f"{CNAME[c]}\nT360 {sgn(get('t360_lora', c) - v)} to the best", fontsize=17, color=INK, pad=8)
+        ax.tick_params(axis="x", labelsize=14)
         ax.set_xlim(lo, lo + 0.225)                       # one scale in all three panels
+        ax.set_xticks([t for t in np.arange(0.65, 0.951, 0.05) if lo + 0.012 < t < lo + 0.213])   # none at an edge
         ax.set_ylim(-0.6, len(rows) - 0.35)
         ax.tick_params(axis="y", length=0)
         mf.xgrid(ax)
     axs[0].set_yticks(ys)
-    axs[0].set_yticklabels([k for k, _ in rows], fontsize=15)
+    axs[0].set_yticklabels([k for k, _ in rows], fontsize=17)
     for t in axs[0].get_yticklabels():
         if t.get_text().startswith("T360"):
             t.set_color(COL["t360"]); t.set_fontweight("bold")
-    axs[1].set_xlabel("micro-mAP on the 103,944 test patches, 10% of the labels")
+    axs[1].set_xlabel("micro-mAP on the 103,944 test patches, 10% of the labels", fontsize=16)
     for a in axs[1:]:
         a.spines["left"].set_visible(False)
     h = [axs[0].scatter([], [], s=130, marker="D", facecolor=SURF, edgecolor=SMC, lw=2.2, label="linear probe (frozen)"),
          axs[0].scatter([], [], s=130, marker="D", color=SMC, label="fine-tune"),
          axs[0].scatter([], [], s=150, facecolor=SURF, edgecolor=COL["t360"], lw=2.2, label="T360, frozen body"),
          axs[0].scatter([], [], s=150, color=COL["t360"], label="T360, LoRA (3 epochs)")]
-    fig.legend(handles=h, loc="lower center", bbox_to_anchor=(0.52, 0.99), ncol=4, fontsize=14, handletextpad=0.3,
+    fig.legend(handles=h, loc="lower center", bbox_to_anchor=(0.52, 0.99), ncol=4, fontsize=16, handletextpad=0.3,
                columnspacing=1.6, frameon=False)
     save(fig, "ben_published.png")
 
@@ -634,8 +650,11 @@ TM_PUB = {  # TerraMind's published MAE: Table 3 (pixel inputs) and Table 14 (to
     "S1GRD-S2L2A": (0.074, 0.0820), "S1GRD-DEM": (163.0, 327.4), "S1GRD-NDVI": (0.180, 0.1949),
     "S1RTC-S2L2A": (0.113, 0.1195), "S1RTC-DEM": (298.8, 457.9), "S1RTC-NDVI": (0.172, 0.1895),
     "S2L2A-S1GRD": (2.942, 3.3180), "S2L2A-S1RTC": (2.636, 3.0544), "S2L2A-DEM": (215.8, 572.5)}
-TMC = "#7a7974"      # TerraMind: muted ink, diamonds (the other models' marker, as SMARTIES' on the BEN pages). A neutral
-                     # by design, so it fails the validator's chroma floor; against T360: CVD dE 14.2, normal-vision 16.1
+#: The nine tasks by target, elevation last: the order the figure reads in.
+TM_GROUPS = [["S1GRD-S2L2A", "S1RTC-S2L2A"], ["S2L2A-S1GRD", "S2L2A-S1RTC"], ["S1GRD-NDVI", "S1RTC-NDVI"],
+             ["S1GRD-DEM", "S1RTC-DEM", "S2L2A-DEM"]]
+COL_TOK, COL_PIX = "#0f9e6e", "#b7791f"   # TerraMind-B given tokens / given pixels: with T360's blue, all pairs pass the
+                                          # dataviz validator (CVD dE 9.2, normal-vision 18.5, contrast >= 3:1)
 
 
 def task_name(k):
@@ -644,64 +663,64 @@ def task_name(k):
     return f"{nm[s]} → {nm[t]}"
 
 
+def ratio_ci(a, b, n=10_000, seed=0):
+    """mean(a) / mean(b) over scenes, with its 95% paired bootstrap CI (a, b: per-scene MAE on the same scenes). The
+    resamples are tm_compare_eval.boot_diff's (same seed and draws), so the CI excludes 1 exactly when that
+    difference's CI excludes 0."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    idx = np.random.default_rng(seed).integers(0, len(a), (n, len(a)))
+    r = a[idx].mean(1) / b[idx].mean(1)
+    return float(a.mean() / b.mean()), float(np.quantile(r, 0.025)), float(np.quantile(r, 0.975))
+
+
 def fig_gen_terramind(num):
-    """T360 against TerraMind on TerraMind's nine generation tasks, on the same 256 held-out scenes per task, every
-    model's tokens decoded by the same TerraMind decoder (10 steps): MAE in physical units as a ratio to TerraMind-B
-    from pixels (its native input, Table 3's), on a log axis. TerraMind-B from TOKENS is the like-for-like model (the
-    input T360 gets; Table 14's setting). T360 samples as TerraMind does (temperature 1, top-p 0.8). The ceiling is the
-    true tokens decoded; the level to beat is another scene's true tokens (a sharp but unrelated image)."""
+    """T360 against TerraMind-B on TerraMind's nine generation tasks (arXiv 2504.11171, Table 3): the same 256 held-out
+    scenes per task, every model's tokens decoded by the same TerraMind decoder (10 steps), every model sampling at
+    temperature 1 and top-p 0.8. Per task, T360's MAE divided by TerraMind-B's, with its 95% paired CI over the scenes,
+    against TerraMind given the same tokens (Table 14's input, the one T360 gets) and given pixels (its usual input,
+    Table 3's). 2026-11-04: replaces the five-marker figure; TerraMind-L, the true-token ceiling and another scene's
+    tokens stay in numbers.json."""
     d = json.loads(TMC_SUM.read_text())["pairs"]
-    tasks = [k for k in TM_TASKS if k in d]
-    rat = lambda k, c: d[k]["conditions"][c]["mae"] / d[k]["conditions"]["tm_base"]["mae"]
+    groups = [[k for k in g if k in d] for g in TM_GROUPS]
+    sm = lambda k, c: d[k]["conditions"][c]["scene_mae"]
+    r = {k: {"tokens": ratio_ci(sm(k, "t360_p08"), sm(k, "tm_base_tok")),
+             "pixels": ratio_ci(sm(k, "t360_p08"), sm(k, "tm_base"))} for g in groups for k in g}
     num["gen_terramind"] = {k: {c: d[k]["conditions"][c]["mae"] for c in d[k]["conditions"]}
-                            | {"paired_mae": {p: v["mae"] for p, v in d[k]["paired"].items()},
-                               "published_tm_pixels_tokens": TM_PUB[k], "n": d[k]["n"]} for k in tasks}
-    fig, ax = plt.subplots(figsize=(12.5, 4.9))
-    grp = {"S1GRD": 2, "S1RTC": 1, "S2L2A": 0}                     # a gap between the three sources
-    ys = np.arange(len(tasks))[::-1].astype(float) + np.array([0.5 * grp[k.split("-")[0]] for k in tasks])
-    x0, x1 = 0.3, 5.7
-    col = ax.get_yaxis_transform()                    # x in axes fractions, y in rows: the column right of the plot
-    unit = {"S1GRD": " dB", "S1RTC": " dB", "DEM": " m"}
-    for y, k in zip(ys, tasks):
-        c = d[k]["conditions"]
-        lo, hi = rat(k, "ceiling"), rat(k, "wrong_scene")
-        ax.plot([max(lo, x0), hi], [y, y], color=GRIDC, lw=6, solid_capstyle="round", zorder=1)
-        if lo >= x0:
-            ax.scatter([lo], [y], s=260, marker="|", color=MUTED, lw=3, zorder=2)
-        else:                                         # off the axis: an arrowhead at the edge, with its value
-            ax.scatter([x0 * 1.02], [y], s=110, marker="<", color=MUTED, zorder=2)
-            ax.text(x0 * 1.07, y + 0.2, f"{lo:.2f}×", ha="left", va="bottom", fontsize=12, color=MUTED)
-        ax.scatter([hi], [y], s=90, marker="x", color=MUTED, lw=2.5, zorder=2)
-        dy = 0.17                                            # TerraMind just below, T360 just above: never hidden
-        if "tm_large" in c:
-            ax.scatter([rat(k, "tm_large")], [y - dy], s=120, marker="D", color=TMC, zorder=3, edgecolor=SURF, lw=1.5)
-        ax.scatter([rat(k, "tm_base_tok")], [y - dy], s=120, marker="D", facecolor=SURF, edgecolor=TMC, lw=2.2,
-                   zorder=3)
-        ax.scatter([rat(k, "t360_p08")], [y + dy], s=190, color=COL["t360"], zorder=4, edgecolor=SURF, lw=2)
-        ax.text(-0.01, y, task_name(k), transform=col, ha="right", va="center", fontsize=15, color=INK)
-        tgt = k.split("-")[1]
-        fmt = (lambda v: f"{v:.0f}") if tgt == "DEM" else (lambda v: f"{v:.3f}" if v < 1 else f"{v:.2f}")
-        ax.text(1.24, y, f"{fmt(c['t360_p08']['mae'])} / {fmt(c['tm_base']['mae'])}{unit.get(tgt, '')}",
-                transform=col, ha="right", va="center", fontsize=14, color=INK2)
-    ax.axvline(1.0, color=TMC, lw=2, zorder=1)
-    ax.text(1.03, ys[0] + 0.55, "TerraMind-B from pixels", ha="left", va="bottom", fontsize=13, color=TMC)
-    ax.text(1.24, ys[0] + 0.55, "MAE: T360 / TerraMind-B (pixels)", transform=col, ha="right", va="bottom",
-            fontsize=13, color=INK2)
+                            | {"t360_over_tm_base_tok": r[k]["tokens"], "t360_over_tm_base": r[k]["pixels"],
+                               "paired_mae": {p: v["mae"] for p, v in d[k]["paired"].items()},
+                               "published_tm_pixels_tokens": TM_PUB[k], "n": d[k]["n"]} for k in r}
+    pos, y = {}, 0.0
+    for g in groups:                                 # top-down, a gap between targets
+        for k in g:
+            pos[k] = y
+            y -= 1
+        y -= 0.45
+    fig, ax = plt.subplots(figsize=(12.5, 6.2))
+    col = ax.get_yaxis_transform()
+    x0, x1, dy = 0.72, 3.9, 0.17
+    ax.axvspan(x0, 1, color=mf.tint(COL["t360"], 0.92), lw=0, zorder=0)
+    ax.axvline(1, color=INK, lw=1.6, zorder=1)
+    top = max(pos.values()) + 0.62
+    ax.text(0.975, top, "T360 better", ha="right", va="bottom", fontsize=17, color=COL["t360"], fontweight="bold")
+    ax.text(1.025, top, "TerraMind better", ha="left", va="bottom", fontsize=17, color=INK2, fontweight="bold")
+    for k, y in pos.items():
+        for key, c, off in (("tokens", COL_TOK, dy), ("pixels", COL_PIX, -dy)):
+            v, lo, hi = r[k][key]
+            ax.plot([lo, hi], [y + off] * 2, color=c, lw=2.6, solid_capstyle="round", zorder=2)
+            ax.scatter([v], [y + off], s=160, color=c, edgecolor=SURF, lw=1.8, zorder=3)
+        ax.text(-0.01, y, task_name(k), transform=col, ha="right", va="center", fontsize=17, color=INK)
     ax.set_xscale("log")
     ax.set_xlim(x0, x1)
-    ax.set_xticks([0.5, 1, 2, 3]); ax.set_xticklabels(["0.5×", "1×", "2×", "3×"])
+    ax.set_xticks([0.8, 1, 1.5, 2, 3]); ax.set_xticklabels(["0.8×", "1×", "1.5×", "2×", "3×"], fontsize=15)
     ax.minorticks_off()
-    ax.set_ylim(ys[-1] - 0.7, ys[0] + 1.05)
+    ax.set_ylim(min(pos.values()) - 0.6, top + 0.55)
     ax.set_yticks([]); ax.spines["left"].set_visible(False)
-    ax.set_xlabel("MAE relative to TerraMind-B from pixels (log scale; left is better)")
+    ax.set_xlabel("T360's error ÷ TerraMind-B's (MAE; lines: 95% CI)", fontsize=16)
     mf.xgrid(ax)
-    h = [ax.scatter([], [], s=150, color=COL["t360"], label="T360, from tokens"),
-         ax.scatter([], [], s=110, marker="D", facecolor=SURF, edgecolor=TMC, lw=2.2, label="TerraMind-B, from tokens"),
-         ax.scatter([], [], s=110, marker="D", color=TMC, label="TerraMind-L, from pixels"),
-         ax.scatter([], [], s=220, marker="|", color=MUTED, lw=3, label="true tokens decoded"),
-         ax.scatter([], [], s=80, marker="x", color=MUTED, lw=2.5, label="another scene")]
-    ax.legend(handles=h, loc="lower left", bbox_to_anchor=(-0.02, 1.0), ncol=5, fontsize=13, handletextpad=0.2,
-              columnspacing=1.1, frameon=False, borderaxespad=0.1)
+    h = [ax.scatter([], [], s=150, color=COL_TOK, label="TerraMind-B given the same tokens"),
+         ax.scatter([], [], s=150, color=COL_PIX, label="TerraMind-B given pixels, its usual input")]
+    ax.legend(handles=h, loc="lower center", bbox_to_anchor=(0.45, 1.0), ncol=2, fontsize=16, frameon=False,
+              handletextpad=0.3, columnspacing=2.0, borderaxespad=0.2)
     save(fig, "gen_terramind.png")
 
 
