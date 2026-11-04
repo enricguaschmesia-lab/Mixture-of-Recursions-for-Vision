@@ -7,7 +7,8 @@ result, nothing is recomputed from a model:
   reports/t360_eval/e2_compare.json      E2: the source x target grid, fp32, paired by row
   runs/pretrain/phase3/vanilla10c_20261011_172253/checkpoint-3300/trainer_state.json   B10c's curve
   reports/t360_probe/final/trainer_state.json                                           T360's curve
-  reports/ben/summary_t360/summary.json  BEN: test_a micro-mAP, paired CIs and forgetting (ben_t360_summary.py)
+  reports/ben/summary_t360/summary.json  BEN: test_a micro-mAP, paired CIs and forgetting (ben_t360_summary.py),
+                                         and the 50-epoch runs' and stage-2 reruns' val and forgetting per checkpoint
   reports/tm_compare/summary.json        TerraMind's nine generation tasks, every model on the same scenes
                                          (tm_compare_gen.py, tm_compare_eval.py)
 The published numbers drawn beside ours (SOFTCON, TM_PUB) are constants, each with its table.
@@ -33,7 +34,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 REP = Path("/data/enric/reports")
-OUT = REP / "slides/t360/figs"
+OUT = Path(os.environ.get("T360_FIGS_OUT", REP / "slides/t360/figs"))   # override: smoke tests only
 E1 = REP / "t360_eval/e1_compare.json"
 E2 = REP / "t360_eval/e2_compare.json"
 B10C_STATE = Path("/data/enric/runs/pretrain/phase3/vanilla10c_20261011_172253/checkpoint-3300/trainer_state.json")
@@ -238,7 +239,7 @@ def fig_context(num):
 # ------------------------------------------------------------------------------------------ BEN (Phase 6 protocol)
 # reports/ben/summary_t360/summary.json (eo/experiments/ben_t360_summary.py): test_a micro-mAP of the checkpoint each
 # model selected on its own val role, paired bootstrap CIs over the 103,944 test patches, forgetting per base.
-BEN_SUM = REP / "ben/summary_t360/summary.json"
+BEN_SUM = Path(os.environ.get("BEN_SUMMARY", REP / "ben/summary_t360/summary.json"))   # override: smoke tests only
 CONDS = ("S1", "S2", "S1S2")
 CNAME = {"S1": "S1 (radar)", "S2": "S2 (optical)", "S1S2": "S1 + S2"}
 COL_B10 = "#a8461c"    # B10, BEN's original base (B10c's twin on the original tokens): a darker step of B10c's orange;
@@ -461,6 +462,170 @@ def fig_ben_published(num):
     save(fig, "ben_published.png")
 
 
+COL_FULL = "#2e8b3e"   # T360's full fine-tunes on the budget page (LoRA keeps T360's blue): CVD dE 22.3, normal-vision 23.7
+#: the 50-epoch runs (notes/ben_t360_budget_2026-11-03.md): tag, the 3-epoch run it is paired with, label, colour, lower LR
+E50 = [("t360_lora_e50", "t360_lora", "LoRA, 1e-3", COL["t360"], False),
+       ("t360_lora_e50_lr3e4", "t360_lora", "LoRA, 3e-4", COL["t360"], True),      # no 3-epoch run at 3e-4: LoRA 1e-3's
+       ("t360_full_e50", "t360_full", "full, 1e-4", COL_FULL, False),
+       ("t360_full_e50_lr3e5", "t360_full_lr3e5", "full, 3e-5", COL_FULL, True)]
+SPE = 487                                          # steps per epoch: ceil(31,166 / 64)
+
+
+def fig_ben_budget(num):
+    """50 epochs instead of 3. Left: val (mean micro-mAP over S1 / S2 / S1 + S2 on ft_valsel) at every validated
+    checkpoint of the four 50-epoch runs, the checkpoint val selected ringed, and the 3-epoch runs' three points (dotted)
+    for scale; the last 20% (epochs 40-50) is the LR decay; a point below the axis sits on its floor as a down-triangle,
+    with its value. Right: test_a S1 + S2 micro-mAP, each 50-epoch run against
+    the 3-epoch run it is paired with (LoRA at 3e-4 against LoRA at 1e-3), with the paired difference; SMARTIES ViT-L's
+    probe (the best published S1 + S2 on these patches) as a line."""
+    d, m, get = ben()
+    runs = [r for r in E50 if r[0] in m and m[r[0]].get("val_mean_micro_map")]
+    ep = lambda ck: int(ck.split("-")[1]) / SPE
+    curve = lambda t: sorted((ep(k), v) for k, v in m[t]["val_mean_micro_map"].items())
+    num["ben_budget"] = {t: {"val": {f"{e:g}": v for e, v in curve(t)}, "selected_epoch": ep(m[t]["selected"]),
+                             "twin": tw, "twin_val": {f"{e:g}": v for e, v in curve(tw)}}
+                         for t, tw, *_ in runs}
+    fig, (ax, ar) = plt.subplots(1, 2, figsize=(13.5, 5.4), gridspec_kw={"width_ratios": [1.5, 1], "wspace": 0.42})
+    lo = 0.60
+    ax.axvspan(40, 50, color=GRIDC, alpha=0.7, lw=0, zorder=0)
+    h = []
+    for t, tw, lab, col, low in runs:
+        xs, ys = zip(*curve(t))
+        h += ax.plot(xs, np.maximum(ys, lo), color=col, ls="--" if low else "-", lw=2.2, marker="o", ms=6.5,
+                     mfc=SURF if low else col, mec=col, mew=1.8, zorder=3, label=lab, clip_on=False)
+        for x, y in zip(xs, ys):                       # off the axis: a down-triangle on its floor, with its value
+            if y < lo:
+                ax.scatter([x], [lo], marker="v", s=70, color=col, zorder=5, clip_on=False)
+                ax.text(x + 0.7, lo + 0.004, f"{y:.2f}", ha="left", va="bottom", fontsize=12, color=INK2)
+        sel = m[t]["selected"]
+        ax.scatter([ep(sel)], [m[t]["val_mean_micro_map"][sel]], s=260, facecolor="none", edgecolor=INK, lw=1.6, zorder=4,
+                   clip_on=False)
+        if not low:                                    # the 3-epoch run at this LR, for scale
+            tx, ty = zip(*curve(tw))
+            ax.plot(tx, ty, color=col, ls=":", lw=1.6, marker="s", ms=5, mfc=col, mec=col, zorder=3)
+    vals = [v for t, *_ in runs for _, v in curve(t)]
+    hi = max(vals)
+    ax.set_xlim(0, 50); ax.set_ylim(lo, hi + 0.03)
+    ax.text(45, hi + 0.026, "LR decay", ha="center", va="top", fontsize=13, color=INK2)
+    ax.set_xlabel("epoch"); ax.set_ylabel("val micro-mAP (mean of 3 inputs)")
+    mf.ygrid(ax)
+    h += [ax.plot([], [], color=INK2, ls=":", lw=1.6, marker="s", ms=5, label="3-epoch run")[0],
+          ax.scatter([], [], s=200, facecolor="none", edgecolor=INK, lw=1.6, label="selected on val")]
+    ax.legend(handles=h, loc="lower right", ncol=2, fontsize=13, handletextpad=0.4, columnspacing=1.2, borderaxespad=0.3)
+    # right: test S1 + S2, 3 epochs -> 50 epochs
+    sm = d["smarties"]["ViT-L, 10%"]["S1S2"]
+    tr = [(t, tw, lab, col) for t, tw, lab, col, _ in runs if "test_S1S2" in m[t]]
+    ys2 = np.arange(len(tr))[::-1].astype(float)
+    x0 = min(0.74, np.floor(100 * min(min(get(t, "S1S2"), get(tw, "S1S2")) for t, tw, *_ in tr) - 1) / 100) if tr else 0.74
+    x1 = 0.885
+    for y, (t, tw, lab, col) in zip(ys2, tr):
+        c = d["comparisons"].get(f"{t} - {tw}", {}).get("S1S2")
+        dumbbell(ar, y, get(tw, "S1S2"), get(t, "S1S2"), MUTED, col, diff=c["diff"] if c else None, span=x1 - x0)
+        ar.text(x0 - 0.004, y, lab, ha="right", va="center", fontsize=15, color=col, fontweight="bold")
+        num["ben_budget"][t] |= {"test_S1S2": get(t, "S1S2"), "twin_test_S1S2": get(tw, "S1S2"), "d": c}
+    ar.axvline(sm, color=SMC, ls=(0, (4, 3)), lw=1.6, zorder=1)
+    ar.text(sm - 0.003, len(tr) + 0.1, f"SMARTIES ViT-L probe {sm:.3f}", ha="right", va="top", fontsize=12, color=INK2)
+    ar.set_xlim(x0, x1); ar.set_ylim(-0.75, len(tr) + 0.15)
+    ar.set_yticks([]); ar.spines["left"].set_visible(False)
+    ar.set_xlabel("test micro-mAP, S1 + S2\n(grey: 3 epochs; colour: 50 epochs)")
+    mf.xgrid(ar)
+    save(fig, "ben_budget.png")
+
+
+#: stage 2 (notes/ben_t360_budget_2026-11-03.md §5): each LR rerun with its budget ending at its 50-epoch run's val peak.
+#: tag, its 50-epoch run, the 3-epoch run at its LR (None: none was run), the 3-epoch run it is tested against, label, colour
+S2 = [("t360_lora_e6", "t360_lora_e50", "t360_lora", "t360_lora", "LoRA, 1e-3", COL["t360"]),
+      ("t360_lora_e10_lr3e4", "t360_lora_e50_lr3e4", None, "t360_lora", "LoRA, 3e-4", COL["t360"]),
+      ("t360_full_e6", "t360_full_e50", "t360_full", "t360_full", "full, 1e-4", COL_FULL),
+      ("t360_full_e10_lr3e5", "t360_full_e50_lr3e5", "t360_full_lr3e5", "t360_full_lr3e5", "full, 3e-5", COL_FULL)]
+
+
+def fig_ben_stage2(num):
+    """The decay at the peak. Left, one panel per LR: val (mean micro-mAP over S1 / S2 / S1 + S2 on ft_valsel) of the
+    stage-2 run at every epoch (its last 20%, shaded, is the LR decay; the checkpoint val selected ringed), of the
+    50-epoch run at its validated epochs up to the same budget (no decay yet), and of the 3-epoch run at that LR. Points
+    below the axis sit on its floor as down-triangles. Right: test_a S1 + S2 micro-mAP of the three, with the stage-2
+    run's value and its paired difference to the 3-epoch run it is tested against (LoRA at 3e-4: LoRA at 1e-3's), and
+    SMARTIES' probes (the best published S1 + S2 on these patches) as lines."""
+    d, m, get = ben()
+    runs = [r for r in S2 if r[0] in m and m[r[0]].get("val_mean_micro_map")]
+    ep = lambda ck: int(ck.split("-")[1]) / SPE
+    curve = lambda t: sorted((ep(k), v) for k, v in m[t]["val_mean_micro_map"].items()) if t in m else []
+    test = lambda t: get(t, "S1S2") if t and "test_S1S2" in m.get(t, {}) else None
+    num["ben_stage2"] = {t: {"val": {f"{e:g}": v for e, v in curve(t)}, "selected_epoch": ep(m[t]["selected"]),
+                             "e50": e50, "same_lr_3ep": tw} for t, e50, tw, *_ in runs}
+    fig = plt.figure(figsize=(14.5, 6.2))
+    outer = fig.add_gridspec(1, 2, width_ratios=[2.0, 1.0], wspace=0.42)
+    gl = outer[0].subgridspec(2, 2, wspace=0.28, hspace=0.55)
+    lo, hi = 0.66, 0.84
+    for i, (t, e50, tw, _, lab, col) in enumerate(S2):
+        ax = fig.add_subplot(gl[i // 2, i % 2])
+        n = int(round(max((e for e, _ in curve(t)), default=10 if "e10" in t else 6)))
+        ax.axvspan(0.8 * n, n, color=GRIDC, alpha=0.7, lw=0, zorder=0)
+        if i == 0:
+            ax.text(0.9 * n, lo + 0.005, "LR\ndecay", ha="center", va="bottom", fontsize=11, color=INK2)
+        off = False
+        for pts, c, ls, mk, mfc, lw, ms in [(curve(tw) if tw else [], INK2, ":", "s", INK2, 1.6, 5),
+                                            ([(e, v) for e, v in curve(e50) if e <= n + 1e-9], col, "--", "o", SURF, 1.6, 6),
+                                            (curve(t), col, "-", "o", col, 2.4, 7)]:
+            if not pts:
+                continue
+            xs, ys = zip(*pts)
+            ax.plot(xs, np.maximum(ys, lo), color=c, ls=ls, lw=lw, marker=mk, ms=ms, mfc=mfc, mec=c, mew=1.6, zorder=3,
+                    clip_on=False)
+            below = [x for x, y in pts if y < lo]      # off the axis: a down-triangle on its floor
+            if below:
+                off = True
+                ax.scatter(below, [lo] * len(below), marker="v", s=60, color=c, zorder=5, clip_on=False)
+        if off:
+            ax.text(n + 0.3, lo + 0.006, f"▼ below {lo:.2f}", ha="right", va="bottom", fontsize=11, color=INK2)
+        if t in m and m[t].get("selected"):
+            s = m[t]["selected"]
+            ax.scatter([ep(s)], [m[t]["val_mean_micro_map"][s]], s=230, facecolor="none", edgecolor=INK, lw=1.5, zorder=4)
+        ax.set_xlim(0, n + 0.4); ax.set_ylim(lo, hi)
+        ax.set_xticks(range(0, n + 1, 2))
+        ax.set_title(lab, fontsize=15, color=col, fontweight="bold", pad=6)
+        mf.ygrid(ax)
+        if i % 2 == 0:
+            ax.set_ylabel("val micro-mAP")
+        if i // 2 == 1:
+            ax.set_xlabel("epoch")
+    # right: test S1 + S2 for the three, per LR
+    ar = fig.add_subplot(outer[1])
+    rows = [r for r in S2 if test(r[0]) is not None]
+    ys = np.arange(len(rows))[::-1].astype(float)
+    sm = {k: d["smarties"][k]["S1S2"] for k in ("ViT-B, 10%", "ViT-L, 10%")}
+    vals = [v for t, e50, tw, *_ in rows for v in (test(t), test(e50), test(tw)) if v is not None]
+    x0, x1 = min(0.74, np.floor(100 * min(vals, default=0.74) - 1) / 100), 0.885
+    for y, (t, e50, tw, ref, lab, col) in zip(ys, rows):
+        v, c = test(t), d["comparisons"].get(f"{t} - {ref}", {}).get("S1S2")
+        if test(e50) is not None:
+            ar.scatter([test(e50)], [y], s=150, facecolor=SURF, edgecolor=col, lw=2.2, zorder=3)
+        ar.scatter([v], [y], s=190, color=col, zorder=4, edgecolor=SURF, lw=2)
+        if test(ref) is not None:                      # the run the bracket compares with; on top, to show when dots coincide
+            ar.scatter([test(ref)], [y], marker="s", s=70, color=INK2, zorder=5, edgecolor=SURF, lw=1.2)
+        ar.text(x0 - 0.004, y - 0.2, f"{v:.3f}" + (f" ({sgn(c['diff'])})" if c else ""), ha="right", va="center",
+                fontsize=14, color=INK, fontweight="bold")          # under the row's label, clear of the dots
+        ar.text(x0 - 0.004, y + 0.17, lab, ha="right", va="center", fontsize=15, color=col, fontweight="bold")
+        num["ben_stage2"][t] |= {"test_S1S2": v, "e50_test_S1S2": test(e50), "same_lr_3ep_test_S1S2": test(tw),
+                                 "vs": ref, "d": c}
+    for k, ls in (("ViT-B, 10%", (0, (1, 2))), ("ViT-L, 10%", (0, (4, 3)))):
+        ar.axvline(sm[k], color=SMC, ls=ls, lw=1.6, zorder=1)
+    ar.set_xlim(x0, x1); ar.set_ylim(-0.7, len(rows) - 0.4)
+    ar.set_yticks([]); ar.spines["left"].set_visible(False)
+    ar.set_xlabel("test micro-mAP, S1 + S2\n(in brackets: change vs 3 epochs)")
+    mf.xgrid(ar)
+    h = [plt.Line2D([], [], color=INK2, ls=":", lw=1.6, marker="s", ms=5, label="3 epochs"),
+         plt.Line2D([], [], color=INK2, ls="--", lw=1.6, marker="o", ms=6, mfc=SURF, label="50 epochs (no decay yet; right: its best)"),
+         plt.Line2D([], [], color=INK2, ls="-", lw=2.4, marker="o", ms=7, label="decay at the peak"),
+         plt.Line2D([], [], ls="", marker="o", ms=14, mfc="none", mec=INK, mew=1.5, label="selected on val"),
+         plt.Line2D([], [], color=SMC, ls=(0, (1, 2)), lw=1.6, label=f"SMARTIES ViT-B probe {sm['ViT-B, 10%']:.3f}"),
+         plt.Line2D([], [], color=SMC, ls=(0, (4, 3)), lw=1.6, label=f"SMARTIES ViT-L probe {sm['ViT-L, 10%']:.3f}")]
+    fig.legend(handles=h, loc="lower center", bbox_to_anchor=(0.5, 0.97), ncol=3, fontsize=13, frameon=False,
+               handletextpad=0.5, columnspacing=1.6)
+    save(fig, "ben_stage2.png")
+
+
 TMC_SUM = Path(os.environ.get("TMC_SUMMARY", REP / "tm_compare/summary.json"))   # override: smoke tests only
 #: TerraMind's nine generation tasks in its Table 3's order; S2L2A as S2.
 TM_TASKS = ["S1GRD-S2L2A", "S1GRD-DEM", "S1GRD-NDVI", "S1RTC-S2L2A", "S1RTC-DEM", "S1RTC-NDVI",
@@ -557,6 +722,10 @@ def main():
             fig_ben_labels(num)
         if have("t360_head", "t360_lora"):
             fig_ben_published(num)
+        if any(t in m and m[t].get("val_mean_micro_map") for t, *_ in E50):
+            fig_ben_budget(num)
+        if any(t in m and m[t].get("val_mean_micro_map") for t, *_ in S2):
+            fig_ben_stage2(num)
     if TMC_SUM.exists():
         fig_gen_terramind(num)
     (OUT / "numbers.json").write_text(json.dumps(num, indent=1, default=float))

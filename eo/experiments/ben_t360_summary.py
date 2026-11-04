@@ -8,7 +8,14 @@ ben_summary.py's method, extended to three bases (B10, B10c, T360):
     scored at the same precision (asserted; T360 fp32, B10 and B10c fp16);
   * paired bootstrap CIs over test_a patches (same rows, asserted) for the plan's comparisons.
 SMARTIES (arXiv 2506.19585, Tables 1 and 8; other protocol: encoders, linear probe for S1 and S1+S2,
-fine-tuned for S2, 100 epochs) is printed beside, as context.
+fine-tuned for S2, 100 epochs) is printed beside, as context, and SoftCon (arXiv 2405.20462, Tables I-II: S1
+probed for 100 epochs, S2 fine-tuned for 50).
+
+The 50-epoch runs (2026-11-03, docs/notes/ben_t360_budget_2026-11-03.md) are selected the same way, among the
+checkpoints their chain validated (14 of 25); for them the summary also keeps val per input at every validated
+checkpoint and the forgetting at every scored one (the curves). The 3-epoch models' entries are unchanged.
+Stage 2 (2026-11-04, same note §5): each LR rerun with its budget ending at its e50 run's val peak (STAGE2), with the
+same curves, against its 3-epoch twin and against its e50 run's best checkpoint (the same epochs, no decay).
 
     python eo/experiments/ben_t360_summary.py --out /data/enric/reports/ben/summary_t360
 """
@@ -26,7 +33,6 @@ from eo.eval import ben as E  # noqa: E402
 
 REP = Path("/data/enric/reports/ben")
 CONDS = ("S1", "S2", "S1S2")
-CKS = ("checkpoint-487", "checkpoint-974", "checkpoint-1461")
 #: tag, base, regime, val role, labels
 MODELS = [
     ("b10_head", "B10", "head only", "ft_valsel", "10%"),
@@ -39,7 +45,17 @@ MODELS = [
     ("t360_full", "T360", "full", "ft_valsel", "10%"),
     ("t360_lora_1pct", "T360", "LoRA", "ft_valsel1", "1%"),
     ("t360_full_lr3e5", "T360", "full, LR 3e-5", "ft_valsel", "10%"),   # worklog item 48
+    ("t360_lora_e50", "T360", "LoRA, 50 epochs", "ft_valsel", "10%"),   # notes/ben_t360_budget_2026-11-03.md
+    ("t360_full_e50", "T360", "full, 50 epochs", "ft_valsel", "10%"),
+    ("t360_lora_e50_lr3e4", "T360", "LoRA, LR 3e-4, 50 epochs", "ft_valsel", "10%"),
+    ("t360_full_e50_lr3e5", "T360", "full, LR 3e-5, 50 epochs", "ft_valsel", "10%"),
+    ("t360_full_e6", "T360", "full, 6 epochs", "ft_valsel", "10%"),                 # stage 2
+    ("t360_full_e10_lr3e5", "T360", "full, LR 3e-5, 10 epochs", "ft_valsel", "10%"),
+    ("t360_lora_e6", "T360", "LoRA, 6 epochs", "ft_valsel", "10%"),
+    ("t360_lora_e10_lr3e4", "T360", "LoRA, LR 3e-4, 10 epochs", "ft_valsel", "10%"),
 ]
+E50 = {"t360_lora_e50", "t360_full_e50", "t360_lora_e50_lr3e4", "t360_full_e50_lr3e5"}
+STAGE2 = {"t360_full_e6", "t360_full_e10_lr3e5", "t360_lora_e6", "t360_lora_e10_lr3e4"}
 BASE_TAG = {"B10": "b10_base", "B10c": "b10c_base", "T360": "t360_base"}
 PAIRS = [("t360_lora", "b10c_lora", "data and size, same tokens (LoRA)"),
          ("t360_lora", "b10_lora", "T360 against BEN's small model (LoRA)"),
@@ -52,10 +68,28 @@ PAIRS = [("t360_lora", "b10c_lora", "data and size, same tokens (LoRA)"),
          ("t360_lora", "t360_head", "what the adapters add on T360"),
          ("t360_full", "t360_lora", "full vs LoRA on T360"),
          ("t360_full_lr3e5", "t360_full", "full fine-tune at 3e-5 vs 1e-4 on T360"),
-         ("t360_full_lr3e5", "t360_lora", "full at 3e-5 vs LoRA on T360")]
+         ("t360_full_lr3e5", "t360_lora", "full at 3e-5 vs LoRA on T360"),
+         ("t360_lora_e50", "t360_lora", "50 epochs vs 3 (LoRA, 1e-3)"),
+         ("t360_full_e50", "t360_full", "50 epochs vs 3 (full, 1e-4)"),
+         ("t360_full_e50_lr3e5", "t360_full_lr3e5", "50 epochs vs 3 (full, 3e-5)"),
+         ("t360_lora_e50_lr3e4", "t360_lora", "LoRA at 3e-4 for 50 epochs vs 1e-3 for 3"),
+         ("t360_lora_e50_lr3e4", "t360_lora_e50", "LoRA for 50 epochs: 3e-4 vs 1e-3"),
+         ("t360_full_e50_lr3e5", "t360_full_e50", "full for 50 epochs: 3e-5 vs 1e-4"),
+         ("t360_full_e50", "t360_lora_e50", "full vs LoRA for 50 epochs (1e-4, 1e-3)"),
+         ("t360_full_e6", "t360_full", "6 epochs vs 3 (full, 1e-4)"),
+         ("t360_full_e6", "t360_full_e50", "the decay at the peak: 6 epochs vs the 50-epoch run's best (full, 1e-4)"),
+         ("t360_full_e10_lr3e5", "t360_full_lr3e5", "10 epochs vs 3 (full, 3e-5)"),
+         ("t360_full_e10_lr3e5", "t360_full_e50_lr3e5", "the decay at the peak: 10 epochs vs the 50-epoch run's best (full, 3e-5)"),
+         ("t360_full_e10_lr3e5", "t360_full", "full: 3e-5 for 10 epochs vs 1e-4 for 3"),
+         ("t360_lora_e6", "t360_lora", "6 epochs vs 3 (LoRA, 1e-3)"),
+         ("t360_lora_e6", "t360_lora_e50", "the decay at the peak: 6 epochs vs the 50-epoch run's best (LoRA, 1e-3)"),
+         ("t360_lora_e10_lr3e4", "t360_lora", "LoRA at 3e-4 for 10 epochs vs 1e-3 for 3"),
+         ("t360_lora_e10_lr3e4", "t360_lora_e50_lr3e4", "the decay at the peak: 10 epochs vs the 50-epoch run's best (LoRA, 3e-4)"),
+         ("t360_full_e6", "t360_lora_e6", "full vs LoRA for 6 epochs (1e-4, 1e-3)")]
 SMARTIES = {"ViT-B, 10%": {"S1": 0.789, "S2": 0.869, "S1S2": 0.854},
             "ViT-L, 10%": {"S1": 0.805, "S2": 0.877, "S1S2": 0.867},
             "ViT-L, 1%": {"S1S2": 0.792}}
+SOFTCON = {"ViT-B, 10%, probe": {"S1": 0.825, "S2": 0.868}, "ViT-B, 10%, fine-tune": {"S2": 0.887}}
 PRIOR = 0.311
 
 
@@ -63,9 +97,14 @@ def jl(p):
     return json.loads(Path(p).read_text())
 
 
+def cks(tag, root=REP):
+    """The model's checkpoints with reports under root, in step order (487 / 974 / 1461 for the 3-epoch runs)."""
+    return sorted((d.name for d in (root / tag).glob("checkpoint-*") if d.is_dir()), key=lambda c: int(c.split("-")[1]))
+
+
 def select(tag, val):
     s = {}
-    for ck in CKS:
+    for ck in cks(tag):
         f = [REP / tag / ck / val / f"{c}.json" for c in CONDS]
         if all(x.exists() for x in f):
             s[ck] = float(np.mean([jl(x)["micro_map"] for x in f]))
@@ -136,6 +175,10 @@ def main():
             fo = forgetting(tag, ck, base)
             if fo:
                 r["forgetting"] = fo
+        if tag in E50 | STAGE2:
+            r["val_per_condition"] = {k: {c: jl(REP / tag / k / val / f"{c}.json")["micro_map"] for c in CONDS}
+                                      for k in scores}
+            r["forgetting_curve"] = {k: v for k in cks(tag, REP / "forgetting") if (v := forgetting(tag, k, base))}
         rows[tag] = r
         print(tag, ck, {c: round(r[f"test_{c}"]["micro_map"], 4) for c in CONDS if f"test_{c}" in r}, flush=True)
     comps = {}
@@ -152,7 +195,7 @@ def main():
             d, ci = boot(zx["truth"].astype(bool), zx["marginal"].astype(np.float64), zy["marginal"].astype(np.float64), a.boot)
             comps[f"{x} - {y}"][c] = {"diff": d, "ci95": ci}
         print(x, "-", y, {c: round(v["diff"], 4) for c, v in comps[f"{x} - {y}"].items() if c != "what"}, flush=True)
-    doc = {"models": rows, "comparisons": comps, "smarties": SMARTIES, "class_prior": PRIOR,
+    doc = {"models": rows, "comparisons": comps, "smarties": SMARTIES, "softcon": SOFTCON, "class_prior": PRIOR,
            "forgetting_reference": "each model's own extended base", "n_boot": a.boot,
            "test": "test_a = SMARTIES MM val, 103,944 patches"}
     (a.out / "summary.json").write_text(json.dumps(doc, indent=1) + "\n")
@@ -162,7 +205,9 @@ def main():
           f"Class prior {PRIOR}. Checkpoint selected on each model's val role. Forgetting: teacher-forced CE on "
           "TerraMesh's 4,416 held-out rows minus the model's own extended base (nats; + = forgot). SMARTIES "
           "(other protocol): " + "; ".join(f"{k} " + " / ".join(f"{v[c]:.3f}" if c in v else "—" for c in CONDS)
-                                           for k, v in SMARTIES.items()) + ".", "",
+                                           for k, v in SMARTIES.items()) + ". SoftCon (other protocol): "
+          + "; ".join(f"{k} " + " / ".join(f"{v[c]:.3f}" if c in v else "—" for c in CONDS) for k, v in SOFTCON.items())
+          + ".", "",
           "| model | base | regime | labels | selected | S1 | S2 | S1+S2 | macro-mAP S1+S2 | micro-F1 S1+S2 | wrong input | forgetting (precision) |",
           "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for tag, base, regime, val, lab in MODELS:
