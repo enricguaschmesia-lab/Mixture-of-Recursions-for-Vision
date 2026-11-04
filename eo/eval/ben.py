@@ -36,6 +36,19 @@ from eo.data import ben_vocab as V
 
 #: max |cached - uncached| next-token logit difference accepted per autocast mode (eval_ben, ben_chain)
 CACHE_TOL = {"none": 1e-3, "fp16": 5e-2, "bf16": 2e-1}
+#: ... or at most this many rounding steps of the autocast dtype at the largest |logit| compared (eval_ben, 2026-11-04).
+#: An absolute tolerance fails at large logits on rounding alone: a 50-epoch T360 LoRA's reach [64, 128), where
+#: fp16's step is 0.0625 > 0.05. A broken cache is off by whole logits (ben_chain's shift=1 control: 6.6-20.5).
+#: The step is the largest logit's, not each logit's own: the matmul's error is absolute, so a near-zero logit
+#: is off by many of its own (tiny) steps even in a correct cache. Measured: 1-2 steps (the A100's 0.0625; the
+#: Titan X, T360's extended base: 0.031 at |logit| 21); 4 leaves a margin, and a logit off by 1 is 16+ steps.
+CACHE_ULPS = 4
+
+
+def rounding_step(x: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    """One rounding step (ulp) of `dtype` at each |x| (x in fp32): 2^floor(log2 |x|) * eps, normal range."""
+    fi = torch.finfo(dtype)
+    return torch.exp2(torch.floor(torch.log2(x.abs().clamp_min(fi.tiny)))) * fi.eps
 
 
 def derangement(n: int, seed: int) -> np.ndarray:
@@ -162,11 +175,13 @@ def cache_check(model, prompts: torch.Tensor, n_steps: int = 3,
                 autocast: Optional[torch.dtype] = None) -> Dict[str, float]:
     """Max |logit difference| between cached and uncached decoding, on the allowed ids.
 
-    Feeds a fixed continuation (the first n_steps class ids) both ways.
+    Feeds a fixed continuation (the first n_steps class ids) both ways. Also returns the largest |logit|
+    compared and the difference in rounding steps of the autocast dtype at it (`max_ulp_diff`; CACHE_ULPS).
+    A NaN anywhere propagates (`max(0.0, nan)` in Python is 0.0, so the per-step maxima are reduced in torch).
     """
     ctx = torch.autocast("cuda", dtype=autocast) if autocast is not None else _null()
     cont = torch.tensor(V.CLASS_IDS[:n_steps], device=prompts.device)
-    worst = 0.0
+    diff, mag = [], []
     with ctx:
         out = model(input_ids=prompts, use_cache=True, logits_to_keep=1)
         cache = out.past_key_values
@@ -177,9 +192,13 @@ def cache_check(model, prompts: torch.Tensor, n_steps: int = 3,
             cache = o.past_key_values
             seq = torch.cat([seq, ids], 1)
             full = model(input_ids=seq, use_cache=False, logits_to_keep=1).logits[:, -1, :]
-            d = (o.logits[:, -1, ALLOWED].float() - full[:, ALLOWED].float()).abs().max()
-            worst = max(worst, float(d))
-    return {"max_abs_logit_diff": worst, "steps": n_steps, "batch": int(prompts.shape[0])}
+            a, b = o.logits[:, -1, ALLOWED].float(), full[:, ALLOWED].float()
+            diff.append((a - b).abs().max())
+            mag.append(torch.maximum(a.abs(), b.abs()).max())
+    d, m = torch.stack(diff).max(), torch.stack(mag).max()
+    return {"max_abs_logit_diff": float(d), "max_abs_logit": float(m),
+            "max_ulp_diff": float(d / rounding_step(m, autocast or torch.float32)),
+            "steps": n_steps, "batch": int(prompts.shape[0])}
 
 
 # ------------------------------------------------------------------ metrics

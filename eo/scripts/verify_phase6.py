@@ -69,6 +69,10 @@ that must FIRE, so a pass means something.
                                                        | a twin pair at another LR is flagged; a budget one
                                                          epoch past the peak fails; the 3-epoch warmup and a
                                                          cosine decay are caught
+  X15 eval_ben's KV-cache tolerance (2026-11-04): the fp16 / bf16 / fp32 rounding steps; one fp16 step at
+      logits of 64-128 (0.0625 > CACHE_TOL's 0.05) is kept, as are 4 (CACHE_ULPS) and a difference within
+      CACHE_TOL; on a tiny CPU Llama cached = uncached | 5 steps, a dict without the step count, NaN, and a
+                                                         cache off by a logit or NaN are refused
 
 Artifacts it reads are named in each check. A check whose artifact does not exist yet is
 SKIPPED and reported as such, never passed.
@@ -887,7 +891,9 @@ def x13():
 # Stage 2 of the 50-epoch plan (notes/ben_t360_budget_2026-11-03.md §5): overlay -> (its 3-epoch twin, the e50
 # run whose val peak sets its budget, the keys beyond the budget it may change)
 STAGE2 = {"t360_full_e6": ("t360_full", "t360_full_e50", []),
-          "t360_full_e10_lr3e5": ("t360_full_lr3e5", "t360_full_e50_lr3e5", [])}
+          "t360_full_e10_lr3e5": ("t360_full_lr3e5", "t360_full_e50_lr3e5", []),
+          "t360_lora_e6": ("t360_lora", "t360_lora_e50", []),
+          "t360_lora_e10_lr3e4": ("t360_lora", "t360_lora_e50_lr3e4", ["learning_rate"])}   # no 3-epoch LoRA at 3e-4
 
 
 def val_peak(tag, role="ft_valsel", root=REPORTS):
@@ -925,20 +931,19 @@ def x14():
                 and e["lr_scheduler_kwargs.num_decay_steps"] == int(0.2 * n)
                 and e["save_steps"] == t["save_steps"] == per_epoch and n % e["save_steps"] == 0
                 and e["eval_steps"] == t["eval_steps"])
-    peaks, rows, scored = {}, [], True
+    peaks, rows = {}, []
     for n, (t, e50, _) in STAGE2.items():
         best, score = val_peak(e50)
-        scored &= best is not None
-        peaks[n] = None if best is None else best / per_epoch
-        if best is not None:
-            rows.append(f"{n}: {c[n]['num_train_steps']} steps = {c[n]['num_train_steps'] / per_epoch:g} epochs; "
-                        f"{e50} peaked at epoch {peaks[n]:g} ({score[best]:.4f} of {len(score)} scored)")
-    if not scored:
-        record("X14 stage-2 budget", None, "an e50 run's val reports are not local yet")
-    else:
-        ok = all(budget_ok(c[n], c[t], peaks[n]) for n, (t, _, _) in STAGE2.items())
+        if best is None:
+            record(f"X14 stage-2 budget ({n})", None, f"{e50}'s val reports are not local yet")
+            continue
+        peaks[n] = best / per_epoch
+        rows.append(f"{n}: {c[n]['num_train_steps']} steps = {c[n]['num_train_steps'] / per_epoch:g} epochs; "
+                    f"{e50} peaked at epoch {peaks[n]:g} ({score[best]:.4f} of {len(score)} scored)")
+    if peaks:
+        ok = all(budget_ok(c[n], c[STAGE2[n][0]], peaks[n]) for n in peaks)
         # control: the epoch after each peak (the budget one epoch too long) fails
-        bad = any(budget_ok(c[n], c[t], peaks[n] + 1) for n, (t, _, _) in STAGE2.items())
+        bad = any(budget_ok(c[n], c[STAGE2[n][0]], peaks[n] + 1) for n in peaks)
         record("X14 stage-2 budget", ok, "; ".join(rows) + f"; warmup int(5%), decay int(20%), save every {per_epoch}",
                not bad, "a budget one epoch past each peak fails")
 
@@ -949,6 +954,68 @@ def x14():
            "; ".join(f"{n}: lr/peak " + ", ".join(f"{s}: {v / c[n]['learning_rate']:.3f}" for s, v in got.items())
                      for n, (_, got) in shapes.items()),
            not any(bad_d.values()) and not any(bad_w.values()), "the twins' 73-step warmup and a cosine decay are caught")
+
+
+# ---------------------------------------------------------------- X15
+def x15():
+    """eval_ben's KV-cache tolerance (2026-11-04): a difference is kept if within CACHE_TOL or within CACHE_ULPS
+    rounding steps at the largest logit's magnitude; a NaN is refused; cache_check propagates a NaN. On a tiny CPU
+    Llama, cached = uncached, while a cache whose logits are off by one, or NaN, is refused."""
+    import importlib.util
+    from transformers import LlamaConfig, LlamaForCausalLM
+    from eo.eval import ben as E
+    spec = importlib.util.spec_from_file_location("eval_ben", REPO / "eo/scripts/eval_ben.py")
+    eb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(eb)
+    rs = lambda v, dt: float(E.rounding_step(torch.tensor([v]), dt))
+    steps = {"fp16 at 100": (rs(100.0, torch.float16), 2 ** -4), "fp16 at 40": (rs(40.0, torch.float16), 2 ** -5),
+             "fp16 at 64": (rs(64.0, torch.float16), 2 ** -4), "bf16 at 40": (rs(40.0, torch.bfloat16), 2 ** -2),
+             "fp32 at 1": (rs(1.0, torch.float32), 2 ** -23), "fp16 at 0": (rs(0.0, torch.float16), 2 ** -24)}
+    ok = all(a == b for a, b in steps.values())
+    # one fp16 step at 64-128 is 0.0625 > 0.05: the absolute rule alone refused it (the old behaviour, no ulp key)
+    tol = E.CACHE_TOL["fp16"]
+    keep = {"1 step at 64-128": {"max_abs_logit_diff": 0.0625, "max_ulp_diff": 1.0},
+            "4 steps at 64-128": {"max_abs_logit_diff": 0.25, "max_ulp_diff": 4.0},
+            "0.04 = 5 steps (within tol)": {"max_abs_logit_diff": 0.04, "max_ulp_diff": 5.0}}
+    refuse = {"5 steps at 64-128": {"max_abs_logit_diff": 0.3125, "max_ulp_diff": 5.0},
+              "0.0625, no ulp key": {"max_abs_logit_diff": 0.0625},
+              "NaN difference": {"max_abs_logit_diff": float("nan"), "max_ulp_diff": float("nan")},
+              "0.0625, NaN steps": {"max_abs_logit_diff": 0.0625, "max_ulp_diff": float("nan")}}
+    ok &= all(eb.refusal(v, tol) is None for v in keep.values())
+    fired = all(eb.refusal(v, tol) is not None for v in refuse.values())
+    record("X15 cache tolerance (rules)", ok, "steps " + ", ".join(f"{k} {a:g}" for k, (a, _) in steps.items())
+           + "; kept: " + ", ".join(keep), fired, "refused: " + ", ".join(refuse))
+
+    torch.manual_seed(0)
+    cfg = LlamaConfig(vocab_size=max(E.ALLOWED) + 1, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+                      num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64)
+    model = LlamaForCausalLM(cfg).eval()
+    prompts = torch.randint(0, 1000, (4, 12))
+
+    class Cached(torch.nn.Module):             # the model, with f applied to the logits of every cached call
+        def __init__(self, f):
+            super().__init__()
+            self.f = f
+
+        def forward(self, **kw):
+            o = model(**kw)
+            if kw.get("past_key_values") is not None:
+                o.logits = self.f(o.logits)
+            return o
+
+    def nan_first(x):
+        x = x.clone()
+        x[..., E.ALLOWED[0]] = float("nan")
+        return x
+    cc = E.cache_check(model, prompts)
+    off, nan = E.cache_check(Cached(lambda x: x + 1.0), prompts), E.cache_check(Cached(nan_first), prompts)
+    tol0 = E.CACHE_TOL["none"]
+    record("X15 cache check (tiny CPU Llama)", eb.refusal(cc, tol0) is None and np.isfinite(cc["max_ulp_diff"]),
+           f"cached vs uncached {cc['max_abs_logit_diff']:.1e} ({cc['max_ulp_diff']:.1f} fp32 steps at the largest "
+           f"|logit|, {cc['max_abs_logit']:.2f})",
+           eb.refusal(off, tol0) is not None and eb.refusal(nan, tol0) is not None,
+           f"logits off by 1: {off['max_abs_logit_diff']:.3f} refused; a NaN logit: {nan['max_abs_logit_diff']} refused "
+           f"(Python's max(0.0, nan) = {max(0.0, float('nan'))}, the reduction it replaced)")
 
 
 def main():
@@ -998,6 +1065,8 @@ def main():
         x13()
     if want("X14"):
         x14()
+    if want("X15"):
+        x15()
     fails = [r for r in RESULTS if r[1] is False or r[3] is False]
     skips = [r for r in RESULTS if r[1] is None]
     print(f"\n{len(RESULTS) - len(fails) - len(skips)} pass, {len(fails)} fail, {len(skips)} skipped")

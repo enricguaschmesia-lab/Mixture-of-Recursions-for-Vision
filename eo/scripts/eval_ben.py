@@ -41,11 +41,13 @@ def refusal(cc, tol, res=None):
     `diff > tol` is False for a NaN, so non-finite values are refused explicitly: an fp16 overflow
     would otherwise pass the cache check and write NaN marginals (T360 is decoded at fp16, since a
     trained T360's logits reach 32-64, where one bf16 rounding step, 0.25, exceeds bf16's tolerance).
+    A difference above tol is still kept if it is within E.CACHE_ULPS rounding steps at the largest
+    logit's magnitude (2026-11-04: a 50-epoch LoRA's logits reach 64-128, where fp16's step is 0.0625).
     """
     d = cc["max_abs_logit_diff"]
     if not np.isfinite(d):
         return f"non-finite cached-vs-uncached logit difference: {cc}"
-    if d > tol:
+    if d > tol and not cc.get("max_ulp_diff", np.inf) <= E.CACHE_ULPS:
         return f"KV cache disagrees with uncached decoding: {cc}"
     if res is not None:
         bad = [k for k in ("marginal", "sample_freq", "slot_mass") if not np.isfinite(res[k]).all()]
