@@ -501,7 +501,7 @@ def fig_ben_budget(num):
     num["ben_budget"] = {t: {"val": {f"{e:g}": v for e, v in curve(t)}, "selected_epoch": ep(m[t]["selected"]),
                              "twin": tw, "twin_val": {f"{e:g}": v for e, v in curve(tw)}}
                          for t, tw, *_ in runs}
-    fig, (ax, ar) = plt.subplots(1, 2, figsize=(13.5, 5.4), gridspec_kw={"width_ratios": [1.5, 1], "wspace": 0.42})
+    fig, (ax, ar) = plt.subplots(1, 2, figsize=(12.5, 5.4), gridspec_kw={"width_ratios": [1.35, 1], "wspace": 0.45})
     lo = 0.60
     ax.axvspan(40, 50, color=GRIDC, alpha=0.7, lw=0, zorder=0)
     h = []
@@ -512,7 +512,7 @@ def fig_ben_budget(num):
         for x, y in zip(xs, ys):                       # off the axis: a down-triangle on its floor, with its value
             if y < lo:
                 ax.scatter([x], [lo], marker="v", s=70, color=col, zorder=5, clip_on=False)
-                ax.text(x + 0.7, lo + 0.004, f"{y:.2f}", ha="left", va="bottom", fontsize=12, color=INK2)
+                ax.text(x + 0.8, lo + 0.004, f"{y:.2f}", ha="left", va="bottom", fontsize=14, color=INK2)
         sel = m[t]["selected"]
         ax.scatter([ep(sel)], [m[t]["val_mean_micro_map"][sel]], s=260, facecolor="none", edgecolor=INK, lw=1.6, zorder=4,
                    clip_on=False)
@@ -522,12 +522,13 @@ def fig_ben_budget(num):
     vals = [v for t, *_ in runs for _, v in curve(t)]
     hi = max(vals)
     ax.set_xlim(0, 50); ax.set_ylim(lo, hi + 0.03)
-    ax.text(45, hi + 0.026, "LR decay", ha="center", va="top", fontsize=13, color=INK2)
-    ax.set_xlabel("epoch"); ax.set_ylabel("val micro-mAP (mean of 3 inputs)")
+    ax.text(45, hi + 0.026, "LR decay", ha="center", va="top", fontsize=15, color=INK2)
+    ax.set_xlabel("epoch", fontsize=16); ax.set_ylabel("val micro-mAP (mean of 3 inputs)", fontsize=16)
+    ax.tick_params(labelsize=15)
     mf.ygrid(ax)
     h += [ax.plot([], [], color=INK2, ls=":", lw=1.6, marker="s", ms=5, label="3-epoch run")[0],
           ax.scatter([], [], s=200, facecolor="none", edgecolor=INK, lw=1.6, label="selected on val")]
-    ax.legend(handles=h, loc="lower right", ncol=2, fontsize=13, handletextpad=0.4, columnspacing=1.2, borderaxespad=0.3)
+    ax.legend(handles=h, loc="lower right", ncol=2, fontsize=15, handletextpad=0.4, columnspacing=1.0, borderaxespad=0.3)
     # right: test S1 + S2, 3 epochs -> 50 epochs
     sm = d["smarties"]["ViT-L, 10%"]["S1S2"]
     tr = [(t, tw, lab, col) for t, tw, lab, col, _ in runs if "test_S1S2" in m[t]]
@@ -536,14 +537,16 @@ def fig_ben_budget(num):
     x1 = 0.885
     for y, (t, tw, lab, col) in zip(ys2, tr):
         c = d["comparisons"].get(f"{t} - {tw}", {}).get("S1S2")
-        dumbbell(ar, y, get(tw, "S1S2"), get(t, "S1S2"), MUTED, col, diff=c["diff"] if c else None, span=x1 - x0)
-        ar.text(x0 - 0.004, y, lab, ha="right", va="center", fontsize=15, color=col, fontweight="bold")
+        dumbbell(ar, y, get(tw, "S1S2"), get(t, "S1S2"), MUTED, col, diff=c["diff"] if c else None, span=x1 - x0, fs=15)
+        ar.text(x0 - 0.004, y, lab, ha="right", va="center", fontsize=17, color=col, fontweight="bold")
         num["ben_budget"][t] |= {"test_S1S2": get(t, "S1S2"), "twin_test_S1S2": get(tw, "S1S2"), "d": c}
     ar.axvline(sm, color=SMC, ls=(0, (4, 3)), lw=1.6, zorder=1)
-    ar.text(sm - 0.003, len(tr) + 0.1, f"SMARTIES ViT-L probe {sm:.3f}", ha="right", va="top", fontsize=12, color=INK2)
+    ar.text(sm - 0.003, len(tr) + 0.1, f"SMARTIES ViT-L probe {sm:.3f}", ha="right", va="top", fontsize=14, color=INK2)
     ar.set_xlim(x0, x1); ar.set_ylim(-0.75, len(tr) + 0.15)
     ar.set_yticks([]); ar.spines["left"].set_visible(False)
-    ar.set_xlabel("test micro-mAP, S1 + S2\n(grey: 3 epochs; colour: 50 epochs)")
+    ar.xaxis.set_major_locator(plt.MultipleLocator(0.05)); ar.xaxis.set_major_formatter("{x:.2f}")
+    ar.tick_params(labelsize=15)
+    ar.set_xlabel("test micro-mAP, S1 + S2\n(grey: 3 epochs, colour: 50)", fontsize=16)
     mf.xgrid(ar)
     save(fig, "ben_budget.png")
 
@@ -562,7 +565,7 @@ def fig_ben_stage2(num):
     50-epoch run at its validated epochs up to the same budget (no decay yet), and of the 3-epoch run at that LR. Points
     below the axis sit on its floor as down-triangles. Right: test_a S1 + S2 micro-mAP of the three, with the stage-2
     run's value and its paired difference to the 3-epoch run it is tested against (LoRA at 3e-4: LoRA at 1e-3's), and
-    SMARTIES' probes (the best published S1 + S2 on these patches) as lines."""
+    SMARTIES ViT-B's probe (the published S1 + S2 on these patches closest to ours; ViT-L's is on ben_budget) as a line."""
     d, m, get = ben()
     runs = [r for r in S2 if r[0] in m and m[r[0]].get("val_mean_micro_map")]
     ep = lambda ck: int(ck.split("-")[1]) / SPE
@@ -570,16 +573,16 @@ def fig_ben_stage2(num):
     test = lambda t: get(t, "S1S2") if t and "test_S1S2" in m.get(t, {}) else None
     num["ben_stage2"] = {t: {"val": {f"{e:g}": v for e, v in curve(t)}, "selected_epoch": ep(m[t]["selected"]),
                              "e50": e50, "same_lr_3ep": tw} for t, e50, tw, *_ in runs}
-    fig = plt.figure(figsize=(14.5, 6.2))
-    outer = fig.add_gridspec(1, 2, width_ratios=[2.0, 1.0], wspace=0.42)
-    gl = outer[0].subgridspec(2, 2, wspace=0.28, hspace=0.55)
+    fig = plt.figure(figsize=(13.5, 5.0))
+    outer = fig.add_gridspec(1, 2, width_ratios=[1.8, 1.0], wspace=0.58)
+    gl = outer[0].subgridspec(2, 2, wspace=0.3, hspace=0.62)
     lo, hi = 0.66, 0.84
     for i, (t, e50, tw, _, lab, col) in enumerate(S2):
         ax = fig.add_subplot(gl[i // 2, i % 2])
         n = int(round(max((e for e, _ in curve(t)), default=10 if "e10" in t else 6)))
         ax.axvspan(0.8 * n, n, color=GRIDC, alpha=0.7, lw=0, zorder=0)
         if i == 0:
-            ax.text(0.9 * n, lo + 0.005, "LR\ndecay", ha="center", va="bottom", fontsize=11, color=INK2)
+            ax.text(0.9 * n, lo + 0.005, "LR\ndecay", ha="center", va="bottom", fontsize=13, color=INK2)
         off = False
         for pts, c, ls, mk, mfc, lw, ms in [(curve(tw) if tw else [], INK2, ":", "s", INK2, 1.6, 5),
                                             ([(e, v) for e, v in curve(e50) if e <= n + 1e-9], col, "--", "o", SURF, 1.6, 6),
@@ -594,23 +597,24 @@ def fig_ben_stage2(num):
                 off = True
                 ax.scatter(below, [lo] * len(below), marker="v", s=60, color=c, zorder=5, clip_on=False)
         if off:
-            ax.text(n + 0.3, lo + 0.006, f"▼ below {lo:.2f}", ha="right", va="bottom", fontsize=11, color=INK2)
+            ax.text(n + 0.3, lo + 0.006, f"▼ below {lo:.2f}", ha="right", va="bottom", fontsize=13, color=INK2)
         if t in m and m[t].get("selected"):
             s = m[t]["selected"]
             ax.scatter([ep(s)], [m[t]["val_mean_micro_map"][s]], s=230, facecolor="none", edgecolor=INK, lw=1.5, zorder=4)
         ax.set_xlim(0, n + 0.4); ax.set_ylim(lo, hi)
-        ax.set_xticks(range(0, n + 1, 2))
-        ax.set_title(lab, fontsize=15, color=col, fontweight="bold", pad=6)
+        ax.set_xticks(range(0, n + 1, 2)); ax.set_yticks([0.70, 0.75, 0.80]); ax.yaxis.set_major_formatter("{x:.2f}")
+        ax.set_title(lab, fontsize=17, color=col, fontweight="bold", pad=6)
+        ax.tick_params(labelsize=15)
         mf.ygrid(ax)
         if i % 2 == 0:
-            ax.set_ylabel("val micro-mAP")
+            ax.set_ylabel("val micro-mAP", fontsize=16)
         if i // 2 == 1:
-            ax.set_xlabel("epoch")
+            ax.set_xlabel("epoch", fontsize=16)
     # right: test S1 + S2 for the three, per LR
     ar = fig.add_subplot(outer[1])
     rows = [r for r in S2 if test(r[0]) is not None]
     ys = np.arange(len(rows))[::-1].astype(float)
-    sm = {k: d["smarties"][k]["S1S2"] for k in ("ViT-B, 10%", "ViT-L, 10%")}
+    sm = d["smarties"]["ViT-B, 10%"]["S1S2"]
     vals = [v for t, e50, tw, *_ in rows for v in (test(t), test(e50), test(tw)) if v is not None]
     x0, x1 = min(0.74, np.floor(100 * min(vals, default=0.74) - 1) / 100), 0.885
     for y, (t, e50, tw, ref, lab, col) in zip(ys, rows):
@@ -621,24 +625,24 @@ def fig_ben_stage2(num):
         if test(ref) is not None:                      # the run the bracket compares with; on top, to show when dots coincide
             ar.scatter([test(ref)], [y], marker="s", s=70, color=INK2, zorder=5, edgecolor=SURF, lw=1.2)
         ar.text(x0 - 0.004, y - 0.2, f"{v:.3f}" + (f" ({sgn(c['diff'])})" if c else ""), ha="right", va="center",
-                fontsize=14, color=INK, fontweight="bold")          # under the row's label, clear of the dots
-        ar.text(x0 - 0.004, y + 0.17, lab, ha="right", va="center", fontsize=15, color=col, fontweight="bold")
+                fontsize=16, color=INK, fontweight="bold")          # under the row's label, clear of the dots
+        ar.text(x0 - 0.004, y + 0.17, lab, ha="right", va="center", fontsize=17, color=col, fontweight="bold")
         num["ben_stage2"][t] |= {"test_S1S2": v, "e50_test_S1S2": test(e50), "same_lr_3ep_test_S1S2": test(tw),
                                  "vs": ref, "d": c}
-    for k, ls in (("ViT-B, 10%", (0, (1, 2))), ("ViT-L, 10%", (0, (4, 3)))):
-        ar.axvline(sm[k], color=SMC, ls=ls, lw=1.6, zorder=1)
+    ar.axvline(sm, color=SMC, ls=(0, (1, 2)), lw=1.6, zorder=1)
+    ar.text(sm - 0.002, len(rows) - 0.42, f"SMARTIES ViT-B {sm:.3f}", ha="right", va="top", fontsize=14, color=INK2)
     ar.set_xlim(x0, x1); ar.set_ylim(-0.7, len(rows) - 0.4)
     ar.set_yticks([]); ar.spines["left"].set_visible(False)
-    ar.set_xlabel("test micro-mAP, S1 + S2\n(in brackets: change vs 3 epochs)")
+    ar.xaxis.set_major_locator(plt.MultipleLocator(0.05)); ar.xaxis.set_major_formatter("{x:.2f}")
+    ar.tick_params(labelsize=15)
+    ar.set_xlabel("test micro-mAP, S1 + S2\n(brackets: vs 3 epochs)", fontsize=16)
     mf.xgrid(ar)
     h = [plt.Line2D([], [], color=INK2, ls=":", lw=1.6, marker="s", ms=5, label="3 epochs"),
          plt.Line2D([], [], color=INK2, ls="--", lw=1.6, marker="o", ms=6, mfc=SURF, label="50 epochs (no decay yet; right: its best)"),
          plt.Line2D([], [], color=INK2, ls="-", lw=2.4, marker="o", ms=7, label="decay at the peak"),
-         plt.Line2D([], [], ls="", marker="o", ms=14, mfc="none", mec=INK, mew=1.5, label="selected on val"),
-         plt.Line2D([], [], color=SMC, ls=(0, (1, 2)), lw=1.6, label=f"SMARTIES ViT-B probe {sm['ViT-B, 10%']:.3f}"),
-         plt.Line2D([], [], color=SMC, ls=(0, (4, 3)), lw=1.6, label=f"SMARTIES ViT-L probe {sm['ViT-L, 10%']:.3f}")]
-    fig.legend(handles=h, loc="lower center", bbox_to_anchor=(0.5, 0.97), ncol=3, fontsize=13, frameon=False,
-               handletextpad=0.5, columnspacing=1.6)
+         plt.Line2D([], [], ls="", marker="o", ms=14, mfc="none", mec=INK, mew=1.5, label="selected on val")]
+    fig.legend(handles=h, loc="lower center", bbox_to_anchor=(0.5, 0.97), ncol=4, fontsize=15, frameon=False,
+               handletextpad=0.5, columnspacing=1.4)
     save(fig, "ben_stage2.png")
 
 
