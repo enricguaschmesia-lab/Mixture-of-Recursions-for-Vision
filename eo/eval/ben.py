@@ -37,11 +37,12 @@ from eo.data import ben_vocab as V
 #: max |cached - uncached| next-token logit difference accepted per autocast mode (eval_ben, ben_chain)
 CACHE_TOL = {"none": 1e-3, "fp16": 5e-2, "bf16": 2e-1}
 #: ... or at most this many rounding steps of the autocast dtype at the largest |logit| compared (eval_ben, 2026-11-04).
-#: An absolute tolerance fails at large logits on rounding alone: a 50-epoch T360 LoRA's reach [64, 128), where
-#: fp16's step is 0.0625 > 0.05. A broken cache is off by whole logits (ben_chain's shift=1 control: 6.6-20.5).
-#: The step is the largest logit's, not each logit's own: the matmul's error is absolute, so a near-zero logit
-#: is off by many of its own (tiny) steps even in a correct cache. Measured: 1-2 steps (the A100's 0.0625; the
-#: Titan X, T360's extended base: 0.031 at |logit| 21); 4 leaves a margin, and a logit off by 1 is 16+ steps.
+#: An absolute tolerance refuses on rounding alone: on the A100, 4 val checkpoints of the 50-epoch T360 LoRAs
+#: differed by 0.0625, 2 fp16 steps at their logits' magnitude (|logit| ~40; fp16's step is 0.03125 from 32 to 64),
+#: against 0.05. The step is the largest logit's, not each logit's own: the matmul's error is absolute, so a
+#: near-zero logit is off by many of its own (tiny) steps even in a correct cache. Measured on the Titan X: 1.0-1.5
+#: steps on one of those checkpoints, 2.0 on T360's extended base; 4 leaves a margin. A broken cache is off by
+#: whole logits: the cache cropped by one position, 13-18 (400+ steps); ben_chain's shift=1 control, 6.6-20.5.
 CACHE_ULPS = 4
 
 

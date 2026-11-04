@@ -69,8 +69,8 @@ that must FIRE, so a pass means something.
                                                        | a twin pair at another LR is flagged; a budget one
                                                          epoch past the peak fails; the 3-epoch warmup and a
                                                          cosine decay are caught
-  X15 eval_ben's KV-cache tolerance (2026-11-04): the fp16 / bf16 / fp32 rounding steps; one fp16 step at
-      logits of 64-128 (0.0625 > CACHE_TOL's 0.05) is kept, as are 4 (CACHE_ULPS) and a difference within
+  X15 eval_ben's KV-cache tolerance (2026-11-04): the fp16 / bf16 / fp32 rounding steps; two fp16 steps at
+      logits of 32-64 (0.0625 > CACHE_TOL's 0.05) are kept, as are 4 (CACHE_ULPS) and a difference within
       CACHE_TOL; on a tiny CPU Llama cached = uncached | 5 steps, a dict without the step count, NaN, and a
                                                          cache off by a logit or NaN are refused
 
@@ -972,12 +972,13 @@ def x15():
              "fp16 at 64": (rs(64.0, torch.float16), 2 ** -4), "bf16 at 40": (rs(40.0, torch.bfloat16), 2 ** -2),
              "fp32 at 1": (rs(1.0, torch.float32), 2 ** -23), "fp16 at 0": (rs(0.0, torch.float16), 2 ** -24)}
     ok = all(a == b for a, b in steps.values())
-    # one fp16 step at 64-128 is 0.0625 > 0.05: the absolute rule alone refused it (the old behaviour, no ulp key)
+    # the A100's 0.0625 on four 50-epoch LoRA checkpoints: 2 fp16 steps at |logit| 32-64, > 0.05, so the
+    # absolute rule alone refused it (the old behaviour: a dict without the step count)
     tol = E.CACHE_TOL["fp16"]
-    keep = {"1 step at 64-128": {"max_abs_logit_diff": 0.0625, "max_ulp_diff": 1.0},
-            "4 steps at 64-128": {"max_abs_logit_diff": 0.25, "max_ulp_diff": 4.0},
+    keep = {"2 steps at 32-64": {"max_abs_logit_diff": 0.0625, "max_ulp_diff": 2.0},
+            "4 steps at 32-64": {"max_abs_logit_diff": 0.125, "max_ulp_diff": 4.0},
             "0.04 = 5 steps (within tol)": {"max_abs_logit_diff": 0.04, "max_ulp_diff": 5.0}}
-    refuse = {"5 steps at 64-128": {"max_abs_logit_diff": 0.3125, "max_ulp_diff": 5.0},
+    refuse = {"5 steps at 32-64": {"max_abs_logit_diff": 0.15625, "max_ulp_diff": 5.0},
               "0.0625, no ulp key": {"max_abs_logit_diff": 0.0625},
               "NaN difference": {"max_abs_logit_diff": float("nan"), "max_ulp_diff": float("nan")},
               "0.0625, NaN steps": {"max_abs_logit_diff": 0.0625, "max_ulp_diff": float("nan")}}

@@ -42,7 +42,8 @@ def refusal(cc, tol, res=None):
     would otherwise pass the cache check and write NaN marginals (T360 is decoded at fp16, since a
     trained T360's logits reach 32-64, where one bf16 rounding step, 0.25, exceeds bf16's tolerance).
     A difference above tol is still kept if it is within E.CACHE_ULPS rounding steps at the largest
-    logit's magnitude (2026-11-04: a 50-epoch LoRA's logits reach 64-128, where fp16's step is 0.0625).
+    logit's magnitude (2026-11-04: on the A100 four 50-epoch LoRA checkpoints differed by 0.0625, two
+    fp16 steps at their logits' ~40).
     """
     d = cc["max_abs_logit_diff"]
     if not np.isfinite(d):
