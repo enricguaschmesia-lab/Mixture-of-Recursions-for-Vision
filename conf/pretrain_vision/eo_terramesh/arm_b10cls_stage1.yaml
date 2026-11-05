@@ -1,7 +1,7 @@
 # @package _global_
 #
 # ARM B10cLS, STAGE 1 — the shuffled-SmolLM control's embedding warm-up.  LLM init, 2026-10-28
-# (docs/notes/smollm_init_2026-10-28.md).
+# (docs/notes/pretraining/smollm_init_2026-10-28.md).
 #
 # ┌── THE DIFF FROM B10cL STAGE 1 (arm_b10cl_stage1), IN FULL ──────────┐
 # │   pretrain_init.conversion    .../smollm_shuffled_body              │

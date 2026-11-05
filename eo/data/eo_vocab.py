@@ -1,7 +1,7 @@
 # eo/data/eo_vocab.py
 """The unified vocabulary for the TerraMesh EO modalities.
 
-DESIGN: docs/notes/vocabulary_design.md (D2.2, decided 2026-09-20). That note
+DESIGN: docs/notes/tokens/vocabulary_design.md (D2.2, decided 2026-09-20). That note
 carries the evidence and the rejected alternatives; this file carries the
 layout. Where they disagree, the note is the specification and this file is the
 bug.
@@ -271,7 +271,7 @@ def assert_artifact_fits(root_dir, modalities: Optional[List[str]] = None) -> Di
                 f"so nothing would fail until such a sample appears -- and then it "
                 f"would land on a BO/EO marker and corrupt silently rather than raise.\n"
                 f"  Widen the slot in eo/data/eo_vocab.py and update "
-                f"docs/notes/vocabulary_design.md."
+                f"docs/notes/tokens/vocabulary_design.md."
             )
 
         recorded = int(recorded)
@@ -284,6 +284,6 @@ def assert_artifact_fits(root_dir, modalities: Optional[List[str]] = None) -> Di
                 f"outside this modality's slot -- and the ids immediately above it are "
                 f"BO/EO markers, so this does NOT raise at training time, it silently "
                 f"corrupts. Widen the slot in eo/data/eo_vocab.py and update "
-                f"docs/notes/vocabulary_design.md, or re-check the artifact."
+                f"docs/notes/tokens/vocabulary_design.md, or re-check the artifact."
             )
     return seen

@@ -7,7 +7,7 @@ the EO vocabulary. So SmolLM-135M, a LLaMA-architecture next-token predictor tra
 English text and code (SmolLM-Corpus, 600B tokens), is the LLM whose body fits B10c with
 nothing reshaped. Every body tensor of 29 of its 30 layers has B10c's name and shape.
 
-What carries over (2026-10-28, docs/notes/smollm_init_2026-10-28.md):
+What carries over (2026-10-28, docs/notes/pretraining/smollm_init_2026-10-28.md):
   * 29 of the 30 layers, and the final norm, bit for bit (stored fp32, values bf16-exact).
     One layer must go. It is the one whose removal costs SmolLM the least next-token loss
     on English text (the ShortGPT / Gromov et al. 2024 criterion, measured 2026-10-28):
@@ -40,7 +40,7 @@ SMOLLM_REVISION = "1d461723eec654e65efdc40cf49301c89c0c92f4"
 SMOLLM_WEIGHTS_SHA256 = "c7a387d6fe81ca6dd304aeb809bda3932ff1bbef3ca41c9484502f2f448dc093"
 SOURCE_LAYERS = 30
 #: The cheapest single layer to remove, by SmolLM's next-token loss on English text
-#: (eo/experiments/smollm_layer_drop.py, 2026-10-28). On 16,384 tokens of prose, from 3.348 nats
+#: (eo/experiments/pretrained_init/smollm_layer_drop.py, 2026-10-28). On 16,384 tokens of prose, from 3.348 nats
 #: with all 30 layers: layer 5 +0.060 (the least), layers 4/6/8/10 +0.08-0.09, the last layer
 #: (29) +1.45, layer 11 +1.58, layer 0 +7.2. On 4,096 tokens of LICENSE + README: layer 5
 #: +0.165, second to layer 15's +0.156; the last layer +1.33.

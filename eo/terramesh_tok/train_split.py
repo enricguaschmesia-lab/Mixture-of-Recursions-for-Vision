@@ -8,10 +8,10 @@ re-tokenizes val shards through this path and compares with the stored val token
 
 Three differences from val, each measured first (worklog 2026-10-25):
   * NO S2 offset correction. clean.has_offset labels 22.5% of train rows, but those scenes are
-    stored without the offset (eo/experiments/s2_offset_train_check.py). Every SCAN_EVERY-th S2
+    stored without the offset (eo/experiments/s2_offset/s2_offset_train_check.py). Every SCAN_EVERY-th S2
     scene is scanned here, so the whole split is checked rather than 3 shards (consolidate's C3).
   * NDVI is computed from the S2L2A bands (clean.ndvi_from_s2: bit-exact against TerraMesh's
-    stored NDVI on 10,000/10,000 train rows, eo/experiments/ndvi_train_check.py), so the NDVI
+    stored NDVI on 10,000/10,000 train rows, eo/experiments/s2_offset/ndvi_train_check.py), so the NDVI
     tars are never downloaded.
   * prepare() runs on the GPU. The encode is GPU-bound at batch 32 and the CPU prepare cost ~25%
     more on the workstation; the inputs are bit-identical (contiguous NCHW float32, same ops).

@@ -1,5 +1,7 @@
 # Mixture-of-Recursions for Vision
 
+> **This fork** adapts the model to Earth observation: next-token decoders over TerraMind's tokens on the TerraMesh dataset. Everything specific to it is under [`eo/`](eo/README.md); the rest is the upstream project, below.
+
 Adapting [Mixture-of-Recursions](https://arxiv.org/abs/2507.10524) (MoR, NeurIPS 2025) — a decoder-only transformer with per-token adaptive recursion depth — to vision and multimodal image generation on [CLEVR](https://cs.stanford.edu/people/jcjohns/clevr/).
 
 Course project for EPFL CS-503 (Visual Intelligence). Built on top of the [original MoR codebase](https://github.com/raymin0223/mixture_of_recursions).

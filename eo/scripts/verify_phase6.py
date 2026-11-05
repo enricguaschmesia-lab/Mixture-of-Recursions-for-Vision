@@ -48,13 +48,13 @@ that must FIRE, so a pass means something.
                                                        | b10_lora_l11b is flagged
       d  plumbing on the A100 (ben_chain cls): the real-block chain prompt reproduces the L10 run's
          eval_ben S1+S2 outputs                        | another patch's S2 does not
-  X12 BEN with T360 and B10c (2026-11-02, notes/ben_t360_2026-11-02.md):
+  X12 BEN with T360 and B10c (2026-11-02, notes/downstream/ben_t360_2026-11-02.md):
       each t360_* overlay differs from its b10_* twin in exactly t360_base's keys (T360's geometry,
       token_set clean, bf16), with the geometry of arm_t360_vanilla; b10c_lora differs from b10_lora
       in exactly multimodal.token_set                  | t360_full against b10_lora, and b10c_lora
                                                          against b10_full, are flagged
       t360_full_lr3e5 differs from t360_full in exactly learning_rate (3e-5) | against t360_lora it is flagged
-  X13 T360 on BEN for 50 epochs (2026-11-03, notes/ben_t360_budget_2026-11-03.md):
+  X13 T360 on BEN for 50 epochs (2026-11-03, notes/downstream/ben_t360_budget_2026-11-03.md):
       t360_{lora,full}_e50 differ from their 3-epoch twins in exactly budget_e50's six keys; the LR overlays
       from their e50 base in exactly learning_rate, and t360_full_e50_lr3e5 from t360_full_lr3e5 in exactly
       the budget keys; the budget is 50 x ceil(31,166/64) steps, warmup and decay int(5%) and int(20%) as in
@@ -62,7 +62,7 @@ that must FIRE, so a pass means something.
       step 0, the peak from the warmup's end to the decay's start, and falls linearly to ~0
                                                        | t360_lora_e50 against t360_full is flagged; a save
                                                          interval of 1,000 fails the budget check
-  X14 Stage 2 of the 50-epoch plan (2026-11-04, notes/ben_t360_budget_2026-11-03.md §5), the overlays in STAGE2:
+  X14 Stage 2 of the 50-epoch plan (2026-11-04, notes/downstream/ben_t360_budget_2026-11-03.md §5), the overlays in STAGE2:
       each differs from its 3-epoch twin in exactly the four budget keys (steps, stop, warmup, decay); its budget
       is N x ceil(31,166/64) steps, N the epoch of its e50 run's best val checkpoint (read from the local
       reports), warmup and decay int(5%) and int(20%), a checkpoint every epoch; HF's WSD schedule keeps the shape
@@ -888,7 +888,7 @@ def x13():
 
 
 # ---------------------------------------------------------------- X14
-# Stage 2 of the 50-epoch plan (notes/ben_t360_budget_2026-11-03.md §5): overlay -> (its 3-epoch twin, the e50
+# Stage 2 of the 50-epoch plan (notes/downstream/ben_t360_budget_2026-11-03.md §5): overlay -> (its 3-epoch twin, the e50
 # run whose val peak sets its budget, the keys beyond the budget it may change)
 STAGE2 = {"t360_full_e6": ("t360_full", "t360_full_e50", []),
           "t360_full_e10_lr3e5": ("t360_full_lr3e5", "t360_full_e50_lr3e5", []),

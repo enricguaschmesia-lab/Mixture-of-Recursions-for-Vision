@@ -4,7 +4,7 @@ SINGLE SOURCE OF TRUTH. Step 4 (batch tokenization) and Phase 5 (routing
 analysis) must both import from here rather than re-deriving any of it.
 
 Every constant below was established empirically in Phase 1 Step 3; see
-STEP3_PLAN.md sections 1.1-1.5 and notes/tokenizer_bringup.md for the evidence.
+STEP3_PLAN.md sections 1.1-1.5 and notes/tokens/tokenizer_bringup.md for the evidence.
 The one exception is CROP, which is a supervisor decision rather than a
 measurement -- see its comment below.
 """

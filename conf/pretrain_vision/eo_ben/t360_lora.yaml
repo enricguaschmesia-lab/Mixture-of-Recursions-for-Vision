@@ -1,6 +1,6 @@
 # @package _global_
 #
-# T360 on BEN (2026-11-02, docs/notes/ben_t360_2026-11-02.md): b10_lora's recipe on T360. Differs from
+# T360 on BEN (2026-11-02, docs/notes/downstream/ben_t360_2026-11-02.md): b10_lora's recipe on T360. Differs from
 # b10_lora in exactly t360_base's keys (gate X12).
 #   launch (RCP): /data/enric/rcp_p6/chain_ben2.sh t360lora t360_lora t360_ext_ckpt17441 bf16 eo_terramesh/arm_t360_vanilla
 defaults:

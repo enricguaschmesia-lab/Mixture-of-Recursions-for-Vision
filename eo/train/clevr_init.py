@@ -7,7 +7,7 @@ revision `a92e8b2a`: SmolLM-135M at 29 layers over the 242,271-id CLEVR vocabula
 19,500-step WSD schedule with the LR still on its 3e-3 plateau. Its transformer body has
 exactly B10c's shape (102,663,360 parameters); only the vocabulary differs.
 
-What carries over (decided 2026-10-27, docs/notes/clevr_init_2026-10-27.md):
+What carries over (decided 2026-10-27, docs/notes/pretraining/clevr_init_2026-10-27.md):
   * the BODY, i.e. the 29 layers and the final norm (262 tensors), copied bit for bit.
     The checkpoint is bf16 and B10c's parameters are fp32, so the cast is exact.
   * NOT the embedding (tied to `lm_head`). CLEVR row k is Cosmos DI16x16 code k, and EO row

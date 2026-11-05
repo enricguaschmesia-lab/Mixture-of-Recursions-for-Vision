@@ -43,7 +43,7 @@ wiring, not a hypothesis: if one fails, debug before reading anything else.
      the full row lists, over 34 cells per arm, it would fire on effects that
      cannot matter. That reading, and its Bonferroni variant (alpha 0.05/34), are
      still printed: reported only, and a cell above 0 is a finding, not a bug.
-     δ's control is eo/experiments/s12_wrong_scene.py: what a wrong-scene source
+     δ's control is eo/experiments/generation/s12_wrong_scene.py: what a wrong-scene source
      (a real wiring bug) costs against ∅.
 Exit status 1 if a check fails (after every output is written).
 

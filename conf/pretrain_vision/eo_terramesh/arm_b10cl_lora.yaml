@@ -1,7 +1,7 @@
 # @package _global_
 #
 # ARM B10cL-LoRA — B10cL's stage 2 with LoRA instead of a full fine-tune.  LLM init,
-# 2026-10-29 (docs/notes/smollm_lora_2026-10-29.md).
+# 2026-10-29 (docs/notes/pretraining/smollm_lora_2026-10-29.md).
 #
 # ┌── THE DIFF FROM B10cL (arm_b10cl_vanilla), IN FULL ─────────────────┐
 # │   pretrain_init.lora     absent (null)    {r: 16, alpha: 32}        │

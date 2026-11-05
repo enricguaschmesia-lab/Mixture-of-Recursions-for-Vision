@@ -2,7 +2,7 @@
 #
 # ARM B10cV, STAGE 1 — the embedding warm-up: the CLEVR body FROZEN, only the fresh
 # 87,556 x 576 table trains (50,432,256 parameters).  CLEVR init, 2026-10-27
-# (docs/notes/clevr_init_2026-10-27.md).
+# (docs/notes/pretraining/clevr_init_2026-10-27.md).
 #
 # ┌── THE DIFF FROM B10cV (arm_b10cv_vanilla), IN FULL ─────────────────┐
 # │                                   B10cV (stage 2)   this (stage 1)  │

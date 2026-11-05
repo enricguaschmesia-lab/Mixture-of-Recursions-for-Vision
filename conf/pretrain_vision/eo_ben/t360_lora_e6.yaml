@@ -1,6 +1,6 @@
 # @package _global_
 #
-# T360 LoRA on BEN for 6 epochs (2026-11-04, docs/notes/ben_t360_budget_2026-11-03.md §5, stage 2):
+# T360 LoRA on BEN for 6 epochs (2026-11-04, docs/notes/downstream/ben_t360_budget_2026-11-03.md §5, stage 2):
 # t360_lora with budget_e6's keys, the epoch where t360_lora_e50 peaked on val. Differs from t360_lora in
 # exactly those keys (gate X14).
 #   launch (RCP): VAL_EP="1 2 3 4 5 6" FORGET_EP=6 /data/enric/rcp_p6/chain_ben5.sh t360lorae6 t360_lora_e6 t360_ext_ckpt17441 fp16 eo_terramesh/arm_t360_vanilla

@@ -1,7 +1,7 @@
 # @package _global_
 #
 # ARM B10cLS — B10cL's CONTROL: the SmolLM body with each tensor's entries shuffled, STAGE 2.
-# LLM init, 2026-10-28 (docs/notes/smollm_init_2026-10-28.md).
+# LLM init, 2026-10-28 (docs/notes/pretraining/smollm_init_2026-10-28.md).
 #
 # ┌── THE DIFF FROM B10cL (arm_b10cl_vanilla), IN FULL ─────────────────┐
 # │   pretrain_init.conversion    .../smollm_shuffled_body              │

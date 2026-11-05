@@ -6,7 +6,7 @@ WHY THIS EXISTS. gate_equivalence.py's criterion 3 asserts that the production
 batched path (batch 32, tail-padded) reproduces the SINGLE-SAMPLE path to within
 the measured FSQ bin-flip rate. That needs a single-sample reference to compare
 against. Step 3 produced one as a side effect of its round-trip experiment
-(eo/experiments/s35_roundtrip.py -> /data/enric/figures/step3/tokens.json), at
+(eo/experiments/tokenizer_contract/s35_roundtrip.py -> /data/enric/figures/step3/tokens.json), at
 the 256 crop that was in force then.
 
 Those reference tokens are NOT reusable at 224. Changing the crop changes the

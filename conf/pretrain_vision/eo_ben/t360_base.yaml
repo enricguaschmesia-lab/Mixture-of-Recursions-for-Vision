@@ -1,6 +1,6 @@
 # @package _global_
 #
-# BEN with T360 (2026-11-02, docs/notes/ben_t360_2026-11-02.md): what changes when B10's BEN recipe
+# BEN with T360 (2026-11-02, docs/notes/downstream/ben_t360_2026-11-02.md): what changes when B10's BEN recipe
 # (ben_b10 and its regime overlays) runs on T360 instead. A fragment, not a config: each t360_* overlay
 # lists it after its b10_* twin, so the twin's data, roles, budget, schedule and regime stay as they are.
 #   * T360's geometry (arm_t360_vanilla: the SmolLM-360M shape); every other model key is B10's already.

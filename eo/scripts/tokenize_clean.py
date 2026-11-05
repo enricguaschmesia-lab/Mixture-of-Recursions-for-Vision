@@ -254,7 +254,7 @@ def roundtrip(args) -> int:
     tolerance; the control (new tokens vs the stored image) must be clearly worse."""
     import torch
     from terramesh_tok import tokenizers as T
-    sys.path.insert(0, str(REPO / "eo/experiments"))
+    sys.path.insert(0, str(REPO / "eo/experiments/tokenizer_contract"))
     import clamp_test as CT
     if torch.cuda.device_count() != 1 or "TITAN X" not in torch.cuda.get_device_name(0):
         raise SystemExit("expected exactly the GTX Titan X visible")

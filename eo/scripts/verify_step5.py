@@ -96,7 +96,7 @@ print("=== 5.4 stratified spot reconstruction ===")
 
 def scene_z(mod, arr):
     """Scalar |z| of a scene: z-score of its spatial mean, matching the
-    metric established in eo/experiments/s36d_clip.py."""
+    metric established in eo/experiments/tokenizer_contract/s36d_clip.py."""
     o, c = C.CROP_OFF, C.CROP
     a = arr[0] if arr.ndim == 4 else arr
     ref = a[:, o:o + c, o:o + c].astype(np.float32)

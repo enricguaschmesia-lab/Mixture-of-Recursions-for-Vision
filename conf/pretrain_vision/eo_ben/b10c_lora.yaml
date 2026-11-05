@@ -1,6 +1,6 @@
 # @package _global_
 #
-# B10c on BEN (2026-11-02, docs/notes/ben_t360_2026-11-02.md): b10_lora's recipe on B10c, the small model
+# B10c on BEN (2026-11-02, docs/notes/downstream/ben_t360_2026-11-02.md): b10_lora's recipe on B10c, the small model
 # trained on the same offset-free tokens as T360. Differs from b10_lora in exactly multimodal.token_set,
 # as arm_b10c_vanilla differs from arm_b10_vanilla (gate X12). BEN's base was B10 (original tokens), so
 # B10c LoRA - B10 LoRA is the token set alone, and T360 LoRA - B10c LoRA is data and size alone.

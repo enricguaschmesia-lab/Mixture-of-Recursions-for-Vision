@@ -1,6 +1,6 @@
 # @package _global_
 #
-# 50 epochs instead of 3 (2026-11-03, docs/notes/ben_t360_budget_2026-11-03.md): SoftCon's fine-tune budget
+# 50 epochs instead of 3 (2026-11-03, docs/notes/downstream/ben_t360_budget_2026-11-03.md): SoftCon's fine-tune budget
 # (arXiv 2405.20462). A fragment, not a config: each *_e50 overlay lists it after its 3-epoch twin, so the
 # twin's data, roles, batch, regime and optimizer stay as they are and only the budget changes.
 #   * 50 x 487 = 24,350 steps (ceil(31,166 / 64) = 487 per epoch).

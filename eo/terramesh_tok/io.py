@@ -4,7 +4,7 @@ Each val/<MOD>/<shard>.tar holds one <stem>.zarr.zip per sample. The array is
 a single blosc/zstd chunk with no filters, so it is decoded directly rather
 than through zarr+fsspec -- verified byte-identical to
 zarr.open_consolidated(..., zarr_format=2) on all 8 modalities, and much
-faster (see notes/tokenizer_bringup.md, Step 3.9).
+faster (see notes/tokens/tokenizer_bringup.md, Step 3.9).
 
 NOTE: IBM's own terramesh.py calls zarr.open_consolidated() WITHOUT
 zarr_format=2, which raises GroupNotFoundError under zarr 3.x. If that loader

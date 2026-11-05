@@ -1,6 +1,6 @@
 # @package _global_
 #
-# T360 full fine-tune on BEN for 50 epochs at 3e-5 (2026-11-03, docs/notes/ben_t360_budget_2026-11-03.md):
+# T360 full fine-tune on BEN for 50 epochs at 3e-5 (2026-11-03, docs/notes/downstream/ben_t360_budget_2026-11-03.md):
 # in 3 epochs, 3e-5 forgot 26x less than 1e-4 but learned BEN slowly. Differs from t360_full_e50 in exactly
 # learning_rate, and from t360_full_lr3e5 in exactly budget_e50's keys (gate X13).
 #   launch (RCP, lts4): SITE=lts4 /data/enric/rcp_p6/chain_ben4.sh t360fulle50lr3e5 t360_full_e50_lr3e5 t360_ext_ckpt17441 fp16 eo_terramesh/arm_t360_vanilla

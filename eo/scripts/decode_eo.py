@@ -78,7 +78,7 @@ VAL = pathlib.Path(os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraM
 
 #: Multilook window, in pixels, for the continuous headline metric `rmse_z_ml7`.
 #: FIXED 2026-09-24, before any arm-B number existed. Chosen on the identity
-#: controls (eo/experiments/s1_metric_test.py, 64 scenes/modality), so it is
+#: controls (eo/experiments/tokenizer_contract/s1_metric_test.py, 64 scenes/modality), so it is
 #: not blind: 5 and 7 are the conventional SAR multilook sizes and 7 sat near
 #: the best of those tried. Do not retune it once arm B has produced numbers.
 ML_WINDOW = 7
@@ -188,7 +188,7 @@ def scene_z(mod: str, arr: np.ndarray) -> float:
     """Scalar |z| of a scene, identical to verify_step5.scene_z.
 
     Restated rather than imported because verify_step5.py is a script, not a
-    module; the definition is the one established in eo/experiments/s36d_clip.py
+    module; the definition is the one established in eo/experiments/tokenizer_contract/s36d_clip.py
     and it must not drift between the two.
     """
     o, c = C.CROP_OFF, C.CROP

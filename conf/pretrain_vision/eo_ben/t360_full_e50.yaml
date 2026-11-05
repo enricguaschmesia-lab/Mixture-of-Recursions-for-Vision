@@ -1,6 +1,6 @@
 # @package _global_
 #
-# T360 full fine-tune on BEN for 50 epochs (2026-11-03, docs/notes/ben_t360_budget_2026-11-03.md): t360_full
+# T360 full fine-tune on BEN for 50 epochs (2026-11-03, docs/notes/downstream/ben_t360_budget_2026-11-03.md): t360_full
 # with budget_e50's keys. Differs from t360_full in exactly those keys (gate X13).
 #   launch (RCP): /data/enric/rcp_p6/chain_ben4.sh t360fulle50 t360_full_e50 t360_ext_ckpt17441 fp16 eo_terramesh/arm_t360_vanilla
 defaults:

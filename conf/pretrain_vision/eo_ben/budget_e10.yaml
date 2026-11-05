@@ -1,6 +1,6 @@
 # @package _global_
 #
-# 10 epochs (2026-11-04, docs/notes/ben_t360_budget_2026-11-03.md §5, stage 2): for a run whose 50-epoch
+# 10 epochs (2026-11-04, docs/notes/downstream/ben_t360_budget_2026-11-03.md §5, stage 2): for a run whose 50-epoch
 # version peaked on val at epoch 10 and then fell, while its learning rate stayed at the peak until epoch 40.
 # This budget ends at the peak, so the decay lands there. A fragment like budget_e50: each *_e10 overlay
 # lists it after its 3-epoch twin, so only the budget changes.
