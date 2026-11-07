@@ -13,7 +13,7 @@ not a pipeline: nothing under `eo/` depends on them, except that `scripts/tokeni
 | `pastis/` | PASTIS-R inspection | `mor` |
 | `pretrained_init/` | Pretrained-body inits (CLEVR, SmolLM): layer drop, comparisons, slides | `.venv` |
 | `routing/` | Depth sweeps with random and learned routers: reports and numbers | `.venv` |
-| `temporal/` | The temporal stage's checks: S1 alignment on train (`s1_dates`, `mor`; `s1_functional`) and what T360 does with dates it never saw together (`t360_context`, `t360_lattice`, `t360_best_layouts`) | `.venv`, `s1_dates` in `mor` |
+| `temporal/` | The temporal stage's checks: S1 alignment on train (`s1_dates`, `mor`; `s1_functional`) and what T360 does with dates it never saw together (`t360_context`, `t360_lattice`, `t360_best_layouts`), why DEM differs between a location's dates on train (`dem_dates`), and whether a row's date is its S2 image's (`s2_dates`, `mor`) | `.venv`, `s1_dates` and `s2_dates` in `mor` |
 | `continuous_io/` | The continuous input/output pilot (`cio_*`): data, training, decoding, analysis, slides | `.venv`, `mor` to decode |
 | `figures/` | `midterm_figures.py` (the house plotting style, imported by other slide scripts) and `t360_slides.py` | `.venv` |
 

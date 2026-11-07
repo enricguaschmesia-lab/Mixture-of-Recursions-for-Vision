@@ -121,7 +121,7 @@ def load_row_table(root_dir, metadata_path=None):
     meta_path = Path(metadata_path or DEFAULT_METADATA_PATH)
 
     idx = pd.read_parquet(idx_path)
-    meta = pd.read_parquet(meta_path)
+    meta = pd.read_parquet(meta_path, columns=["zarr", "sample_id", "center_lon", "center_lat"])
     meta["stem"] = meta["zarr"].str[: -len(".zarr.zip")]
 
     joined = idx.merge(

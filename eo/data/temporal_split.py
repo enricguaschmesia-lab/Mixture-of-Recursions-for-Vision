@@ -49,14 +49,21 @@ def split_path(tag: str = SPLIT_TAG) -> Path:
     return Path(__file__).resolve().parent / f"temporal_rows_{tag}.json"
 
 
-def location_table(root_dir, metadata_path=None):
-    """One row per location, four `row_<t>` columns in chronological order. Raises if a location
-    is not a complete, chronological quadruple."""
+def row_dates(root_dir, metadata_path=None):
+    """load_row_table with each row's S2 date: every row of both corpora, in row order."""
     import pandas as pd
 
     meta = pd.read_parquet(metadata_path or DEFAULT_METADATA_PATH, columns=["zarr", "S2_time"])
     meta["stem"] = meta["zarr"].str[: -len(".zarr.zip")]
-    table = load_row_table(root_dir, metadata_path).merge(meta[["stem", "S2_time"]], on="stem", validate="1:1")
+    return load_row_table(root_dir, metadata_path).merge(meta[["stem", "S2_time"]], on="stem", validate="1:1")
+
+
+def location_table(root_dir, metadata_path=None, table=None):
+    """One row per location, four `row_<t>` columns in chronological order. Raises if a location
+    is not a complete, chronological quadruple. `table` is row_dates' output, if already read."""
+    import pandas as pd
+
+    table = row_dates(root_dir, metadata_path) if table is None else table
     ssl = table[table.corpus == "ssl4eos12"].copy()
     ssl["location"] = ssl.sample_id.str.rsplit("_", n=1).str[0]
     ssl["t"] = ssl.sample_id.str.rsplit("_", n=1).str[1].astype(int)
