@@ -19,8 +19,10 @@ start in. Four of them stand in for [BO_Date Y D EO_Date]. On the sweep's two pa
 PROFILE: CE block by block along one whole sequence, the loss a run at full length would start from:
 [Coords][DEM] then four dates chronologically, S2L2A, S1GRD, NDVI, with LULC at date 0. No date tokens.
 
-Read: the rise over `adjacent` as a share of the gain the source gives over no context, against the
-same 10% as Step 0's sweep.
+Read: the rise over `adjacent` as a share of the gain the source gives over no context. Step 0's 10%
+chose lattice over sequential, and says nothing about the lattice's own cost, which stays above it
+here with untrained rows. Only the cross-date pair can occur in a real sequence: a date block sits
+between dates, never between two modalities of one date.
 
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$(.venv/bin/python -m eo.train.gpu titanx) \\
       .venv/bin/python -X faulthandler -u eo/experiments/temporal/t360_lattice.py

@@ -6,11 +6,15 @@ TerraMesh's `ssl4eos12` corpus stores one location's four dates as four rows, li
 2,176 locations once:
 
     dev    544 locations: every choice the temporal stage makes is read here
-    test   the other 1,632: touched once, on the frozen base
+    test   the other 1,632, of which 1,578 stay unread until the frozen base is scored once
 
 Both are held out from every T360-family model, which never saw a val row. The split exists
 because the pilot picks settings: scored on the same locations, the final numbers would be
 selected on themselves.
+
+⚠ THE OTHER 54. eval_rows_v1.json holds 96 of these locations, 42 in dev and 54 in test, and they
+are the only S1GRD rows in it. Forgetting is read on those rows while settings are chosen, so the 54
+are not unread on S1GRD. `unread_test` drops them; the file itself stays as drawn.
 
 WHY WHOLE SPATIAL GROUPS. Locations are drawn around cities, so some lie within a tile of each
 other. Locations closer than 5 km (eval_split.SPLIT_RADIUS_KM) stay on one side, and the same
@@ -32,7 +36,8 @@ from typing import Dict, Optional, Sequence
 
 import numpy as np
 
-from eo.data.eval_split import DEFAULT_METADATA_PATH, SPLIT_RADIUS_KM, _sha256, load_row_table, spatial_groups
+from eo.data.eval_split import (DEFAULT_METADATA_PATH, SPLIT_RADIUS_KM, _sha256, load_eval_rows, load_row_table,
+                                spatial_groups)
 
 SPLIT_TAG = "v1"
 SPLIT_SEED = 20261105          # fixed; the split is drawn exactly once
@@ -119,6 +124,14 @@ def build_split(root_dir, metadata_path=None, seed: int = SPLIT_SEED, tag: str =
                    "val_metadata.parquet": _sha256(Path(metadata_path or DEFAULT_METADATA_PATH))},
         "dev": side(is_dev), "test": side(~is_dev),
     }
+
+
+def unread_test(doc: Dict, root_dir, metadata_path=None) -> Dict:
+    """The test side without the locations whose rows are in eval_rows_v1.json (module docstring)."""
+    held = set(int(r) for r in load_eval_rows(root_dir=root_dir, metadata_path=metadata_path))
+    test = doc["test"]
+    keep = [i for i, rows in enumerate(test["rows"]) if not held.intersection(rows)]
+    return {k: [test[k][i] for i in keep] for k in ("locations", "groups", "rows")}
 
 
 def load_temporal_split(root_dir=None, tag: str = SPLIT_TAG, path=None, metadata_path=None) -> Dict:

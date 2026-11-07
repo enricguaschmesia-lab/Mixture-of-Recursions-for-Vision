@@ -83,7 +83,7 @@ N_LOC, SEED, DRAWS = 256, 20261105, 10_000
 SWEEP = tuple(range(22))                      # d = 0..21: T360 trained at 0 and 5
 HALF_BLOCK = 99
 LONG_K = tuple(range(1, 15))                  # 198 k, up to 2,772
-LENGTH_K = (1, 2, 3, 4, 5, 6, 8, 11)          # context blocks kept, nearest first
+LENGTH_K = (1, 2, 3, 4, 5, 6, 7, 8, 11)       # context blocks kept, nearest first
 READ_FROM = 3                                 # the sweep is read over d >= 3 ...
 SHARE_MAX = 0.10                              # ... and fixed here, before it runs
 BLOCK = TOKENS_PER_SAMPLE + 2                 # 198: BO, 196 tokens, EO
@@ -229,7 +229,7 @@ def main() -> int:
         raise SystemExit(f"CUDA sees {gpu!r}, expected {args.expect_gpu!r}")
     model, cfg = G.build_model(args.arm_config, args.checkpoint)
     if (cfg.get("multimodal") or {}).get("token_set") != "clean":
-        raise SystemExit("all four dates are pre-2022: the cleaned tokens only (plan, data caveats)")
+        raise SystemExit("T360 is scored on the cleaned tokens, as its stored reference is")
     if next(model.parameters()).dtype != torch.float32:
         raise SystemExit("fp32 parameters expected")
     ds, _ = TF.eval_loader(cfg, num_workers=0)

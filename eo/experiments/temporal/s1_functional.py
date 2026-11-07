@@ -8,9 +8,19 @@ its date, teacher-forced CE(S2 at t | S1 at t) is below CE(S2 at t | S1 at anoth
 dates. B10c trained on val alone: it has seen no train row, and not the 96 val locations of
 eval_rows_v1, which are the positive control.
 
-Train side: pairs of rows of one location that both sit in the 24 ssl4eos12 token shards kept on the
-workstation (train_tok/). Control column: S1 from another location at the same date index, which
-scales the date effect against what S1 is worth at all. Bootstrap over locations.
+VAL: every (S2 at t, S1 at o) on the 96 held-out locations, where the dates are known to be right.
+This is the positive control, and the one place S1 can be moved knowingly. CONTROL, which must fire:
+if each row's S1 sat one date along, the same test would compare S1(t + 1) with S1(t + 3), and the
+effect must go, so the paired difference from the true contrast must stay above 0. The first
+control swapped two rows of train, which only negated its own number and could not fail.
+
+TRAIN: pairs of rows of one location that both sit in the 24 ssl4eos12 token shards kept on the
+workstation (train_tok/). The effect grows with the date gap, and the two sides mix gaps differently
+(val's other date is always half a year), so both are reported by date step.
+
+Other place: S1 of the next location, which scales the date effect against what S1 is worth at all.
+On val it keeps the date index. On train it does not (under half of the pairs match), so that
+column mixes place and season. Bootstrap over 5 km spatial groups; per-pair CE stays in --out's npz.
 
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$(.venv/bin/python -m eo.train.gpu titanx) \\
       .venv/bin/python -X faulthandler -u eo/experiments/temporal/s1_functional.py
@@ -32,8 +42,8 @@ import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 from eo.data.eo_vocab import get_modality  # noqa: E402
-from eo.data.eval_split import load_eval_rows  # noqa: E402
-from eo.data.temporal_split import location_table  # noqa: E402
+from eo.data.eval_split import SPLIT_RADIUS_KM, load_eval_rows, spatial_groups  # noqa: E402
+from eo.data.temporal_split import load_temporal_split, location_table  # noqa: E402
 from eo.terramesh_tok.contract import TOKENS_PER_SAMPLE, tok_dir_name  # noqa: E402
 
 CKPT = "/data/enric/runs/pretrain/phase3/vanilla10c_20261011_172253/checkpoint-3300"
@@ -42,6 +52,7 @@ TRAIN = Path("/data/enric/data/TerraMesh/train_tok")
 META = Path("/data/enric/data/TerraMesh/train_meta/train_metadata.parquet")
 VAL = "/data/enric/data/TerraMesh/val"
 OUT = Path("/data/enric/reports/temporal/s1_functional.json")
+PAIRS = OUT.with_name("s1_functional_pairs.npz")
 N_TRAIN, SEED, DRAWS, BATCH = 500, 20261105, 10_000, 16
 
 
@@ -100,27 +111,19 @@ def boot(v: np.ndarray, unit: np.ndarray, seed: int = 0) -> dict:
     return {"mean": float(v.mean()), "lo": float(lo), "hi": float(hi)}
 
 
-def score(model, tok, triples, name: str) -> dict:
-    """triples: (location id, S2 row, S1 row at t, S1 row at another date, S1 row at another place)."""
-    tgt = [chunk(tok.body("S2L2A", r[1]), "S2L2A") for r in triples]
-    src = {k: [chunk(tok.body("S1GRD", r[i]), "S1GRD") for r in triples]
-           for k, i in (("same_date", 2), ("other_date", 3), ("other_place", 4))}
-    ce = {k: target_ce(model, [torch.cat([a, b]) for a, b in zip(v, tgt)]) for k, v in src.items()}
-    unit = pd.factorize(np.asarray([str(r[0]) for r in triples]))[0]
-    d = ce["other_date"] - ce["same_date"]
-    res = {"pairs": len(triples), "locations": int(len(np.unique(unit))),
-           "ce": {k: boot(v, unit) for k, v in ce.items()},
-           "other_date_minus_same_date": boot(d, unit),
-           "other_place_minus_same_date": boot(ce["other_place"] - ce["same_date"], unit),
-           "share_of_pairs_same_date_better": float((d > 0).mean())}
-    print(name, json.dumps(res, indent=1), flush=True)
-    return res
+def ce_of(model, tok, s1_rows, s2_rows) -> np.ndarray:
+    """CE of S2L2A given one S1GRD block, per pair, in the order given."""
+    tgt = [chunk(tok.body("S2L2A", int(r)), "S2L2A") for r in s2_rows]
+    src = [chunk(tok.body("S1GRD", int(r)), "S1GRD") for r in s1_rows]
+    return target_ce(model, [torch.cat([a, b]) for a, b in zip(src, tgt)])
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--n", type=int, default=N_TRAIN)
+    ap.add_argument("--n", type=int, default=N_TRAIN, help="train locations (smoke tests only)")
+    ap.add_argument("--n-val", type=int, default=96, help="val locations (smoke tests only)")
     ap.add_argument("--checkpoint", default=CKPT)
+    ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args()
 
     from eo.eval import teacher_forced as TF
@@ -130,28 +133,52 @@ def main() -> int:
     model, cfg = G.build_model(ARM, args.checkpoint)
     ds, _ = TF.eval_loader(cfg, num_workers=0)
     report = {"model": args.checkpoint, "arm": ARM, "precision": "fp32", "layout": "[S1GRD][S2L2A], sequential",
-              "gpu": torch.cuda.get_device_name(0)}
+              "gpu": torch.cuda.get_device_name(0),
+              "bootstrap": {"draws": DRAWS, "unit": f"{SPLIT_RADIUS_KM} km spatial group"}}
 
-    # Positive control: val's 96 complete held-out locations, which B10c never saw.
+    # Val: the 96 complete held-out locations, which B10c never saw. All 16 (t, o) per location.
     held = set(int(r) for r in load_eval_rows(root_dir=VAL))
     loc = location_table(VAL)
-    rows = [f"row_{t}" for t in range(4)]
-    mine = loc[loc[rows].isin(held).all(axis=1)].reset_index(drop=True)
+    cols = [f"row_{t}" for t in range(4)]
+    mine = loc[loc[cols].isin(held).all(axis=1)].reset_index(drop=True)
     assert len(mine) == 96, len(mine)
-    tv = []
-    for i, r in mine.iterrows():
-        q = mine.iloc[(i + 1) % len(mine)]
-        for t in range(4):
-            tv.append((r.location, int(r[f"row_{t}"]), int(r[f"row_{t}"]), int(r[f"row_{(t + 2) % 4}"]), int(q[f"row_{t}"])))
-    report["val_held_out"] = score(model, ValTokens(ds), tv, "val")
+    mine = mine.iloc[: args.n_val]
+    doc = load_temporal_split(VAL)
+    group_of = dict(zip(doc["dev"]["locations"] + doc["test"]["locations"], doc["dev"]["groups"] + doc["test"]["groups"]))
+    grp = np.array([group_of[x] for x in mine.location])
+    R = mine[cols].values.astype(np.int64)
+    n = len(R)
+    tok = ValTokens(ds)
+    t_idx, o_idx = np.meshgrid(np.arange(4), np.arange(4), indexing="ij")
+    C = ce_of(model, tok, np.concatenate([R[i, o_idx.ravel()] for i in range(n)]),
+              np.concatenate([R[i, t_idx.ravel()] for i in range(n)])).reshape(n, 4, 4)        # C[i, t, o]
+    place = ce_of(model, tok, np.roll(R, -1, axis=0).ravel(), R.ravel()).reshape(n, 4)         # the next location's S1 at t
+
+    same = np.stack([C[:, t, t] for t in range(4)], 1).mean(1)
+    other = np.stack([C[:, t, (t + 2) % 4] for t in range(4)], 1).mean(1)
+    moved = np.stack([C[:, t, (t + 3) % 4] - C[:, t, (t + 1) % 4] for t in range(4)], 1).mean(1)
+    steps = {}
+    for s in (1, 2, 3):
+        pairs = [(t, o) for t in range(4) for o in range(4) if abs(t - o) == s]
+        steps[str(s)] = {"pairs_per_location": len(pairs),
+                         "other_minus_same": boot(np.stack([C[:, t, o] - C[:, t, t] for t, o in pairs], 1).mean(1), grp)}
+    report["val_held_out"] = {
+        "pairs": 4 * n, "locations": n, "groups": int(len(np.unique(grp))),
+        "ce": {"same_date": boot(same, grp), "other_date": boot(other, grp), "other_place": boot(place.mean(1), grp)},
+        "other_date_minus_same_date": boot(other - same, grp),
+        "other_place_minus_same_date": boot(place.mean(1) - same, grp),
+        "by_date_step": steps,
+        "control_s1_moved_one_date": boot(moved, grp),
+        "true_minus_control": boot(other - same - moved, grp)}
 
     # Train: pairs of a location's rows that are both local. t and the other date come from the pair.
     tok = TrainTokens()
-    meta = pd.read_parquet(META, columns=["zarr", "sample_id", "tar"])
+    meta = pd.read_parquet(META, columns=["zarr", "sample_id", "tar", "center_lat", "center_lon"])
     meta = meta[meta.tar.str.startswith("ssl4eos12")]
     stem = meta.zarr.str[: -len(".zarr.zip")]
     m = pd.DataFrame({"stem": stem.values, "location": meta.sample_id.str.rsplit("_", n=1).str[0].values,
-                      "t": meta.sample_id.str.rsplit("_", n=1).str[1].astype(int).values})
+                      "t": meta.sample_id.str.rsplit("_", n=1).str[1].astype(int).values,
+                      "lat": meta.center_lat.values, "lon": meta.center_lon.values})
     m = m.merge(tok.idx[["stem", "row"]], on="stem", validate="1:1")
     m = m[m.row.isin(set(tok.where))]
     n_rows = m.groupby("location").size()
@@ -161,26 +188,35 @@ def main() -> int:
     both = first.join(last, lsuffix="_a", rsuffix="_b").reset_index()
     report["train_locations_with_two_local_rows"] = int(len(both))
     report["train_shards_local"] = len(tok.shards)
-    pick = np.sort(np.random.default_rng(SEED).permutation(len(both))[: args.n])
+    pick = np.sort(np.random.default_rng(SEED).permutation(len(both))[: N_TRAIN])[: args.n]
     both = both.iloc[pick].reset_index(drop=True)
-    report["train_date_steps"] = {int(k): int(v) for k, v in (both.t_b - both.t_a).value_counts().sort_index().items()}
-    tt = []
-    for i, r in both.iterrows():
-        q = both.iloc[(i + 1) % len(both)]
-        tt.append((r.location, int(r.row_a), int(r.row_a), int(r.row_b), int(q.row_a)))
-        tt.append((r.location, int(r.row_b), int(r.row_b), int(r.row_a), int(q.row_b)))
-    report["train"] = score(model, tok, tt, "train")
+    g = spatial_groups(both.lat_a.values, both.lon_a.values, SPLIT_RADIUS_KM)
+    a, b = both.row_a.values, both.row_b.values
+    step = (both.t_b - both.t_a).values
+    same_t = np.stack([ce_of(model, tok, a, a), ce_of(model, tok, b, b)], 1)
+    other_t = np.stack([ce_of(model, tok, b, a), ce_of(model, tok, a, b)], 1)
+    place_t = np.stack([ce_of(model, tok, np.roll(a, -1), a), ce_of(model, tok, np.roll(b, -1), b)], 1)
+    d = (other_t - same_t).mean(1)
+    report["train"] = {
+        "pairs": 2 * len(both), "locations": len(both), "groups": int(len(np.unique(g))),
+        "ce": {"same_date": boot(same_t.mean(1), g), "other_date": boot(other_t.mean(1), g),
+               "other_place": boot(place_t.mean(1), g)},
+        "other_date_minus_same_date": boot(d, g),
+        "other_place_minus_same_date": boot((place_t - same_t).mean(1), g),
+        "by_date_step": {str(s): {"locations": int((step == s).sum()), "other_minus_same": boot(d[step == s], g[step == s])}
+                         for s in (1, 2, 3)}}
 
-    # The check can fail: label each pair's S1 rows the wrong way round, as a row swap would.
-    swapped = [(r[0], r[1], r[3], r[2], r[4]) for r in tt]
-    report["control_rows_swapped"] = score(model, tok, swapped, "swapped")
-
-    ok = report["val_held_out"]["other_date_minus_same_date"]["lo"] > 0 and report["train"]["other_date_minus_same_date"]["lo"] > 0
-    fired = report["control_rows_swapped"]["other_date_minus_same_date"]["hi"] < 0
+    v, tr = report["val_held_out"], report["train"]
+    ok = v["other_date_minus_same_date"]["lo"] > 0 and tr["other_date_minus_same_date"]["lo"] > 0
+    fired = v["true_minus_control"]["lo"] > 0
     report["passed"], report["control_fired"] = bool(ok), bool(fired)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(report, indent=1) + "\n")
-    print(f"wrote {OUT}: passed {ok}, control fired {fired}", flush=True)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=1) + "\n")
+    np.savez(out.with_name(PAIRS.name), val_ce=C, val_other_place=place, val_groups=grp,
+             train_same=same_t, train_other=other_t, train_other_place=place_t, train_step=step, train_groups=g)
+    print(json.dumps(report, indent=1), flush=True)
+    print(f"wrote {out}: passed {ok}, control fired {fired}", flush=True)
     return 0 if ok and fired else 1
 
 
