@@ -1,10 +1,14 @@
 #!/usr/bin/env python
-"""Extend a pretrained EO checkpoint by the 21 BEN ids, with its identity control (D6.4, `.venv`).
+"""Extend a pretrained EO checkpoint's vocabulary, with its identity control (D6.4, `.venv`).
 
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<titanv> python eo/scripts/extend_checkpoint.py \\
         --arm-config eo_terramesh/arm_b10_vanilla \\
         --checkpoint /data/enric/runs/pretrain/phase3/vanilla10_20261002_133848/checkpoint-3300 \\
         --out /data/enric/runs/pretrain/phase6/base/b10_ext_ckpt3300
+
+`--layout ben`, the default, adds BEN's 21 ids. `--layout temporal` adds those and the 87 date ids
+of eo/data/temporal_vocab.py, 108 rows in all. `--device cpu` runs without a card: the check compares
+before and after on one device, so it holds on either, and a T360 pass takes minutes.
 
 Writes the extended weights (same format convention as training: safetensors unless the
 model shares weights) plus `extension.json`, the identity artifact preflight's
@@ -32,11 +36,17 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eo.data import ben_vocab as BV  # noqa: E402
 from eo.data import eo_vocab as EV  # noqa: E402
+from eo.data import temporal_vocab as TV  # noqa: E402
 from eo.finetune import extend as X  # noqa: E402
 from eo.generate import conditional as G  # noqa: E402
 
 IDENTITY_TOL = 1e-4      # fp32 GEMM round-off is ~1e-6 at these logit scales; a moved row is O(1)
 N_ROWS_PER_CORPUS = 2    # stratified: majortom (S1RTC) AND ssl4eos12 (S1GRD) rows
+#: layout -> (vocabulary after the extension, the key extension.json keeps it under, its record)
+LAYOUTS = {"ben": (BV.TOTAL_VOCAB_SIZE, "ben_vocab",
+                   {"base": BV.BASE, "bo_ben": BV.BO_BEN, "eo_ben": BV.EO_BEN,
+                    "total": BV.TOTAL_VOCAB_SIZE, "pad_id": BV.PAD_ID}),
+           "temporal": (TV.TOTAL_VOCAB_SIZE, "temporal_vocab", TV.layout_record())}
 
 
 def sha256(path: Path) -> str:
@@ -83,11 +93,14 @@ def main():
     ap.add_argument("--checkpoint", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--layout", choices=sorted(LAYOUTS), default="ben")
+    ap.add_argument("--device", default="cuda", help="cuda, or cpu")
     a = ap.parse_args()
     if a.out.exists() and any(a.out.iterdir()):
         sys.exit(f"{a.out} exists and is not empty")
-    device = "cuda"
-    gpu = torch.cuda.get_device_name(0)
+    device = a.device
+    gpu = torch.cuda.get_device_name(0) if device.startswith("cuda") else "cpu"
+    v_total, layout_key, layout_record = LAYOUTS[a.layout]
 
     model, cfg = G.build_model(a.arm_config, str(a.checkpoint), device=device)
     model.float()
@@ -96,20 +109,21 @@ def main():
     before = per_row_logits(model, batch, device)
     v_old = EV.TOTAL_VOCAB_SIZE
     assert before.shape[-1] == v_old
+    n_new = v_total - v_old
 
     # Control 1: insert before PAD. Must FAIL identity.
     ctrl = copy.deepcopy(model)
-    X.extend_vocab(ctrl, BV.N_NEW, seed=a.seed, insert_before_pad=True, pad_id=EV.PAD_ID)
+    X.extend_vocab(ctrl, n_new, seed=a.seed, insert_before_pad=True, pad_id=EV.PAD_ID)
     rep_c1 = X.identity_report(before, per_row_logits(ctrl, batch, device),
                                batch["attention_mask"], v_old)
     del ctrl
     # Control 2: an untied resize. Must FAIL the tie assertion.
     ctrl = copy.deepcopy(model)
     old = ctrl.model.embed_tokens.weight.data
-    e = torch.nn.Embedding(old.shape[0] + BV.N_NEW, old.shape[1], device=old.device)
+    e = torch.nn.Embedding(old.shape[0] + n_new, old.shape[1], device=old.device)
     e.weight.data[: old.shape[0]] = old
     ctrl.model.embed_tokens = e
-    ctrl.config.vocab_size = old.shape[0] + BV.N_NEW
+    ctrl.config.vocab_size = old.shape[0] + n_new
     try:
         X.assert_tied(ctrl)
         c2_fired = False
@@ -119,9 +133,9 @@ def main():
     torch.cuda.empty_cache()
 
     # The real extension.
-    rec = X.extend_vocab(model, BV.N_NEW, seed=a.seed)
+    rec = X.extend_vocab(model, n_new, seed=a.seed)
     after = per_row_logits(model, batch, device)
-    assert after.shape[-1] == BV.TOTAL_VOCAB_SIZE
+    assert after.shape[-1] == v_total
     rep = X.identity_report(before, after, batch["attention_mask"], v_old)
     new_logit_mean = float(after[batch["attention_mask"].bool()][:, v_old:].mean())
     old_logit_mean = float(after[batch["attention_mask"].bool()][:, :v_old].mean())
@@ -148,8 +162,8 @@ def main():
         "arm_config": a.arm_config,
         "token_set": (cfg.get("multimodal") or {}).get("token_set", "original"),
         "extension": rec,
-        "ben_vocab": {"base": BV.BASE, "bo_ben": BV.BO_BEN, "eo_ben": BV.EO_BEN,
-                      "total": BV.TOTAL_VOCAB_SIZE, "pad_id": BV.PAD_ID},
+        "layout": a.layout,
+        layout_key: layout_record,
         "identity": {**rep, "tol": IDENTITY_TOL, "passed": ok, "batch_rows": rows,
                      "precision": "fp32"},
         "control_insert_before_pad": {**rep_c1, "fired": c1_fired},

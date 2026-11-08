@@ -1,4 +1,4 @@
-"""Grow a pretrained EO checkpoint's vocabulary by the BEN ids (PHASE6_PLAN Step 2.3/2.4, D6.4).
+"""Grow a pretrained EO checkpoint's vocabulary by appended rows (PHASE6_PLAN Step 2.3/2.4, D6.4).
 
 ⚠ NOT `resize_token_embeddings`. On the recursive class HF's resize finds no
 `get_output_embeddings` (worklog §5 item 26), resizes the input side only and silently

@@ -47,12 +47,17 @@ _REGISTRY_BY_DATASET: Dict[str, str] = {
     # Phase 6: BigEarthNet S1/S2 -> label block. Its ids are eo_vocab's plus 21
     # appended after PAD (eo/data/ben_vocab.py), so it is a registry of its own.
     "ben_multimodal": "eo_ben",
+    # The temporal stage: BEN's ids kept, then the date rows appended after them
+    # (eo/data/temporal_vocab.py).
+    "terramesh_temporal": "eo_temporal",
 }
 
 CLEVR_REGISTRY = "lm_dataset.multimodal_vocab_shared_caption_scene_desc"
 EO_REGISTRY = "eo.data.eo_vocab"
 BEN_REGISTRY = "eo.data.ben_vocab"
-_MODULE_BY_KIND = {"clevr": CLEVR_REGISTRY, "eo": EO_REGISTRY, "eo_ben": BEN_REGISTRY}
+TEMPORAL_REGISTRY = "eo.data.temporal_vocab"
+_MODULE_BY_KIND = {"clevr": CLEVR_REGISTRY, "eo": EO_REGISTRY, "eo_ben": BEN_REGISTRY,
+                   "eo_temporal": TEMPORAL_REGISTRY}
 
 
 def dataset_names(cfg) -> List[str]:
@@ -84,8 +89,8 @@ def registry_kind(cfg) -> Optional[str]:
 
 
 def is_eo(cfg) -> bool:
-    """An EO-family run: TerraMesh pretraining, or a BigEarthNet fine-tune on top of it."""
-    return registry_kind(cfg) in ("eo", "eo_ben")
+    """An EO-family run: TerraMesh pretraining, its temporal stage, or a BigEarthNet fine-tune."""
+    return registry_kind(cfg) in ("eo", "eo_ben", "eo_temporal")
 
 
 def get_registry(cfg) -> ModuleType:
