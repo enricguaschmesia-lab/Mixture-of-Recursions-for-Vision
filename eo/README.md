@@ -30,7 +30,7 @@ training.
 | `eval/` | `teacher_forced.py` (the per-checkpoint pass, target-last layout, depth intervention), `curves.py`, `ben.py` (constrained label decoding), `ben_chain.py` |
 | `generate/` | Conditional generation with a KV cache. Decoding ids to pixels is a separate process in `mor` |
 | `finetune/` | Vocabulary extension (identity-checked), hand-rolled LoRA, init from a checkpoint |
-| `routing/` | Recursion-depth telemetry for the MoR arm |
+| `routing/` | Recursion-depth telemetry for the MoR arm, including the router-only pass (`capture_router` in `telemetry.py`), and routing statistics (`stats.py`: exact permutation, group bootstrap, the equal-compute lattice) |
 | `ben/` | BigEarthNet v1: labels, layout, patch index and splits; `pack.py` and `preprocess.py` (`mor`) |
 | `scripts/` | Thin CLI entry points (below). The rule: real code lives in a package, and scripts stay thin |
 | `experiments/` | One-off analyses grouped by topic, kept as the record behind each result: see [`experiments/README.md`](experiments/README.md) |
@@ -44,7 +44,7 @@ planning repository.
 |---|---|
 | Train | **`train_eo.sh`** (the only supported entry point), `train_chain.sh` (runs back to back), `convert_clevr_init.py`, `convert_smollm_init.py`, `extend_checkpoint.py` |
 | Tokenize | `tokenize_terramesh.py` (val), `tokenize_train.py` and `run_tokenize_train.sh` (train, streamed), `tokenize_coords.py`, `label_s2_offset.py`, `tokenize_clean.py` (`val_clean`), `build_ben_index.py`, `pack_ben.py`, `tokenize_ben.py` |
-| Evaluate | `eval_checkpoint.py` (per-checkpoint pass; `--grid` for the source × target grid, `--force-depth` and `--force-scope` for depth sweeps), `arm_report.py`, `grid_report.py`, `routing_telemetry.py`, `patch_stats.py`, `wrong_scene_control.py` |
+| Evaluate | `eval_checkpoint.py` (per-checkpoint pass; `--grid` for the source × target grid, `--force-depth` and `--force-scope` for depth sweeps), `arm_report.py`, `grid_report.py`, `routing_telemetry.py`, `capture_router.py` (the router alone, on held-out, training or probe rows), `patch_stats.py`, `wrong_scene_control.py` |
 | Downstream | `eval_ben.py`, `eval_forgetting.py`, `ben_report.py`, `ben_chain.py`, `ben_teacher.py` |
 | Generate and decode | `generate_eo.py`, `prepare_decode.py`, `decode_eo.py` (`mor`), `sweep_d311.sh` |
 | Held-out split | `build_eval_split.py`, and `build_temporal_split.py` for the four-date locations |

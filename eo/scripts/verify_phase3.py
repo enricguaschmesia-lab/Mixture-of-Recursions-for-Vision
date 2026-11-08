@@ -76,6 +76,13 @@ unverified deliverable:
                                                     fine-tune moving the body, an unwrapped
                                                     strict load refused. One card or CPU, fp32
 
+  W26 the router-only pass is the router [B0, 2026-11-07] capture_router on an untrained A10c:
+                                                    logits equal a full pass bit for bit, and depth,
+                                                    gate and both modality frames equal run_pass's.
+                                                    Controls: other rows differ; a random router and
+                                                    a wrapped router are refused. W26s (no GPU):
+                                                    eo/routing/stats.py gives known answers
+
 Runs in the repo .venv, NOT the `mor` env.
 
     HF_HOME=/data/enric/hf ./.venv/bin/python eo/scripts/verify_phase3.py
@@ -1779,6 +1786,109 @@ def w21_learned_depth() -> bool:
                 and worst <= tol and moved > 100 * tol and c_unext and c_rand)
 
 
+def w26_router_capture() -> bool:
+    """capture_router (B0) on an untrained A10c, 6 held-out rows, batch 2, one card at fp16: the
+    logits equal the router's output in a full pass bit for bit, and depth, gate, input_mod and
+    label_mod equal run_pass's stored frame. Controls: another row order gives other logits; a
+    random router and a DepthOverride-wrapped router are refused."""
+    import torch
+    from eo.eval import teacher_forced as TF
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import capture_router, find_mor_layers
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dt = torch.float16 if dev == "cuda" else None
+    torch.manual_seed(42)
+    model, cfg = G.build_model(ARM_A10C, None, device=dev)
+    layer = find_mor_layers(model)[0]
+    ds, _ = TF.eval_loader(cfg, num_workers=0)
+
+    def dl(idx):
+        return torch.utils.data.DataLoader(torch.utils.data.Subset(ds, list(idx)), batch_size=2)
+
+    cap = capture_router(model, dl(range(6)), device=dev, dtype=dt)
+    ov = TF.install_override(model, "router")
+    seen = []
+    h = ov.inner.register_forward_hook(lambda m, i, o: seen.append(o.detach().float().cpu()))
+    try:
+        res = TF.run_pass(model, dl(range(6)), device=dev, override=ov, dtype=dt)
+        c_wrapped = False
+        try:
+            capture_router(model, dl(range(2)), device=dev, dtype=dt)
+        except ValueError:
+            c_wrapped = True
+    finally:
+        h.remove()
+        layer.mor_router = ov.inner
+    tok = res["tokens"]
+    full = torch.cat(seen)[:, :-1].numpy()
+    gate = torch.softmax(torch.tensor(cap["logits"]), -1).amax(-1).half().numpy()
+    c_log = bool(np.array_equal(cap["logits"], full))
+    c_dep = bool(np.array_equal(cap["depth"], tok["depth"]))
+    c_gate = bool(np.array_equal(gate, tok["gate"]))
+    c_mod = bool(np.array_equal(cap["input_mod"], tok["input_mod"])
+                 and np.array_equal(cap["label_mod"], tok["label_mod"]))
+    other = capture_router(model, dl([1, 0, 3, 2, 5, 4]), device=dev, dtype=dt)
+    c_diff = not np.array_equal(other["logits"], cap["logits"])
+    m2, _ = G.build_model(ARM_A10CR, None, device="cpu")
+    try:
+        capture_router(m2, dl(range(2)), device="cpu", dtype=None); c_rand = False
+    except ValueError:
+        c_rand = True
+    print(f"    logits == a full pass's, bitwise = {c_log}")
+    print(f"    depth == run_pass's = {c_dep}; gate = {c_gate}; both modality frames = {c_mod}")
+    print(f"    control: other rows differ = {c_diff}; random router refused = {c_rand}; "
+          f"wrapped router refused = {c_wrapped}")
+    return bool(c_log and c_dep and c_gate and c_mod and c_diff and c_rand and c_wrapped)
+
+
+def w26s_routing_stats() -> bool:
+    """eo/routing/stats.py on known answers (CPU): the exact permutation gives Spearman's two-sided
+    5% critical values at n = 6 and 7 (0.886, 0.786); ties take average ranks; a bootstrap with one
+    row per unit is the row bootstrap; clustered data widen an interval over groups, and shuffled
+    groups do not; series_p gives one p; the lattice holds 51 and 381 tables. Controls: ranks that
+    break ties by position miss the tied answer; a lattice with no constraint holds 243; an
+    independent series is not significant."""
+    from eo.routing import stats as S
+    c_crit = abs(S.critical_rho(6) - 0.886) < 5e-4 and abs(S.critical_rho(7) - 0.786) < 5e-4
+    p_id = S.exact_p([1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6])
+    p_mid = S.exact_p([1, 2, 3, 4, 5, 6], [2, 1, 4, 3, 6, 5])
+    c_p = abs(p_id - 2 / 720) < 1e-12 and abs(p_mid - 0.0583) < 0.002
+    tied = S.spearman([1, 1, 2], [1, 2, 3])
+    naive = lambda x: np.argsort(np.argsort(x)).astype(float)      # noqa: E731
+    c_tie_ctl = abs(np.corrcoef(naive([1, 1, 2]), naive([1, 2, 3]))[0, 1] - tied) > 0.1
+    c_tie = abs(tied - np.sqrt(3) / 2) < 1e-9
+    rng = np.random.default_rng(0)
+    n, g = 4000, 200
+    units = rng.integers(0, g, n)
+    num = rng.normal(size=g)[units] + 0.2 * rng.normal(size=n)
+    den = np.ones(n)
+    e, lo, hi = S.ratio_boot(num, den, units, n_draws=1000)
+    _, lo_r, hi_r = S.ratio_boot(num, den, None, n_draws=1000)
+    _, lo_s, hi_s = S.ratio_boot(num, den, rng.permutation(units), n_draws=1000)
+    W = S.boot_weights(n, 200, 3)
+    c_row = bool(np.allclose(S.ratio_boot(num, den, np.arange(n), n_draws=200, seed=3)[1],
+                             np.percentile((W @ num) / (W @ den), 2.5)))
+    wide = (hi - lo) / (hi_r - lo_r)
+    flat = (hi_s - lo_s) / (hi_r - lo_r)
+    c_grp = wide > 3 and 0.8 < flat < 1.25
+    A = rng.normal(size=(10, 6))
+    rho_same, p_same = S.series_p(A, A)
+    rho_ind, p_ind = S.series_p(A, rng.normal(size=(10, 6)))
+    c_ser = abs(rho_same - 1) < 1e-9 and abs(p_same - 1 / 720) < 1e-12 and p_ind > 0.05   # no mirror permutation over a series
+    c_lat = len(S.lattice([1, 2, 3], 5, 2)) == 51 and len(S.lattice([1, 2, 3, 4, 5], 5, 3)) == 381
+    c_lat &= bool((S.lattice([1, 2, 3], 5, 2).sum(1) == 10).all())
+    c_all = 3 ** 5 == 243 and len(S.lattice([1, 2, 3], 5, 2)) != 243
+    print(f"    critical rho n=6 {S.critical_rho(6):.3f}, n=7 {S.critical_rho(7):.3f} = {c_crit}; "
+          f"exact p {p_id:.4f}, {p_mid:.4f} = {c_p}")
+    print(f"    ties {tied:.3f} = {c_tie}; control: position-broken ranks miss it = {c_tie_ctl}")
+    print(f"    one unit per row is the row bootstrap = {c_row}; interval over groups {wide:.2f}x the "
+          f"rows', shuffled groups {flat:.2f}x = {c_grp}")
+    print(f"    series: same rho {rho_same:.2f} p {p_same:.4f}, independent rho {rho_ind:+.2f} "
+          f"p {p_ind:.3f} = {c_ser}")
+    print(f"    lattice 51 and 381 tables, exact = {c_lat}; control: unconstrained differs = {c_all}")
+    return bool(c_crit and c_p and c_tie and c_tie_ctl and c_row and c_grp and c_ser and c_lat and c_all)
+
+
 def w16_t360() -> bool:
     """T360 differs from B10c in exactly its size, data split and budget; it is 2 epochs of the
     train split at a 5% warmup and 10% decay; it builds at 314.64 M non-embedding parameters; and
@@ -2392,6 +2502,7 @@ def main() -> int:
         ("W23  stage 1 freezes, handoff, stage 2      [LLM init]", w23_smollm_stages),
         ("W24  a nan per-modality CE marks one interval [LLM init]", w24_per_modality_reset),
         ("W25  LoRA on the frozen LLM body            [LLM LoRA]", w25_smollm_lora),
+        ("W26s routing statistics: known answers      [B0]", w26s_routing_stats),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]
@@ -2402,6 +2513,7 @@ def main() -> int:
         checks.append(("W5   fp16 matches fp32; scaler control    [Step 2]", w5_fp16_equivalence))
         checks.append(("W18  forced depth is what it claims       [depth sweep]", w18_forced_depth))
         checks.append(("W21  learned-router forced depth           [depth sweep]", w21_learned_depth))
+        checks.append(("W26  the router-only pass is the router    [B0]", w26_router_capture))
 
     results = []
     for title, fn in checks:

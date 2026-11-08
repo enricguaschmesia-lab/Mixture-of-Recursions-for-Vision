@@ -38,6 +38,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from eo.data.eo_vocab import ID_TO_MODALITY, MODALITY_TO_ID
 from eo.terramesh_tok import contract as C
@@ -161,6 +162,83 @@ def capture_depths(model, dataset, rows: Sequence[int], *, batch_size: int = 4,
     depth = np.where(modality_ids > 0, depth, 0).astype(np.int8)
     return Capture(depth=depth, modality_ids=modality_ids.astype(np.int8),
                    rows=np.asarray(rows, dtype=np.int64), geometry=geom)
+
+
+class _RouterDone(Exception):
+    """Raised from the hook on `mor_router`: nothing after the router is needed."""
+
+
+@torch.no_grad()
+def capture_router(model, loader, *, device: str = "cuda",
+                   dtype: Optional[torch.dtype] = torch.float16) -> Dict[str, np.ndarray]:
+    """The router's full output for every row of `loader`, read without the recursion.
+
+    `MoRLlamaDecoderLayer.forward` calls the router on the output of layer 0, before any
+    recursion, so embedding + layer 0 + router is all it takes. A hook on `mor_router` keeps the
+    output, computes the depth exactly as the layer does (softmax * alpha, then topk) and stops
+    the forward. No code under model/ changes. W26 holds it bit-identical to a full pass, on one
+    card at one precision.
+
+    Returns the arrays in `run_pass`'s frame, positions 0..L-2, so they pair with a stored
+    `tokens_router.npz`: `logits` (rows, L-1, Nr), float32; `depth`, 1..Nr, int8; `input_mod`;
+    `label_mod`, 0 where the label is not a body token.
+
+    `dtype` is the autocast dtype: torch.float16 as trained, torch.bfloat16, or None for fp32.
+
+    ⚠ DEPTH AT A TIE IS NOT A PROPERTY OF THE WEIGHTS. The router sits on ties to within fp16's
+    rounding step, and topk gives an exact tie to the shallower depth, so the same weights give a
+    different allocation at another precision (A10c's S2L2A: 2.400 at fp16, 2.675 at fp32), and
+    another card flips a few percent of a tied modality's tokens. Compare depths within one card
+    and one precision. `docs/plans/b0_router_audit.md`, finding 3.
+    """
+    layers = [m for m in find_mor_layers(model) if hasattr(m, "mor_router")]
+    if len(layers) != 1:
+        raise ValueError("capture_router needs a MoR model with one LEARNED router; "
+                         "mor.rand_router=true has no router to read")
+    layer = layers[0]
+    if hasattr(layer.mor_router, "inner"):
+        raise ValueError("the router is wrapped by a DepthOverride: read it unwrapped, because "
+                         "an override rewrites the logits this function reports")
+    tok = layer.cfg.mor.token
+    if tok.get("router_func", "softmax") != "softmax" or tok.get("balancing") == "loss_free":
+        raise ValueError("capture_router mirrors softmax routing with no bias: "
+                         "extend it before reading another configuration")
+    alpha = float(tok.get("alpha", 1.0))
+    cap: Dict[str, torch.Tensor] = {}
+
+    def hook(_m, _inputs, w):
+        probs = F.softmax(w, dim=-1) * alpha
+        cap["w"] = w.detach()
+        cap["d"] = torch.topk(probs, 1, dim=-1, sorted=False).indices.squeeze(-1)
+        raise _RouterDone
+
+    model.eval()
+    handle = layer.mor_router.register_forward_hook(hook)
+    out = {k: [] for k in ("logits", "depth", "input_mod", "label_mod")}
+    kind = device.split(":")[0]
+    try:
+        for batch in loader:
+            batch = dict(batch)                    # never mutate the caller's batch
+            mids = batch.pop("modality_ids")
+            labels = batch.pop("labels")
+            inputs = {k: v.to(device) for k, v in batch.items()}
+            cap.clear()
+            try:
+                with torch.autocast(kind, dtype=dtype or torch.float16, enabled=dtype is not None):
+                    model(**inputs)
+            except _RouterDone:
+                pass
+            if "w" not in cap:
+                raise RuntimeError("the forward never reached the router")
+            lab, lmod = labels[:, 1:], mids[:, 1:]
+            valid = lab.ne(-100) & lmod.gt(0)
+            out["logits"].append(cap["w"][:, :-1].float().cpu())
+            out["depth"].append((cap["d"][:, :-1] + 1).to(torch.int8).cpu())
+            out["input_mod"].append(mids[:, :-1].to(torch.int8))
+            out["label_mod"].append(torch.where(valid, lmod, torch.zeros_like(lmod)).to(torch.int8))
+    finally:
+        handle.remove()
+    return {k: torch.cat(v).numpy() for k, v in out.items()}
 
 
 # ------------------------------------------------------------------ analysis
