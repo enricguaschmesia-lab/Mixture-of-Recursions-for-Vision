@@ -1,0 +1,20 @@
+# @package _global_
+#
+# ARM T360-T at LR 3e-4 — the temporal stage's pilot, second arm (A1 Step 9). Written 2026-11-08
+# (A1 Step 5).
+#
+# ┌── THE DIFF FROM T360-T (arm_t360t_vanilla), IN FULL ────────┐
+# │                       T360-T          this                  │
+# │   learning_rate       1e-3            3e-4                  │
+# │ Nothing else. Y18 in eo/scripts/verify_temporal.py asserts  │
+# │ it.                                                         │
+# └─────────────────────────────────────────────────────────────┘
+#
+# Two learning rates with the ramp: T360's plateau was 3e-3, and here the optimizer is fresh while
+# the weights are not. The pilot keeps the larger gain within the forgetting margin (Step 9).
+
+defaults:
+  - arm_t360t_vanilla
+  - _self_
+
+learning_rate: 0.0003

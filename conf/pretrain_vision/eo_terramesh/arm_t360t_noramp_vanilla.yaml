@@ -1,0 +1,22 @@
+# @package _global_
+#
+# ARM T360-T without the ramp — the temporal stage's pilot, third arm (A1 Step 9): four dates per
+# sequence from step 0. Written 2026-11-08 (A1 Step 5).
+#
+# ┌── THE DIFF FROM T360-T (arm_t360t_vanilla), IN FULL ─────────────────────────┐
+# │                     T360-T                              this                 │
+# │   temporal.stages   2 dates x 10, 3 x 7 (one epoch      4 dates x 6, to the  │
+# │                     each), then 4 x 6                   end                  │
+# │ Nothing else. Y18 in eo/scripts/verify_temporal.py asserts it.               │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# Run last, to show whether the ramp is needed or caused a failure (decision 10). Same slots per
+# micro-batch as the ramp's last stage, so the same memory, and the same 333-step epochs.
+
+defaults:
+  - arm_t360t_vanilla
+  - _self_
+
+temporal:
+  stages:
+    - {dates: 4, locations: 6, epochs: null}

@@ -27,6 +27,13 @@ raises; each one produces a run that trains happily and is worthless:
                                   dead rows and a wrong ln(V) loss baseline
   * a CLEVR init that was not verified, or a stage 2 whose stage 1 moved the
     body, never finished, or was not given at all       (clevr_init.py)
+  * a continued pretraining (A1, variant `continue`) from a base that is not the
+    extended base its identity check passed on: another size, no extension.json,
+    or weights changed since                            (clevr_init.verify_init)
+  * a temporal run whose location index no longer describes a root it reads,
+    whose settings the dataset would refuse once the pod has started, whose eval
+    sets do not split over its GPUs, or whose resume would change its data
+    (temporal_data.json)                                (eo/data/temporal_dataset.py)
 
 They are cheap to check and expensive to discover on day three of a run, so the
 launcher checks all of them before `pretrain.py` is reached.
@@ -109,8 +116,9 @@ class CheckResult:
     hint: str = ""
 
 
-#: The datasets an EO run may use: TerraMesh pretraining, and the Phase 6 BEN fine-tune.
-EO_DATASETS = ("terramesh_multimodal", "ben_multimodal")
+#: The datasets an EO run may use: TerraMesh pretraining, the Phase 6 BEN fine-tune, and the
+#: temporal stage (A1: whole four-date locations and Major TOM scenes, in micro-batches).
+EO_DATASETS = ("terramesh_multimodal", "ben_multimodal", "terramesh_temporal")
 
 
 @dataclass
@@ -220,7 +228,10 @@ def check_batch_division(ctx: PreflightContext) -> CheckResult:
         notes.append(f"{total} = {per} x {n} GPU(s) x {total // (per * n)}")
     if n > 1:
         ref = (cfg.get("multimodal") or {}).get("eval_split")
-        if ref is not None and cfg.get("dataset") != "ben_multimodal":
+        if cfg.get("dataset") == "terramesh_temporal":
+            # Its eval loaders shard micro-batches, not rows: check_temporal_data divides those.
+            notes.append("eval: micro-batches, see 'temporal data'")
+        elif ref is not None and cfg.get("dataset") != "ben_multimodal":
             rows = _eval_row_count(ref, ctx.env.get("TERRAMESH_TOK_ROOT"))
             ev = cfg.get("per_device_eval_batch_size") or per
             if rows is None:
@@ -636,6 +647,130 @@ def check_train_root(ctx: PreflightContext) -> CheckResult:
                                            f"S1GRD {present.get('S1GRD')}), val's contract")
 
 
+def check_temporal_index(ctx: PreflightContext) -> CheckResult:
+    """Every root a temporal run reads still carries its location and date index (A1 Step 5).
+
+    The dataset loads them too, but only after the model is built, and on RCP after the pod has
+    started. A row number in an index built against another tok_index.parquet names another scene,
+    and an unchecked index could hold a misplaced row, both silently. So each root must load through
+    `load_temporal_index` (the index's hashes match the root and its arrays; a passed, complete check
+    of exactly those arrays): train's when `split: train`, and val's through `token_set`, which holds
+    the eval sets (and a development run's training data). Val's dev/test split must match val's root
+    (`val_dev_location_ids`, as the eval set is built), and the train root must not be val's.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("temporal index", True, "skipped (config missing; check_config reports it)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    if cfg.get("dataset") != "terramesh_temporal":
+        return CheckResult("temporal index", True, "n/a (not a temporal run)")
+    from eo.data.temporal_dataset import val_dev_location_ids, val_test_location_ids
+    from eo.data.temporal_index import load_temporal_index
+    from eo.terramesh_tok.clean import resolve_token_root
+    mm = cfg.get("multimodal") or {}
+    token_set = mm.get("token_set", "original")
+    notes = []
+    try:
+        raw = ctx.env.get("TERRAMESH_TOK_ROOT")
+        if not raw:
+            raise ValueError("TERRAMESH_TOK_ROOT is unset: the eval sets read val's index")
+        vroot = resolve_token_root(raw, token_set)
+        vindex = load_temporal_index(vroot)
+        dev = val_dev_location_ids(vindex)
+        notes.append(f"{vroot.name}: {len(vindex)} locations, checked; dev/test split matches, "
+                     f"{len(dev)} dev locations")
+        if mm.get("split", "val") == "train":
+            from eo.terramesh_tok.train_split import resolve_train_root
+            troot = resolve_train_root(ctx.env.get("TERRAMESH_TRAIN_TOK_ROOT"), token_set,
+                                       allow_partial=bool(mm.get("allow_partial_train_root", False)))
+            tindex = load_temporal_index(troot)
+            if val_test_location_ids(tindex) is not None:
+                raise RuntimeError(f"{troot} is val's root, not train's: its index is val's")
+            notes.insert(0, f"{troot.name}: {len(tindex)} locations, checked")
+    except (ValueError, RuntimeError, FileNotFoundError, KeyError, OSError) as e:
+        return CheckResult("temporal index", False, str(e).splitlines()[0],
+                           "Build the index where the metadata is and check it where the tokens are "
+                           "(eo/scripts/build_temporal_index.py build, then check), and copy it with a "
+                           "SHA-256 check, never rebuild it on another root.")
+    return CheckResult("temporal index", True, "; ".join(notes))
+
+
+def check_temporal_data(ctx: PreflightContext) -> CheckResult:
+    """A temporal run's data settings, before a pod starts (A1 Step 5).
+
+    The builder refuses most of these too, but only once the model is built, on the pod. Every rule
+    is the builder's own, called rather than restated: TemporalConfig's validation and the dataset's
+    refusals (`temporal_dataset.validate_config`), and the eval sets' micro-batch rule
+    (`temporal_dataset.microbatches`). Only what depends on the launch is checked here:
+
+      * per-device batches of 1, a max_length for the longest sequence of the ramp and the eval set,
+        no shuffled patches, a random modality order, a valid temporal block (validate_config);
+      * total_batch_size, an epoch (steps_per_epoch x total_batch_size micro-batches) and both eval
+        sets' micro-batch counts divisible by the GPU count. Otherwise HF's epoch is not the
+        dataset's (TemporalEpochCallback stops the run at its first epoch), or the distributed eval
+        loader repeats micro-batches to fill its last round and the per-modality eval CE counts them;
+      * on --resume, the settings that define the data equal the run directory's record
+        (temporal_data.json, written by pretrain.py at launch). TemporalEpochCallback stops a run
+        whose epoch length changed, but a changed probability, ramp or seed would resume silently
+        into other data. Schedule keys (stop_steps, num_train_steps, the LR) are not in the record,
+        so they stay free.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("temporal data", True, "skipped (config missing; check_config reports it)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    if cfg.get("dataset") != "terramesh_temporal":
+        return CheckResult("temporal data", True, "n/a (not a temporal run)")
+    from omegaconf import OmegaConf
+    from eo.data import temporal_dataset as TD
+    from eo.data.temporal_split import load_temporal_split
+    n = max(ctx.n_gpus, 1)
+    try:
+        oc = OmegaConf.create(cfg)
+        tcfg = TD.validate_config(oc)
+        settings = TD.data_settings(oc)
+        ref = (cfg.get("multimodal") or {}).get("eval_split")
+        if ref is None:
+            raise ValueError("multimodal.eval_split is null: the temporal stage's single-date eval set is "
+                             "the held-out split")
+        rows = _eval_row_count(ref, ctx.env.get("TERRAMESH_TOK_ROOT"))
+        if rows is None:
+            raise ValueError(f"eval split {ref!r} unreadable (check_eval_split says why)")
+        total = int(cfg["total_batch_size"])
+        counts = {"total_batch_size": total, "an epoch": int(tcfg.steps_per_epoch) * total,
+                  "the single eval set": TD.microbatches(rows, tcfg.eval_scenes_per_microbatch, "held-out rows"),
+                  "the temporal eval set": TD.microbatches(len(load_temporal_split()["dev"]["locations"]),
+                                                           tcfg.eval_locations_per_microbatch, "dev locations")}
+    except (ValueError, TypeError, KeyError) as e:
+        return CheckResult("temporal data", False, str(e).splitlines()[0],
+                           "The dataset would refuse this on the pod, after the model is built "
+                           "(eo/data/temporal_dataset.py).")
+    bad = [f"{k} ({v})" for k, v in counts.items() if v % n]
+    if bad:
+        return CheckResult("temporal data", False,
+                           f"micro-batches that do not split over {n} GPU(s): {', '.join(bad)}",
+                           "An epoch that does not split is not HF's epoch, and an eval set that does not "
+                           "split repeats micro-batches that the per-modality eval CE would count.")
+    stages = "/".join(f"{s.dates}x{s.locations}" for s in tcfg.stages)
+    detail = (f"stages {stages}; an epoch {counts['an epoch']} = {tcfg.steps_per_epoch} x {total} micro-batches; "
+              f"eval {counts['the single eval set']} + {counts['the temporal eval set']} micro-batches; "
+              f"{n} GPU(s)")
+    if ctx.resuming:
+        rec = ctx.run_dir / TD.DATA_RECORD
+        if not rec.is_file():
+            return CheckResult("temporal data", False, f"resuming, but {rec} is missing",
+                               "pretrain.py writes it at launch: this directory is not a temporal run's.")
+        try:
+            changes = TD.data_record_changes(json.loads(rec.read_text()), settings)
+        except ValueError as e:
+            return CheckResult("temporal data", False, f"{rec} unreadable: {e}")
+        if changes:
+            return CheckResult("temporal data", False,
+                               f"{rec.name} records other data: {'; '.join(changes[:4])}",
+                               "A resume may not change the data: a changed design starts a new run. "
+                               "Schedule keys (stop_steps, num_train_steps, learning_rate) are free.")
+        detail += f"; resume: the data {rec.name} records"
+    return CheckResult("temporal data", True, detail)
+
+
 def check_ben_data(ctx: PreflightContext) -> CheckResult:
     """A BEN fine-tune's data exists, is labelled, and was tokenized for every row it reads.
 
@@ -783,6 +918,11 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
     would silently become "CLEVR body without stage 1"); a stage 2 from a stage 1 whose body
     moved, or that never finished; and a resume whose run directory recorded another init
     (stage 1 resumed as stage 2, or the CLEVR arm as its shuffled control).
+
+    Variant `continue` (A1 Step 5) checks the extended base instead (clevr_init.verify_init): its
+    extension.json, at the model's vocabulary, with the weights hashing to it. So a BEN extension
+    (87,577 rows), T360's own checkpoint (no extension.json) and a base changed after its identity
+    check are refused, and so is a resume whose record names another base or variant.
     """
     if ctx.config_path is None or not ctx.config_path.is_file():
         return CheckResult("pretrain init", True, "skipped (no config)")
@@ -797,15 +937,12 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
         vocab = (cfg.get("model_config") or {}).get("vocab_size")
         if vocab is None:
             raise ValueError("the config has no model_config.vocab_size")
-        doc = CI.verify_conversion(plan["conversion"], plan["variant"], int(vocab))
+        doc = CI.verify_init(plan, int(vocab))
         handoff = None
         if plan["from_stage1"] is not None:
             handoff = CI.check_handoff(plan["from_stage1"], plan["conversion"], plan["variant"], doc)
         if ctx.resuming:
-            want = {"conversion_weights_sha256": doc["weights_sha256"], "variant": plan["variant"],
-                    "freeze_body": plan["freeze_body"],
-                    "from_stage1": None if plan["from_stage1"] is None else str(plan["from_stage1"]),
-                    "lora": plan["lora"]}
+            want = CI.record_identity(plan, doc)
             if CI.check_record(ctx.run_dir, want) is None:
                 raise RuntimeError(f"resuming, but {ctx.run_dir / CI.RECORD} is missing")
             # The record could be right and the checkpoint another regime's: HF loads non-strictly,
@@ -818,9 +955,21 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
                     raise RuntimeError(f"{ck.name} {'holds' if has else 'has no'} LoRA adapters, "
                                        f"but the config's pretrain_init.lora is {plan['lora']}")
     except (ValueError, RuntimeError, FileNotFoundError, KeyError) as e:
-        return CheckResult("pretrain init", False, str(e).splitlines()[0],
-                           "Stage 1: launch arm_b10c{v,s,l,ls}_stage1 as it is. Stage 2: pass "
-                           "pretrain_init.from_stage1=<stage 1 run>/checkpoint-<last>.")
+        if isinstance(block, dict) and block.get("variant") == CI.CONTINUE:
+            hint = ("continue: pretrain_init.conversion names an extended base written by "
+                    "extend_checkpoint.py --layout temporal, with its extension.json, copied with a SHA-256 "
+                    "check and never rebuilt (its hash depends on the device that computed its new rows).")
+        else:
+            hint = ("Stage 1: launch arm_b10c{v,s,l,ls}_stage1 as it is. Stage 2: pass "
+                    "pretrain_init.from_stage1=<stage 1 run>/checkpoint-<last>.")
+        return CheckResult("pretrain init", False, str(e).splitlines()[0], hint)
+    if plan["variant"] == CI.CONTINUE:
+        ext = doc["extension"]
+        return CheckResult("pretrain init", True,
+                           f"continue from {plan['conversion'].name}: extended {ext['vocab_before']} -> "
+                           f"{ext['vocab_after']} ({doc['layout']}), identity max |dlogit| "
+                           f"{doc['identity']['max_abs_diff']:.1e}, controls fired, sha "
+                           f"{doc['weights_sha256'][:10]}; every parameter trains")
     stage = ("stage 1 (body frozen)" if plan["freeze_body"] else
              f"stage 2 from {plan['from_stage1'].parent.name}/{plan['from_stage1'].name}"
              if plan["from_stage1"] else "no stage 1 (body trains from the conversion)")
@@ -1123,6 +1272,8 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_eval_split,
     check_token_set,
     check_train_root,
+    check_temporal_index,
+    check_temporal_data,
     check_ben_data,
     check_init_from,
     check_pretrain_init,

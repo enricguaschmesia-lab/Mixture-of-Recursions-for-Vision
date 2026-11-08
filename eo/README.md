@@ -26,7 +26,7 @@ training.
 |---|---|
 | `terramesh_tok/` | The preprocessing contract, as code. **Single source of truth: import it, never re-derive a constant.** `contract.py` (crop, stats, codebooks, directory naming), `io.py`, `preprocess.py`, `tokenizers.py`, `clean.py` (the S2 BOA offset), `train_split.py` |
 | `data/` | The EO vocabulary (`eo_vocab.py`, final), `TerraMeshTokenDataset`, the held-out split (`eval_split.py`, `eval_rows_v1.json`), the dev/test split of the four-date val locations (`temporal_split.py`, `temporal_rows_v1.json`), their location and date index (`temporal_index.py`), the date rows (`temporal_vocab.py`), the temporal stage's training data (`temporal_dataset.py`: whole locations and Major TOM scenes in homogeneous micro-batches, its two eval sets and its epoch callback), and BEN's vocabulary and dataset |
-| `train/` | Launch machinery: `gpu.py` (resolve a GPU by name), `preflight.py` and `preflight_controls.py`, `distributed.py`, and the pretrained-body inits `clevr_init.py`, `smollm_init.py` |
+| `train/` | Launch machinery: `gpu.py` (resolve a GPU by name), `preflight.py` and `preflight_controls.py`, `distributed.py`, and the pretrained-body inits `clevr_init.py`, `smollm_init.py`. `clevr_init.py`'s variant `continue` continues pretraining from an extended base (the temporal stage, `arm_t360t_vanilla`) |
 | `eval/` | `teacher_forced.py` (the per-checkpoint pass, target-last layout, depth intervention), `curves.py`, `ben.py` (constrained label decoding), `ben_chain.py` |
 | `generate/` | Conditional generation with a KV cache. Decoding ids to pixels is a separate process in `mor` |
 | `finetune/` | Vocabulary extension (identity-checked), hand-rolled LoRA, init from a checkpoint |

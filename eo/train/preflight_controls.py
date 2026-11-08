@@ -157,6 +157,77 @@ def _fake_stage1(run: Path, conv: Path, *, step: int = 330, last: int = 330, mov
     return ck
 
 
+def _fake_extension(d: Path, vocab_after: int = 87664, drop_json: bool = False, change_weights: bool = False,
+                    **doc_over) -> Path:
+    """An extended base in miniature (A1 Step 5, variant `continue`): two tensors and an extension.json
+    that passed, at the temporal vocabulary and the date layout eo/data/temporal_vocab.py has now.
+    `change_weights` rewrites the weights after the record was written: a base changed since its check."""
+    import torch
+    from safetensors.torch import save_file
+    from eo.data import temporal_vocab as TV
+    from eo.train.clevr_init import sha256
+    d.mkdir(parents=True)
+    g = torch.Generator().manual_seed(1)
+    w = {"model.embed_tokens.weight": torch.randn(4, 2, generator=g), "model.norm.weight": torch.ones(2)}
+    save_file(w, str(d / "model.safetensors"))
+    doc = {"source_checkpoint": "/nowhere/checkpoint-17441", "source_weights_sha256": "9" * 64,
+           "extension": {"vocab_before": 87556, "vocab_after": vocab_after, "n_new": vocab_after - 87556},
+           "layout": "temporal", "temporal_vocab": TV.layout_record(),
+           "identity": {"passed": True, "max_abs_diff": 1.9e-05, "tol": 1e-4},
+           "control_insert_before_pad": {"fired": True}, "control_untied_resize": {"fired": True},
+           "weights_file": "model.safetensors", "weights_sha256": sha256(d / "model.safetensors"), **doc_over}
+    if change_weights:
+        w["model.norm.weight"] = w["model.norm.weight"] * 2
+        save_file(w, str(d / "model.safetensors"))
+    if not drop_json:
+        (d / "extension.json").write_text(json.dumps(doc))
+    return d
+
+
+def _fake_val_site(d: Path, temporal: Optional[Path] = None, tok_index: Optional[Path] = None,
+                   mutate=None, drop_check: bool = False) -> Path:
+    """`<d>/val` (the real val root, linked) beside a cleaned root `<d>/val_clean` that links every entry
+    of the real val_clean except its location index (and, given `tok_index`, its tok_index.parquet).
+    The index is a copy of `temporal` (val_clean's own by default), then `mutate(index dir)`, and
+    `drop_check` removes its check file. Returns what TERRAMESH_TOK_ROOT names."""
+    import shutil
+    real = Path(GOOD_ENV["TERRAMESH_TOK_ROOT"])
+    clean = real.parent / "val_clean"
+    vc = d / "val_clean"
+    vc.mkdir(parents=True)
+    (d / "val").symlink_to(real)
+    for f in clean.iterdir():
+        if f.name == "temporal" or (tok_index is not None and f.name == "tok_index.parquet"):
+            continue
+        (vc / f.name).symlink_to(f)
+    if tok_index is not None:
+        (vc / "tok_index.parquet").symlink_to(tok_index)
+    shutil.copytree(temporal or clean / "temporal", vc / "temporal")
+    if mutate is not None:
+        mutate(vc / "temporal")
+    if drop_check:
+        (vc / "temporal" / "temporal_check.json").unlink()
+    return d / "val"
+
+
+def _fake_temporal_train(d: Path, tok_index: Path, temporal: Path) -> Path:
+    """A train root as resolve_train_root accepts it (build.json: train, offset-free, complete) that holds
+    only `tok_index` and the index at `temporal`, both linked: enough for the index check alone."""
+    d.mkdir(parents=True)
+    (d / "build.json").write_text(json.dumps({"split": "train", "offset_free": True, "partial": False}))
+    (d / "tok_index.parquet").symlink_to(tok_index)
+    (d / "temporal").symlink_to(temporal)
+    return d
+
+
+def _swap_two_locations(index_dir: Path) -> None:
+    """A tampered index: two locations' rows exchanged, the build file left as it was."""
+    import numpy as np
+    a = np.load(index_dir / "locations.npy")
+    a[[0, 1]] = a[[1, 0]]
+    np.save(index_dir / "locations.npy", a)
+
+
 def _results(env, *, run_dir: Optional[Path] = None, config: Optional[Path] = None,
              allow_existing: bool = False, resuming: bool = False,
              overrides: Optional[dict] = None, check_torch: bool = False,
@@ -635,6 +706,157 @@ def main(argv=None) -> int:
                        for c in shipped.values()]
         else:
             print(f"\n({label}: the shipped-config positives skipped, no conversion on this machine)")
+
+    # --- the temporal stage (A1 Step 5, 2026-11-08). T360-T continues T360 from its extended base
+    # (pretrain_init variant `continue`), reads whole four-date locations through a location index
+    # on every root, and records the settings that define its data so that a resume cannot change
+    # them. Each of these would otherwise train happily, or fail only on the pod after the model is
+    # built. Miniature bases and copies of val_clean's index throughout; the real base, T360's own
+    # checkpoint and BEN extension, and train_coords' index add cases where they exist. ---
+    from omegaconf import OmegaConf
+    from eo.data import temporal_dataset as TD
+    from eo.data import temporal_vocab as TV
+    from eo.train.clevr_init import sha256 as _sha
+    from eo.train.preflight import _load_config
+    t360t = eo_cfg / "arm_t360t_vanilla.yaml"
+    val_clean = real_val.parent / "val_clean"
+    train_coords = Path("/data/enric/data/TerraMesh/train_coords")
+    have_train_index = (train_coords / "temporal" / "temporal_check.json").is_file()
+    ext_ok = _fake_extension(tmp / "tx_ok")
+    rcp2_ = {**rcp_env, "CUDA_VISIBLE_DEVICES": "0,1"}
+
+    def tt(config=t360t, env=GOOD_ENV, **ov):
+        """The temporal arm, split val, on the miniature base unless an override says otherwise."""
+        kw = {k: ov.pop(k) for k in ("run_dir", "resuming", "n_gpus", "gpu_alias") if k in ov}
+        if kw.get("resuming"):
+            kw["allow_existing"] = True
+        return dict(env=env, config=config,
+                    overrides={"multimodal.split": "val", "pretrain_init.conversion": str(ext_ok), **ov}, **kw)
+
+    def ext(name, **kw):
+        return {"pretrain_init.conversion": str(_fake_extension(tmp / name, **kw))}
+
+    def init_run(name, **rec):
+        d = tmp / name
+        d.mkdir()
+        (d / "pretrain_init.json").write_text(json.dumps({
+            "conversion_weights_sha256": _sha(ext_ok / "model.safetensors"), "variant": "continue",
+            "freeze_body": False, "from_stage1": None, "lora": None, **rec}))
+        return d
+
+    def data_run(name, mutate=None):
+        """A run directory holding the record pretrain.py writes for the temporal arm at launch."""
+        d = tmp / name
+        d.mkdir()
+        s = TD.data_settings(OmegaConf.create(_load_config(t360t, tt()["overrides"])))
+        if mutate is not None:
+            mutate(s)
+        (d / TD.DATA_RECORD).write_text(json.dumps(s))
+        return d
+
+    for d in ("tr_none", "td_none"):
+        (tmp / d).mkdir()
+        (tmp / d / "stray.txt").write_text("x")
+    t_cases = [
+        # continue: the base (clevr_init.verify_init, read_block) and the run record on --resume
+        ("continue: another size (87,577 rows)",    "pretrain init", tt(**ext("tx_ben", vocab_after=87577))),
+        ("continue: no extension.json",              "pretrain init", tt(**ext("tx_nojson", drop_json=True))),
+        ("continue: weights changed after the check", "pretrain init", tt(**ext("tx_sha", change_weights=True))),
+        ("continue: identity check failed",          "pretrain init", tt(**ext("tx_ident", identity={"passed": False}))),
+        ("continue: another date layout, same size", "pretrain init",
+         tt(**ext("tx_layout", temporal_vocab={**TV.layout_record(), "n_day_bins": 37}))),
+        ("continue: with freeze_body",               "pretrain init", tt(**{"pretrain_init.freeze_body": True})),
+        ("continue: with from_stage1",               "pretrain init", tt(**{"pretrain_init.from_stage1": str(tmp / "x")})),
+        ("continue: with lora",                      "pretrain init",
+         tt(**{"+pretrain_init.lora.r": 16, "+pretrain_init.lora.alpha": 32})),
+        ("resume: the run records another base",     "pretrain init",
+         tt(run_dir=init_run("tr_base", conversion_weights_sha256="f" * 64), resuming=True)),
+        ("resume: the run records another variant",  "pretrain init",
+         tt(run_dir=init_run("tr_variant", variant="smollm"), resuming=True)),
+        ("resume: the run has no init record",       "pretrain init", tt(run_dir=tmp / "tr_none", resuming=True)),
+        # the settings, through the builder's own validation, and their division over the GPUs
+        ("config: temporal at EO's 87,556 ids",      "config",        tt(**{"model_config.vocab_size": 87556})),
+        ("temporal: per-device train batch 2",       "temporal data", tt(per_device_train_batch_size=2)),
+        ("temporal: per-device eval batch 16",       "temporal data", tt(per_device_eval_batch_size=16)),
+        ("temporal: max_length 2195 (needs 2,793)",  "temporal data", tt(max_length=2195)),
+        ("temporal: shuffled patches",               "temporal data", tt(**{"multimodal.shuffle_image_patches": True})),
+        ("temporal: a fixed modality order",         "temporal data", tt(**{"multimodal.modality_order": "fixed"})),
+        ("temporal: a misspelt key in the block",    "temporal data", tt(**{"+temporal.single_shares": 0.4})),
+        ("temporal: date probabilities sum to 1.1",  "temporal data", tt(**{"temporal.date_probs.first": 0.9})),
+        ("temporal: 544 dev locations / 6",          "temporal data", tt(**{"temporal.eval_locations_per_microbatch": 6})),
+        ("temporal: 4,416 held-out rows / 10",       "temporal data", tt(**{"temporal.eval_scenes_per_microbatch": 10})),
+        ("temporal: 3 GPUs (68 dev micro-batches)",  "temporal data",
+         tt(env={**rcp_env, "CUDA_VISIBLE_DEVICES": "0,1,2"}, n_gpus=3, gpu_alias="a100")),
+        ("temporal: total 61 on 2 GPUs",             "temporal data", tt(env=rcp2_, n_gpus=2, gpu_alias="a100", total_batch_size=61)),
+        # a resume may not change the data
+        ("resume: the record's single_share 0.4",    "temporal data",
+         tt(run_dir=data_run("td_share", lambda s: s["temporal"].__setitem__("single_share", 0.4)), resuming=True)),
+        ("resume: seed 43, the record's 42",         "temporal data", tt(run_dir=data_run("td_seed"), resuming=True, seed=43)),
+        ("resume: the ramp arm as the no-ramp arm",  "temporal data",
+         tt(config=eo_cfg / "arm_t360t_noramp_vanilla.yaml", run_dir=data_run("td_ramp"), resuming=True)),
+        ("resume: no data record",                   "temporal data", tt(run_dir=tmp / "td_none", resuming=True)),
+        # every root's index
+        ("index: val, a tampered copy",              "temporal index",
+         tt(env=_env(TERRAMESH_TOK_ROOT=str(_fake_val_site(tmp / "ti_tamper", mutate=_swap_two_locations))))),
+        ("index: val, its check file missing",       "temporal index",
+         tt(env=_env(TERRAMESH_TOK_ROOT=str(_fake_val_site(tmp / "ti_nocheck", drop_check=True))))),
+        ("index: train, another root's index",       "temporal index",
+         tt(env=_env(TERRAMESH_TRAIN_TOK_ROOT=str(_fake_temporal_train(
+             tmp / "ti_tr_other", troots["ok"] / "tok_index.parquet", val_clean / "temporal"))),
+            **{"multimodal.split": "train"})),
+        ("index: train, val's root as train's",      "temporal index",
+         tt(env=_env(TERRAMESH_TRAIN_TOK_ROOT=str(_fake_temporal_train(
+             tmp / "ti_tr_val", val_clean / "tok_index.parquet", val_clean / "temporal"))),
+            **{"multimodal.split": "train"})),
+    ]
+    real_base = Path("/data/enric/runs/pretrain/temporal/base/t360_ext_temporal_ckpt17441")
+    t360_ckpt = Path("/data/enric/runs/pretrain/phase3/vanilla360t_20261026_040535/checkpoint-17441")
+    t360_ben = Path("/data/enric/runs/pretrain/phase6/base/t360_ext_ckpt17441")
+    if (t360_ben / "extension.json").is_file():
+        t_cases.append(("continue: T360's BEN base (87,577 rows)", "pretrain init",
+                        tt(**{"pretrain_init.conversion": str(t360_ben)})))
+    if (t360_ckpt / "model.safetensors").is_file():
+        t_cases.append(("continue: T360's own checkpoint", "pretrain init",
+                        tt(**{"pretrain_init.conversion": str(t360_ckpt)})))
+    if have_train_index:
+        t_cases += [
+            ("index: val, another root's index (train's)", "temporal index",
+             tt(env=_env(TERRAMESH_TOK_ROOT=str(_fake_val_site(tmp / "ti_other", temporal=train_coords / "temporal"))))),
+            ("index: val, its split not the root's",     "temporal index",
+             tt(env=_env(TERRAMESH_TOK_ROOT=str(_fake_val_site(
+                 tmp / "ti_split", temporal=train_coords / "temporal", tok_index=train_coords / "tok_index.parquet"))))),
+        ]
+    else:
+        print(f"\n(temporal: the cases on train's index skipped, no {train_coords}/temporal on this machine)")
+    cases += t_cases
+
+    t_good = _results(**tt())
+    t_pos = [
+        ("continue: a miniature extended base",    "pretrain init",  t_good),
+        ("temporal: the arm, split val, 1 GPU",    "temporal data",  t_good),
+        ("index: val_clean as it is",              "temporal index", t_good),
+        ("config: the temporal arm at 87,664",     "config",         t_good),
+        ("continue: resume under its own record",  "pretrain init",
+         _results(**tt(run_dir=init_run("tr_self"), resuming=True))),
+        ("temporal: 2 GPUs (276 and 68 split)",    "temporal data",  _results(**tt(env=rcp2_, n_gpus=2, gpu_alias="a100"))),
+        ("resume: the same data",                  "temporal data",  _results(**tt(run_dir=data_run("td_same"), resuming=True))),
+        ("resume: only the schedule changed",      "temporal data",  _results(**tt(
+            run_dir=data_run("td_sched"), resuming=True, stop_steps=2662, num_train_steps=5324,
+            learning_rate=0.0005, num_warmup_steps=200))),
+    ]
+    if have_train_index:
+        t_pos.append(("index: train, train_coords' index", "temporal index", _results(**tt(
+            env=_env(TERRAMESH_TRAIN_TOK_ROOT=str(_fake_temporal_train(
+                tmp / "ti_tr_ok", train_coords / "tok_index.parquet", train_coords / "temporal"))),
+            **{"multimodal.split": "train"}))))
+    if (real_base / "extension.json").is_file():
+        for arm in ("arm_t360t_vanilla", "arm_t360t_lr3e4_vanilla", "arm_t360t_noramp_vanilla"):
+            shipped = _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml", overrides={"multimodal.split": "val"})
+            t_pos += [(f"{arm} as shipped, split val", chk, shipped)
+                      for chk in ("config", "temporal index", "temporal data", "pretrain init")]
+    else:
+        print(f"\n(temporal: the shipped-arm positives skipped, no {real_base} on this machine)")
+    ci_pos += t_pos
 
     print("\nnegative controls (each must FIRE):")
     fired = 0

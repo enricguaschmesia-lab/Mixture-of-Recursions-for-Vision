@@ -68,6 +68,16 @@ Every number above is a config value with this plan's number as default (`Tempor
 the decisions may change on 11 Nov. Decisions 2 and 3 live in `_group_blocks` and
 `TemporalLocations.draw`.
 
+⚠ A RESUME MAY NOT CHANGE THE DATA (A1 Step 5). The training set carries `data_settings`, the
+settings that define what it serves (the dataset, the temporal block as TemporalConfig reads it,
+total_batch_size, max_length, seed, and multimodal's split, token set, eval split, modalities and
+order). pretrain.py writes them beside pretrain_init.json as `temporal_data.json` at launch, and on
+a resume refuses a config whose settings differ; preflight refuses it before the pod starts.
+TemporalEpochCallback already stops a run whose epoch length changed, but a changed probability, ramp
+or seed would otherwise resume into other data. Schedule keys are not in the record, so they stay
+free. `validate_config` and `microbatches` are the builder's refusals, which preflight calls rather
+than restating them.
+
 Runs in `.venv`, and in `mor-eo` on RCP.
 """
 from __future__ import annotations
@@ -255,6 +265,14 @@ def _assemble(chunks: List[torch.Tensor], modalities: List[str], max_length: int
     out["position_ids"] = lattice_positions([int(c.shape[0]) for c in chunks], [m == DATE for m in modalities],
                                             max_length)
     return out
+
+
+def microbatches(n_items: int, per: int, what: str) -> int:
+    """How many micro-batches of `per` hold `n_items` exactly. Raises ValueError if the last would be
+    partial: the eval sets' rule, which preflight applies before a pod starts."""
+    if int(per) < 1 or int(n_items) % int(per):
+        raise ValueError(f"{n_items} {what} do not split into micro-batches of {per}")
+    return int(n_items) // int(per)
 
 
 def stack_trim(items: Sequence[Dict[str, torch.Tensor]], trim: bool = True) -> Dict[str, torch.Tensor]:
@@ -493,6 +511,7 @@ class MixedMicrobatches(Dataset):
 
     collate_fn = staticmethod(unwrap_microbatch)
     orders_itself = True
+    data_settings: Optional[Dict] = None     # set by build_train; pretrain.py records it (module docstring)
 
     def __init__(self, temporal: TemporalLocations, single: Optional[SingleScenes], cfg: TemporalConfig,
                  microbatches_per_step: int, seed: int):
@@ -601,8 +620,7 @@ class SingleEval(Dataset):
 
     def __init__(self, base: TerraMeshTokenDataset, per: int):
         super().__init__()
-        if len(base) % int(per):
-            raise ValueError(f"{len(base)} eval rows do not split into micro-batches of {per}")
+        microbatches(len(base), per, "eval rows")
         self.base, self.per = base, int(per)
 
     def __len__(self) -> int:
@@ -620,8 +638,7 @@ class TemporalEval(Dataset):
 
     def __init__(self, temporal: TemporalLocations, per: int, n_dates: int, seed: int = EVAL_SEED):
         super().__init__()
-        if len(temporal) % int(per):
-            raise ValueError(f"{len(temporal)} locations do not split into micro-batches of {per}")
+        microbatches(len(temporal), per, "locations")
         self.temporal, self.per, self.n_dates, self.seed = temporal, int(per), int(n_dates), int(seed)
 
     def __len__(self) -> int:
@@ -717,6 +734,81 @@ def _settings(cfg):
     return mm, tcfg
 
 
+def validate_config(cfg) -> TemporalConfig:
+    """The builder's refusals for a run config (a DictConfig), without building anything: per-device
+    batches of 1, a max_length that holds the longest sequence of the ramp and the eval set, no
+    shuffled patches, a random modality order, and TemporalConfig's own validation. Preflight calls it
+    before a pod starts. Raises ValueError."""
+    return _settings(cfg)[1]
+
+
+# --------------------------------------------------------------------------- the data record
+DATA_RECORD = "temporal_data.json"      # beside pretrain_init.json in the run directory
+#: multimodal's keys that define the data, with the default the builders read when one is absent.
+DATA_MULTIMODAL = {"split": "val", "token_set": "original", "eval_split": None,
+                   "active_modalities": None, "modality_order": "fixed"}
+
+
+def data_settings(cfg) -> Dict:
+    """The settings that define a temporal run's data, as its record holds them (JSON types). The
+    temporal block is TemporalConfig's reading of it, defaults filled in, so that writing a default out
+    or leaving it implicit records the same thing, and a default changed in this file is a change.
+    Schedule keys are deliberately absent. Raises what validate_config raises."""
+    from omegaconf import OmegaConf
+
+    mm, tcfg = _settings(cfg)
+
+    def plain(v):
+        return OmegaConf.to_container(v, resolve=True) if OmegaConf.is_config(v) else v
+
+    out = {"dataset": str(cfg.get("dataset")), "temporal": tcfg.record(),
+           "total_batch_size": int(cfg.get("total_batch_size")), "max_length": int(cfg.get("max_length")),
+           "seed": int(cfg.get("seed", 42)),
+           "multimodal": {k: plain(mm.get(k, d)) for k, d in DATA_MULTIMODAL.items()}}
+    return json.loads(json.dumps(out))
+
+
+def _flat(d: Mapping, prefix: str = "") -> Dict:
+    out = {}
+    for k, v in d.items():
+        key = f"{prefix}.{k}" if prefix else str(k)
+        if isinstance(v, Mapping):
+            out.update(_flat(v, key))
+        else:
+            out[key] = v
+    return out
+
+
+def data_record_changes(record: Mapping, settings: Mapping) -> List[str]:
+    """'key: recorded -> now' for every setting that differs between a run's record and a config."""
+    a, b = _flat(record), _flat(settings)
+    gone = object()
+    return [f"{k}: {a.get(k, '<absent>')!r} -> {b.get(k, '<absent>')!r}"
+            for k in sorted(set(a) | set(b)) if a.get(k, gone) != b.get(k, gone)]
+
+
+def check_data_record(run_dir, settings: Mapping) -> Optional[Dict]:
+    """The run directory's record, if any, must hold these settings. Raises RuntimeError."""
+    p = Path(run_dir) / DATA_RECORD
+    if not p.is_file():
+        return None
+    rec = json.loads(p.read_text())
+    changes = data_record_changes(rec, settings)
+    if changes:
+        raise RuntimeError(f"{p} records other data than this run's config: {changes[:6]}. A resume may not "
+                           f"change the data; a changed design starts a new run (schedule keys are free)")
+    return rec
+
+
+def write_data_record(run_dir, settings: Mapping) -> Path:
+    """Write temporal_data.json, or check the one a resumed run already has (pretrain.py, rank 0)."""
+    p = Path(run_dir) / DATA_RECORD
+    if check_data_record(run_dir, settings) is None:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(settings, indent=2))
+    return p
+
+
 def _eval_split_path(split_ref) -> Path:
     """As load_dataset._build_terramesh resolves multimodal.eval_split: a bare tag, or a path."""
     from eo.data.eval_split import default_split_path
@@ -770,6 +862,7 @@ def build_train(cfg, val_root_dir) -> MixedMicrobatches:
     temporal = TemporalLocations(base, index, locations, tcfg, seed)
     single = SingleScenes(base, index, rows, tcfg, seed) if tcfg.single_share > 0 else None
     ds = MixedMicrobatches(temporal, single, tcfg, int(cfg.total_batch_size), seed)
+    ds.data_settings = data_settings(cfg)
     share = ds.token_share(epoch=0)
     print(f"Temporal train ({split}, {root}): {len(locations)} locations, {len(rows)} Major TOM rows; an epoch is "
           f"{ds.n} micro-batches ({ds.n_temporal} temporal, {ds.n_single} single) = {tcfg.steps_per_epoch} steps "

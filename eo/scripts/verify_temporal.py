@@ -28,8 +28,9 @@ rows outside the held-out split. No test location is ever read: Y3 audits every 
       one date block per group, LULC once, the statics once from date 0's row, and the layout the
       dataset declares; only dev locations and Major TOM rows outside the held-out split are built
                                      | a row off by one; LULC in two groups; a test location
-  Y4  Every micro-batch, and the dry build through load_dataset_from_config with T360's arm, is the
-      closed five keys; modality_ids labels every body and Date; labels follow the mask
+  Y4  Every micro-batch, and the dry build through load_dataset_from_config with T360-T's arm as
+      shipped (multimodal.split=val its one override, since Step 5), is the closed five keys;
+      modality_ids labels every body and Date; labels follow the mask
                                      | a sixth key; Date bodies left unlabelled
   Y5  The same micro-batches at 0, 2 and 3 workers and in a second instance (another rank); a new
       epoch draws anew               | draws keyed on the worker id; draws that ignore the epoch
@@ -58,6 +59,20 @@ rows outside the held-out split. No test location is ever read: Y3 audits every 
 
   ⚠ Y5 and Y17 cover the rank through index purity, a second instance and accelerate's own loader
     classes for two ranks; two real processes under DDP wait for Step 8's two A100s.
+
+Step 5 (continuation through pretrain_init, the arm, preflight; preflight's own checks have their
+controls in eo/train/preflight_controls.py):
+
+  Y18 arm_t360t_vanilla differs from arm_t360_vanilla in exactly its intended keys, each at its
+      intended value, the temporal block naming every TemporalConfig field at the plan's value; the
+      keys it restates or inherits as T360's hold; the builder's own refusals pass on it; its stop
+      meets a save and an eval (HF does neither at stop_steps alone). The pilot's two other arms
+      differ from it in exactly their own key. The data record pretrain.py writes is the one
+      preflight compares, holds no schedule key, and refuses a changed design on a resume
+                                     | a stray seed; stop_steps 1331 (a changed value, and a stop
+                                       that meets no save); the block without year_drop; a stray key
+                                       in each pilot arm; a resume with single_share 0.4, seed 43,
+                                       no eval split, or the no-ramp arm's stages
 """
 from __future__ import annotations
 
@@ -87,7 +102,8 @@ ROOTS = {"val_clean": Path("/data/enric/data/TerraMesh/val_clean"),
 EXT = Path("/data/enric/runs/pretrain/temporal/base/t360_ext_temporal_ckpt17441")
 TABLE = "model.embed_tokens.weight"
 VAL = ROOTS["val_clean"]
-ARM = "arm_t360_vanilla"         # the dry build composes T360's arm with the temporal dataset
+ARM = "arm_t360t_vanilla"        # T360-T's arm (Step 5): Y4's dry build composes it with split val
+ARM_T360 = "arm_t360_vanilla"    # its parent, which Y18 holds it to
 
 RESULTS = []
 
@@ -553,16 +569,17 @@ def five_key_problems(mb) -> list:
     return out
 
 
-def compose(overrides):
+def compose(overrides, name: str = ARM):
     from hydra import compose as hydra_compose, initialize_config_dir
     from hydra.core.global_hydra import GlobalHydra
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(REPO / "conf/pretrain_vision/eo_terramesh"), version_base=None):
-        return hydra_compose(config_name=ARM, overrides=list(overrides))
+        return hydra_compose(config_name=name, overrides=list(overrides))
 
 
-DRY = ("dataset=terramesh_temporal", "multimodal.split=val", "max_length=2793", "total_batch_size=60",
-       "per_device_train_batch_size=1", "per_device_eval_batch_size=1", "model_config.vocab_size=87664")
+# The real arm, on val's root: its train path reads g49's root, where Step 8 builds it (Y3, Y4 there).
+# Until Step 5 this was T360's arm with seven overrides, which are now the arm's own keys (Y18).
+DRY = ("multimodal.split=val",)
 
 
 def y4():
@@ -1290,8 +1307,127 @@ def y17():
            + f" (the skip loader set its epoch to {sorted(set(exposed.values()))})")
 
 
+# ================================================================ Step 5: the arm and the data record
+T360T_DIFF = {
+    # arm_t360t_vanilla against arm_t360_vanilla: every key that differs, and the value it must hold
+    "dataset": "terramesh_temporal", "max_length": 2793, "model_config.vocab_size": TV.TOTAL_VOCAB_SIZE,
+    "precision": "bf16", "total_batch_size": 60, "per_device_train_batch_size": 1, "per_device_eval_batch_size": 1,
+    "pretrain_init.conversion": "${oc.env:MOR_EO_RCP,/data/enric}/runs/pretrain/temporal/base/" + EXT.name,
+    "pretrain_init.variant": "continue", "pretrain_init.freeze_body": False, "pretrain_init.from_stage1": None,
+    "learning_rate": 0.001, "num_train_steps": 10648, "stop_steps": 1332, "num_warmup_steps": 133,
+    "lr_scheduler_kwargs.num_decay_steps": 1065, "save_steps": 333, "eval_steps": 333,
+}
+# Equal to T360's and asserted: the split and eval_on_start are restated in the arm (the first eval_single
+# is read against T360's last, Step 8); T360's 4 workers key the single eval set's modality orders.
+T360T_SAME = {"multimodal.split": "train", "eval_on_start": True, "dataloader_num_workers": 4,
+              "mixed_precision": True, "multimodal.token_set": "clean", "multimodal.eval_split": "v1"}
+PILOT = {"arm_t360t_lr3e4_vanilla": {"learning_rate": 0.0003},
+         "arm_t360t_noramp_vanilla": {"temporal.stages": [{"dates": 4, "locations": 6, "epochs": None}]}}
+
+
+def _flat(c, prefix=""):
+    """Dotted keys of a config, interpolations unresolved (as verify_phase3._flat); lists stay whole."""
+    from omegaconf import OmegaConf
+    if OmegaConf.is_config(c):
+        c = OmegaConf.to_container(c, resolve=False)
+    out = {}
+    for k, v in c.items():
+        key = f"{prefix}.{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            out.update(_flat(v, key))
+        else:
+            out[key] = v
+    return out
+
+
+def _diff(a, b) -> dict:
+    fa, fb = _flat(a), _flat(b)
+    return {k: fb.get(k, "<absent>") for k in set(fa) | set(fb) if fa.get(k, "<absent>") != fb.get(k, "<absent>")}
+
+
+def _intended(diff: dict, want: dict) -> list:
+    """What makes a measured diff other than the intended one: stray or missing keys, wrong values."""
+    out = [f"stray {k}" for k in sorted(set(diff) - set(want))] + [f"missing {k}" for k in sorted(set(want) - set(diff))]
+    return out + [f"{k} = {diff[k]!r}, not {want[k]!r}" for k in sorted(set(diff) & set(want)) if diff[k] != want[k]]
+
+
+def y18():
+    from omegaconf import OmegaConf
+
+    from eo.data import temporal_dataset as T
+    from eo.train.preflight import _load_config
+
+    arm_t = "arm_t360t_vanilla"
+    block = json.loads(json.dumps(T.TemporalConfig().record()))          # the plan's numbers, YAML's spelling
+    want = {**T360T_DIFF, **_flat(block, "temporal")}
+    t360, armc = compose([], name=ARM_T360), compose([], name=arm_t)
+    problems = _intended(_diff(t360, armc), want)
+    flat_t = _flat(armc)
+    problems += [f"{k} = {flat_t.get(k)!r}, not {v!r}" for k, v in T360T_SAME.items() if flat_t.get(k) != v]
+    tcfg = T.validate_config(armc)                     # the builder's own refusals pass on the arm as shipped
+    fits = tcfg == T.TemporalConfig() and int(armc.max_length) == T.sequence_length(tcfg.max_dates())
+    # HF saves and evaluates at multiples of save_steps/eval_steps and at max_steps, never at stop_steps:
+    # the pilot's stop must meet both, or its last checkpoint and eval fall an epoch short (Step 9).
+    on_save = lambda c: int(c.stop_steps) % int(c.save_steps) == 0 and int(c.stop_steps) % int(c.eval_steps) == 0
+    fits = fits and on_save(armc)
+    stray = _intended(_diff(t360, compose(["seed=43"], name=arm_t)), want)
+    off = compose(["stop_steps=1331"], name=arm_t)
+    value = _intended(_diff(t360, off), want)
+    hole = _intended(_diff(t360, compose(["~temporal.year_drop"], name=arm_t)), want)
+    fired = {"a stray seed": bool(stray), "stop_steps 1331 (same keys)": bool(value),
+             "stop_steps 1331 meets no save": not on_save(off),
+             "the block without year_drop": bool(hole)}
+    record("Y18 arm", not problems and fits,
+           f"{arm_t} differs from {ARM_T360} in exactly {len(want)} keys with their values ({len(T360T_DIFF)} plus "
+           f"the {len(want) - len(T360T_DIFF)} of the temporal block, every TemporalConfig field at the plan's "
+           f"value); restated or inherited as T360's: {sorted(T360T_SAME)}; validate_config passes, max_length "
+           f"{armc.max_length} = the {tcfg.max_dates()}-date sequence; the stop at {armc.stop_steps} meets a save "
+           f"and an eval" + (f"; {problems[:4]}" if problems else ""),
+           all(fired.values()), ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in fired.items()))
+
+    pilot_problems, pilot_fired = [], {}
+    for arm, keys in PILOT.items():
+        c = compose([], name=arm)
+        pilot_problems += [f"{arm}: {p}" for p in _intended(_diff(armc, c), keys)]
+        T.validate_config(c)
+        pilot_fired[f"{arm} with a stray single_share"] = bool(_intended(
+            _diff(armc, compose(["temporal.single_share=0.4"], name=arm)), keys))
+    record("Y18 pilot arms", not pilot_problems,
+           "; ".join(f"{a} differs from {arm_t} in exactly {sorted(k)}" for a, k in PILOT.items())
+           + (f"; {pilot_problems[:4]}" if pilot_problems else ""), all(pilot_fired.values()),
+           ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in pilot_fired.items()))
+
+    # The record pretrain.py writes (from Hydra's DictConfig) is the one preflight compares (from its plain
+    # dict), it holds no schedule key, and write_data_record refuses a changed design on a resume.
+    path = REPO / "conf/pretrain_vision/eo_terramesh" / f"{arm_t}.yaml"
+    run_form = T.data_settings(compose(["multimodal.split=val"], name=arm_t))
+    preflight_form = T.data_settings(OmegaConf.create(_load_config(path, {"multimodal.split": "val"})))
+    keys = set(_flat(run_form))
+    schedule = {"learning_rate", "num_train_steps", "stop_steps", "num_warmup_steps", "save_steps", "eval_steps"}
+    tmp = Path(tempfile.mkdtemp(prefix="y18_"))
+    T.write_data_record(tmp, run_form)
+    rewritten = refused(T.write_data_record, tmp, run_form)
+    sched = T.data_settings(compose(["multimodal.split=val", "stop_steps=2662", "num_train_steps=5324",
+                                     "learning_rate=0.0005", "num_warmup_steps=200"], name=arm_t))
+    schedule_free = not refused(T.write_data_record, tmp, sched)
+    ok = (run_form == preflight_form and not rewritten and schedule_free and not (keys & schedule)
+          and set(run_form) == {"dataset", "temporal", "total_batch_size", "max_length", "seed", "multimodal"}
+          and set(run_form["multimodal"]) == set(T.DATA_MULTIMODAL) and run_form["temporal"] == block)
+    changed = {"single_share 0.4": ["multimodal.split=val", "temporal.single_share=0.4"],
+               "seed 43": ["multimodal.split=val", "seed=43"],
+               "the eval split": ["multimodal.split=val", "multimodal.eval_split=null"]}
+    fired = {k: refused(T.write_data_record, tmp, T.data_settings(compose(ov, name=arm_t))) for k, ov in changed.items()}
+    fired["the no-ramp arm"] = refused(T.write_data_record, tmp, T.data_settings(
+        compose(["multimodal.split=val"], name="arm_t360t_noramp_vanilla")))
+    shutil.rmtree(tmp)
+    record("Y18 data record", ok, f"{len(keys)} settings, the same from pretrain.py's DictConfig and from preflight's "
+           f"dict; no schedule key; written once, then accepted unchanged and with only the schedule changed",
+           all(fired.values()), "a resume refused with " + ", ".join(
+               f"{k}: {'yes' if v else 'NO'}" for k, v in fired.items()))
+
+
 CHECKS = {"Y1": y1, "Y3": y3, "Y4": y4, "Y5": y5, "Y6": y6, "Y7": y7, "Y8": y8, "Y9": y9, "Y14": y14,
-          "Y16": y16, "Y17": y17}
+          "Y16": y16, "Y17": y17, "Y18": y18}
 
 
 def main() -> int:

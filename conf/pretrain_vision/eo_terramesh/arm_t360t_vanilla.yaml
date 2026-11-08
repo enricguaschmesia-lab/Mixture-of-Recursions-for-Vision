@@ -1,0 +1,116 @@
+# @package _global_
+#
+# ARM T360-T — T360 continued on TerraMesh's four-date locations, mixed with Major TOM scenes: the
+# temporal stage (A1), and the first arm of its pilot. Written 2026-11-08 (A1 Step 5).
+#
+# ┌── THE DIFF FROM T360 (arm_t360_vanilla), IN FULL ─────────────────────────────────────┐
+# │                                      T360                  T360-T (this)              │
+# │   dataset                            terramesh_multimodal  terramesh_temporal         │
+# │   max_length                         1048                  2793 (four dates)          │
+# │   model_config.vocab_size            87556                 87664 (date rows after BEN)│
+# │   precision                          fp16 (inherited)      bf16                       │
+# │   total_batch_size                   1024 scenes           60 micro-batches           │
+# │   per_device_train_batch_size        16                    1 (one micro-batch)        │
+# │   per_device_eval_batch_size         16                    1                          │
+# │   temporal                           absent                every key, the plan's value│
+# │   pretrain_init                      absent                continue, the extended base│
+# │   learning_rate                      3e-3                  1e-3                       │
+# │   num_train_steps                    17441                 10648 (8 passes)           │
+# │   stop_steps                         17441                 1332 (one pass, 4 epochs)  │
+# │   num_warmup_steps                   872                   133                        │
+# │   lr_scheduler_kwargs.num_decay_steps 1744                 1065 (the last 10%)        │
+# │   save_steps, eval_steps             250, 250              333, 333 (one epoch)       │
+# │ Restated, equal to T360's: multimodal.split train, eval_on_start true.                │
+# │ Nothing else. Y18 in eo/scripts/verify_temporal.py asserts it.                        │
+# └───────────────────────────────────────────────────────────────────────────────────────┘
+#
+# THE DATA (eo/data/temporal_dataset.py; docs/plans/a1_temporal_stage.md, decisions 2-10). One
+# dataset index is one homogeneous micro-batch: 10, 7, then 6 whole locations of 1,597, 2,195 and
+# 2,793 tokens (the length ramp, one 333-step epoch per stage), or 16 Major TOM scenes of at most
+# 1,048. So total_batch_size counts micro-batches (60 = 2 GPUs x 30 accumulation) and both
+# per-device batches are 1. The train root is TERRAMESH_TRAIN_TOK_ROOT, with the temporal/ index
+# Step 2 put beside it on g49. Evaluation is two sets on val_clean: `single`, T360's in-training
+# eval set exactly (the 4,416 held-out rows at 1,048, 276 micro-batches of 16), and `temporal`,
+# the 544 dev locations at four dates (68 micro-batches of 8). Keep dataloader_num_workers at
+# T360's 4: the single set's modality orders are keyed on the worker id.
+#
+# THE TEMPORAL BLOCK is written out in full, so that the run's config records every setting.
+# The values are the plan's working decisions (TemporalConfig's defaults), which the meeting of
+# 11 Nov may change. A run records the settings that define its data (temporal_data.json beside
+# pretrain_init.json) and a resume that would change them is refused: a changed design starts a
+# new run. Schedule keys stay free: the pilot's winner resumes with only stop_steps changed.
+#
+# THE BASE: T360's checkpoint-17441 with the 108 date rows appended (extend_checkpoint.py
+# --layout temporal, identity-checked; sha 8a3972fb9617...). It lives under ${MOR_EO_RCP} on RCP
+# ($G/runs/pretrain/temporal/base/...) and under /data/enric here (MOR_EO_RCP unset). ⚠ Copy it
+# to RCP with a SHA-256 check, never rebuild it there: a base's hash depends on the device that
+# computed its new rows (Step 3), so a rebuilt one is refused as changed. The whole model trains
+# from it, with a fresh optimizer and scheduler (eo/train/clevr_init.py, variant continue).
+#
+# ⚠ bf16, stated here: the parent still inherits fp16, the precision that killed T360 at step
+#   6,388 (CLAUDE.md). Decode at fp16 as before (bf16 fails T360's cache_check).
+# ⚠ stop_steps is 1,332, four epochs, so that the pilot's stop meets a save and an eval (Enric,
+#   2026-11-08). HF saves and evaluates at multiples of save_steps and eval_steps and at
+#   num_train_steps, never at stop_steps: at Step 9's 1,331 the last checkpoint and in-training
+#   eval would have been at 999. num_train_steps and the decay stay as Step 9 wrote them, since HF
+#   saves at the last step anyway. Y18 holds the stop to a multiple of both.
+#
+# The pilot's other arms are thin overlays on this one: arm_t360t_lr3e4_vanilla (LR 3e-4) and
+# arm_t360t_noramp_vanilla (four dates from step 0).
+#
+#   launch (RCP, a -g 2 pod): the job script comes with Step 8 (a copy of jobs/train_mgpu.sh).
+
+defaults:
+  - arm_t360_vanilla
+  - _self_
+
+dataset: terramesh_temporal
+multimodal:
+  split: train
+max_length: 2793
+model_config:
+  vocab_size: 87664
+precision: bf16
+
+total_batch_size: 60
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+
+temporal:
+  order_probs:
+    chronological: 0.4
+    leave_one_out: 0.4
+    uniform: 0.2
+  date_probs:
+    first: 0.8
+    last: 0.1
+    absent: 0.1
+  year_drop: 0.3
+  stages:
+    - {dates: 2, locations: 10, epochs: 1}
+    - {dates: 3, locations: 7, epochs: 1}
+    - {dates: 4, locations: 6, epochs: null}
+  scenes_per_microbatch: 16
+  single_share: 0.5
+  steps_per_epoch: 333
+  single_max_length: 1048
+  eval_scenes_per_microbatch: 16
+  eval_locations_per_microbatch: 8
+  eval_dates: 4
+  eval_seed: 20261108
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/runs/pretrain/temporal/base/t360_ext_temporal_ckpt17441
+  variant: continue
+  freeze_body: false
+  from_stage1: null
+
+learning_rate: 0.001
+num_train_steps: 10648
+stop_steps: 1332
+num_warmup_steps: 133
+lr_scheduler_kwargs:
+  num_decay_steps: 1065
+save_steps: 333
+eval_steps: 333
+eval_on_start: true

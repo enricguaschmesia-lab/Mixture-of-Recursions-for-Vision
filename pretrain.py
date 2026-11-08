@@ -294,6 +294,10 @@ def main(cfg: DictConfig):
         # Stage 2's handoff check reads stage 1's record; a resume must match its own.
         from eo.train.clevr_init import write_record
         write_record(train_args.output_dir, pretrain_init_report)
+    if getattr(train_dataset, "data_settings", None) is not None and int(os.environ.get("RANK", "0")) == 0:
+        # The temporal stage records what defines its data; a resume that would change it is refused.
+        from eo.data.temporal_dataset import write_data_record
+        write_data_record(train_args.output_dir, train_dataset.data_settings)
         
     if "mor" in cfg and cfg.mor.get("enable"):
         trainer = MoRTrainer(model=model, args=train_args, train_dataset=train_dataset,

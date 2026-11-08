@@ -39,6 +39,12 @@ The training side is at the bottom: `pretrain_init` (pretrain.py's hook), `freez
 (stage 1 trains the embedding table alone) and `check_handoff` (stage 2 starts from a stage 1
 whose body is still the conversion's, bit for bit). Their controls are in
 `eo/train/preflight_controls.py` and in `eo/scripts/verify_phase3.py` W19 and W20.
+
+The same hook continues a pretrained EO model (A1 Step 5, 2026-11-08): variant `continue`, whose
+`conversion` is an EXTENDED base written by eo/scripts/extend_checkpoint.py (T360 with the date
+rows), checked through its extension.json (eo/finetune/init.verify_extension) instead of a
+conversion.json. The whole model trains from it: no freeze, no stage 1, no LoRA. Strict load,
+value check, tie check and the run record are the other variants'.
 """
 from __future__ import annotations
 
@@ -64,6 +70,10 @@ EMBED_KEYS = (EMBED_KEY, HEAD_KEY)
 SOURCES = {"clevr": ("clevr", "shuffled"), "smollm": ("smollm", "smollm_shuffled")}
 VARIANTS = tuple(v for vs in SOURCES.values() for v in vs)
 SHUFFLED = ("shuffled", "smollm_shuffled")
+#: Continued pretraining from an extended base (A1 Step 5). Not a body variant, so not in
+#: VARIANTS, which the converters and body_state use: only the training side accepts it.
+CONTINUE = "continue"
+INIT_VARIANTS = VARIANTS + (CONTINUE,)
 FUNCTION_TOL = 1e-5        # identical tensors through identical fp32 CPU code: expected 0
 EMBED_STD_RTOL = 0.02      # the fresh table's std against initializer_range
 SHUFFLED_SAME_MAX = 0.05   # a permuted body may keep a few entries in place by chance, not more
@@ -300,7 +310,7 @@ def load_rgb_rows(path: Path, expect_sha256: Optional[str] = None) -> Dict[str, 
 #
 #   pretrain_init:
 #     conversion: <dir>         the verified converted init; provenance in both stages
-#     variant: clevr|shuffled|smollm|smollm_shuffled   must be the conversion's
+#     variant: clevr|shuffled|smollm|smollm_shuffled|continue   must be the conversion's
 #     freeze_body: true|false   true = stage 1: only the embedding table trains
 #     from_stage1: <ckpt>|null  stage 2: stage 1's FINAL checkpoint, handoff checked
 #     lora: {r, alpha}          OPTIONAL (2026-10-29), absent = null: stage 2 trains rank-r
@@ -308,6 +318,8 @@ def load_rgb_rows(path: Path, expect_sha256: Optional[str] = None) -> Dict[str, 
 #
 # Stage 1 is (true, null) and stage 2 is (false, <ckpt>). B10cV0, the arm without stage 1,
 # would be (false, null). (true, <ckpt>) is refused, and so is lora with freeze_body.
+# `continue` (A1 Step 5) is (false, null) with no lora, and only that: its `conversion` is an
+# extended base (extension.json, verify_init), from which the whole model trains.
 # `lora` is the one optional key, so every record and config written before it still reads
 # the same (absent = null = full fine-tune); a misspelt key is still refused as unknown.
 # ⚠ Stage 2's configs say `from_stage1: ???`. A forgotten override must not turn into
@@ -355,8 +367,8 @@ def read_block(block, env: Optional[Mapping[str, str]] = None) -> Dict:
                 return m[2]
             v = _OC_ENV.sub(sub, v)
         out[k] = v
-    if out["variant"] not in VARIANTS:
-        raise ValueError(f"pretrain_init.variant {out['variant']!r} is not one of {VARIANTS}")
+    if out["variant"] not in INIT_VARIANTS:
+        raise ValueError(f"pretrain_init.variant {out['variant']!r} is not one of {INIT_VARIANTS}")
     if not isinstance(out["freeze_body"], bool):
         raise ValueError(f"pretrain_init.freeze_body must be true or false, got {out['freeze_body']!r}")
     if out["freeze_body"] and out["from_stage1"] is not None:
@@ -366,6 +378,11 @@ def read_block(block, env: Optional[Mapping[str, str]] = None) -> Dict:
     if out["lora"] is not None and out["freeze_body"]:
         raise ValueError("pretrain_init: lora with freeze_body. freeze_body is stage 1 (the table "
                          "alone trains); lora is a stage-2 regime (adapters on the frozen body)")
+    if out["variant"] == CONTINUE and (out["freeze_body"] or out["from_stage1"] is not None
+                                       or out["lora"] is not None):
+        raise ValueError(f"pretrain_init: variant {CONTINUE} continues the whole model from an extended "
+                         f"base: freeze_body false, from_stage1 null, no lora (got freeze_body "
+                         f"{out['freeze_body']}, from_stage1 {out['from_stage1']!r}, lora {out['lora']})")
     out["conversion"] = Path(str(out["conversion"]))
     out["from_stage1"] = None if out["from_stage1"] is None else Path(str(out["from_stage1"]))
     return out
@@ -387,11 +404,50 @@ def _read_lora(v) -> Optional[Dict]:
     return {"r": int(r), "alpha": float(a)}
 
 
+def verify_init(plan: Dict, vocab_size: int, check_hash: bool = True) -> Dict:
+    """The init's verdict, for the block `read_block` returned. Raises RuntimeError with the reason.
+
+    A body variant reads conversion.json (`verify_conversion`). `continue` reads the extended
+    base's extension.json (eo/finetune/init.verify_extension): identity passed, both controls
+    fired, extended to exactly the model's vocabulary, weights hashing to the record. So T360's own
+    checkpoint (no extension.json), a BEN extension (87,577 rows) and a base changed after its
+    identity check are all refused. The base must also name the date layout the code has now
+    (temporal_vocab.layout_record), so a base written before a layout change is refused too,
+    whatever its size.
+    """
+    if plan["variant"] != CONTINUE:
+        return verify_conversion(plan["conversion"], plan["variant"], vocab_size, check_hash=check_hash)
+    from eo.data import temporal_vocab as TV
+    from eo.finetune.init import verify_extension
+    doc = verify_extension(plan["conversion"], vocab_size, check_hash=check_hash)
+    if doc.get("layout") != "temporal" or doc.get("temporal_vocab") != TV.layout_record():
+        raise RuntimeError(f"{plan['conversion'] / 'extension.json'}: layout {doc.get('layout')!r} does not "
+                           f"record the date rows of eo/data/temporal_vocab.py as they are now; rebuild the "
+                           f"base with extend_checkpoint.py --layout temporal")
+    return doc
+
+
+def source_record(variant: str, doc: Dict) -> Dict:
+    """Where the init's weights came from, for the run record."""
+    if variant == CONTINUE:
+        return {"checkpoint": doc.get("source_checkpoint"), "weights_sha256": doc.get("source_weights_sha256"),
+                "layout": doc.get("layout"), "vocab_after": doc["extension"]["vocab_after"]}
+    return {k: doc["source"].get(k) for k in ("repo", "revision", "weights_sha256", "global_step")}
+
+
+def record_identity(plan: Dict, doc: Dict) -> Dict:
+    """The RECORD_IDENTITY fields of a run under this block: what a resume and a handoff compare."""
+    return {"conversion_weights_sha256": doc["weights_sha256"], "variant": plan["variant"],
+            "freeze_body": plan["freeze_body"],
+            "from_stage1": None if plan["from_stage1"] is None else str(plan["from_stage1"]),
+            "lora": plan["lora"]}
+
+
 def check_arm(cfg) -> None:
     """Vanilla only, and not on top of a fine-tune's init. Raises ValueError."""
     if (cfg.get("recursive") or {}).get("enable") or (cfg.get("mor") or {}).get("enable"):
-        raise ValueError("pretrain_init is for the vanilla arm only: the pretrained body has 29 "
-                         "distinct layers, and a recursive arm would tie them")
+        raise ValueError("pretrain_init is for the vanilla arm only: every layer of the pretrained "
+                         "body is distinct, and a recursive arm would tie them")
     if (cfg.get("finetune") or {}).get("init_from"):
         raise ValueError("pretrain_init and finetune.init_from do not combine")
 
@@ -511,13 +567,15 @@ def pretrain_init(model, cfg) -> Dict:
     Not a resume: HF builds a fresh optimizer and scheduler. On --resume this runs first and
     HF then loads the run's own checkpoint over it; the freeze (set here, before the
     optimizer exists) is what makes the saved optimizer's single param group fit again.
+
+    `continue` (A1 Step 5) loads the extended base the same way and trains every parameter.
     """
     from eo.finetune.extend import assert_tied
     from eo.finetune.init import strict_load
     plan = read_block(cfg.pretrain_init)
     check_arm(cfg)
     vocab = int(model.config.vocab_size)
-    doc = verify_conversion(plan["conversion"], plan["variant"], vocab)
+    doc = verify_init(plan, vocab)
     handoff, src = None, plan["conversion"]
     if plan["from_stage1"] is not None:
         handoff = check_handoff(plan["from_stage1"], plan["conversion"], plan["variant"], doc)
@@ -541,12 +599,9 @@ def pretrain_init(model, cfg) -> Dict:
         for p in model.parameters():
             p.requires_grad_(True)
         trainable = int(sum(p.numel() for p in model.parameters()))
-    return {"conversion": str(plan["conversion"]), "conversion_weights_sha256": doc["weights_sha256"],
-            "variant": plan["variant"], "freeze_body": plan["freeze_body"],
-            "from_stage1": None if plan["from_stage1"] is None else str(plan["from_stage1"]),
-            "lora": plan["lora"], "lora_report": lora,
+    return {"conversion": str(plan["conversion"]), **record_identity(plan, doc), "lora_report": lora,
             "loaded_from": str(src), "load": load, "handoff": handoff,
-            "source": {k: doc["source"].get(k) for k in ("repo", "revision", "weights_sha256", "global_step")},
+            "source": source_record(plan["variant"], doc),
             "trainable_params": trainable,
             "total_params": int(sum(p.numel() for p in model.parameters()))}
 
