@@ -181,7 +181,8 @@ def check_multi_gpu(ctx: PreflightContext) -> CheckResult:
     if spec is not None and spec.large_output_env is None:
         return CheckResult("multi-gpu", False, f"--gpus {n} on the workstation alias {ctx.gpu_alias!r}",
                            "The workstation has one card per alias, and its two cards differ. "
-                           "Multi-GPU is for an RCP pod with identical cards (--gpu a100).")
+                           "Multi-GPU is for one RCP pod or Izar node with identical cards "
+                           "(--gpu a100 or v100).")
     cfg = _load_config(ctx.config_path, ctx.overrides) if ctx.config_path and ctx.config_path.is_file() else {}
     if cfg.get("dataset") == "ben_multimodal" or (cfg.get("finetune") or {}).get("init_from"):
         return CheckResult("multi-gpu", False, f"--gpus {n} on a BEN fine-tune",

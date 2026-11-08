@@ -24,6 +24,7 @@
 #   --arm NAME        required. Names the run, the W&B run, and the output dir.
 #   --gpu ALIAS       titanv (default, the training card) | titanx
 #                     | a100 (EPFL RCP only, inside a Run:AI job; no --detach)
+#                     | v100 (EPFL SCITAS Izar only, inside a Slurm job; no --detach)
 #   --gpus N          cards to train on (default 1). N > 1 launches pretrain.py under
 #                     torchrun (DDP, one process per card) and needs N identical
 #                     cards on one node: an RCP pod submitted with `-g N`. Not on the
@@ -51,7 +52,7 @@
 #   bash eo/scripts/train_eo.sh --arm b10full --config eo_ben/b10_full --gpu titanx \
 #        --init-from /data/enric/runs/pretrain/phase6/base/b10_ext_ckpt3300 --detach
 #
-# Environment overrides (RCP; unset on the workstation): MOR_PYTHON (the
+# Environment overrides (RCP and Izar; unset on the workstation): MOR_PYTHON (the
 # interpreter, default .venv/bin/python), MOR_LOG_DIR (default /data/enric/logs).
 set -euo pipefail
 
@@ -121,9 +122,9 @@ fi
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 PY="${MOR_PYTHON:-$REPO/.venv/bin/python}"
 [[ -x "$PY" ]] || { echo "ERROR: $PY not found. The EO training path runs in .venv (MOR_PYTHON on RCP)." >&2; exit 2; }
-# On RCP the Run:AI job is the supervisor (restarts, logs); a tmux inside a pod dies with it.
-if [[ "$GPU" == "a100" && $DETACH -eq 1 ]]; then
-  echo "ERROR: --detach is for the workstation. On RCP, submit the run as a Run:AI job." >&2; exit 2
+# On RCP and Izar the scheduler's job is the supervisor (restarts, logs); a tmux inside it dies with it.
+if [[ ( "$GPU" == "a100" || "$GPU" == "v100" ) && $DETACH -eq 1 ]]; then
+  echo "ERROR: --detach is for the workstation. On RCP submit a Run:AI job, on Izar an sbatch job." >&2; exit 2
 fi
 
 if ! GPU_INDEX="$("$PY" -m eo.train.gpu "$GPU" --count "$NGPU")"; then

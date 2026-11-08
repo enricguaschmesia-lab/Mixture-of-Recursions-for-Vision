@@ -391,6 +391,26 @@ def main(argv=None) -> int:
         ("MOR_SAVE_DIR on /data2 (not /data)",  "MOR_SAVE_DIR", dict(env=_env(MOR_SAVE_DIR="/data2/runs"))),
     ]
 
+    # --- remote site 2 (SCITAS Izar V100, 2026-11-08): the same rules under MOR_EO_IZAR,
+    # and neither site's variable may stand in for the other's. ---
+    izar = tmp / "izar"
+    izar_env = _env(MOR_EO_IZAR=str(izar), MOR_SAVE_DIR=str(izar / "runs"), HF_HOME=str(izar / "hf"),
+                    WANDB_DIR=str(izar / "runs/wandb"), WANDB_MODE="offline")
+    izar_base = _results(izar_env, gpu_alias="v100")
+    if not all(izar_base.values()):
+        print(f"  BROKEN v100 BASELINE -- failing: {[k for k, v in izar_base.items() if not v]}")
+        return 1
+    cases += [
+        ("v100: MOR_EO_IZAR unset",               "MOR_SAVE_DIR", dict(env={k: v for k, v in izar_env.items() if k != "MOR_EO_IZAR"}, gpu_alias="v100")),
+        ("v100: MOR_EO_IZAR relative",            "MOR_SAVE_DIR", dict(env={**izar_env, "MOR_EO_IZAR": "izar"}, gpu_alias="v100")),
+        ("v100: MOR_SAVE_DIR outside Izar root",  "MOR_SAVE_DIR", dict(env={**izar_env, "MOR_SAVE_DIR": "/data/enric/runs"}, gpu_alias="v100")),
+        ("v100: HF_HOME outside Izar root",       "HF_HOME",      dict(env={**izar_env, "HF_HOME": "/data/enric/hf"}, gpu_alias="v100")),
+        ("v100: WANDB_DIR outside Izar root",     "W&B",          dict(env={**izar_env, "WANDB_DIR": "/data/enric/runs/wandb"}, gpu_alias="v100")),
+        ("v100: MOR_EO_RCP does not serve Izar",  "MOR_SAVE_DIR", dict(env={**{k: v for k, v in izar_env.items() if k != "MOR_EO_IZAR"}, "MOR_EO_RCP": str(izar)}, gpu_alias="v100")),
+        ("a100: MOR_EO_IZAR does not serve RCP",  "MOR_SAVE_DIR", dict(env={**izar_env}, gpu_alias="a100")),
+        ("titanv: MOR_EO_IZAR cannot relax /data", "MOR_SAVE_DIR", dict(env={**izar_env}, gpu_alias="titanv")),
+    ]
+
     # --- multi-GPU (2026-10-20, --gpus N): an RCP pod with N identical cards. Each
     # case is a way a DDP run trains a different recipe, or resumes wrongly, with
     # exit 0: a rounded batch, a padded eval, a resume that restores no RNG state or
@@ -647,6 +667,11 @@ def main(argv=None) -> int:
     ] + [
         (f"a100: {name} under the RCP root", name, rcp_base) for name in ("MOR_SAVE_DIR", "HF_HOME", "W&B")
     ] + [
+        (f"v100: {name} under the Izar root", name, izar_base) for name in ("MOR_SAVE_DIR", "HF_HOME", "W&B")
+    ] + [
+        ("--gpus 2 on a v100 node",              "multi-gpu",
+         _results(env={**izar_env, "CUDA_VISIBLE_DEVICES": "0,1"}, n_gpus=2, gpu_alias="v100")),
+    ] + [
         ("token set: clean resolves to val_clean", "token set", _results(env=GOOD_ENV, config=clean_cfg)),
         ("train root: a good root passes",         "train root", _results(env=tenv["ok"], config=train_cfg)),
         ("train root: partial, allowed (smoke)",   "train root",
@@ -676,6 +701,8 @@ def main(argv=None) -> int:
     # but not "A100"; a card NAMED A100 at the wrong capability must still refuse. ---
     from eo.train.gpu import GpuInfo, resolve, resolve_n
     a100 = GpuInfo(0, "NVIDIA A100-SXM4-80GB", (8, 0), 81920)
+    v100 = GpuInfo(0, "Tesla V100-PCIE-32GB", (7, 0), 32768)
+    ws_both = [GpuInfo(0, "NVIDIA GeForce GTX TITAN X", (5, 2), 12288), GpuInfo(1, "NVIDIA TITAN V", (7, 0), 12288)]
     res_cases = [
         ("resolve a100 on an RCP pod",            [a100], "a100", 0),
         ("resolve titanv on the workstation",     [GpuInfo(0, "NVIDIA GeForce GTX TITAN X", (5, 2), 12288),
@@ -686,6 +713,11 @@ def main(argv=None) -> int:
         ("a100 alias, two A100s: the lowest",     [GpuInfo(1, "NVIDIA A100-SXM4-80GB", (8, 0), 81920), a100], "a100", 0),
         ("a100 alias, A100 80 GB + 40 GB refuses", [a100, GpuInfo(1, "NVIDIA A100-SXM4-40GB", (8, 0), 40960)], "a100", None),
         ("a100 alias on the workstation refuses", [GpuInfo(1, "NVIDIA TITAN V", (7, 0), 12288)], "a100", None),
+        # V100 and TITAN V are both sm_70: only the name separates them, both ways.
+        ("resolve v100 on an Izar node",          [v100], "v100", 0),
+        ("v100 alias on the TITAN V refuses",     ws_both, "v100", None),
+        ("titanv alias on a V100 refuses",        [v100], "titanv", None),
+        ("v100 alias on an A100 refuses",         [a100], "v100", None),
     ]
     print("\nalias resolution (fake inventories):")
     res_ok = 0
@@ -707,6 +739,8 @@ def main(argv=None) -> int:
         ("a100 x2 on one A100 refuses",           [a100], "a100", 2, None),
         ("a100 x2 on 80 GB + 40 GB refuses",      [a100, GpuInfo(1, "NVIDIA A100-SXM4-40GB", (8, 0), 40960)], "a100", 2, None),
         ("titanv x2 on the workstation refuses",  ws, "titanv", 2, None),
+        ("v100 x2 on a two-V100 node",            [v100, GpuInfo(1, "Tesla V100-PCIE-32GB", (7, 0), 32768)], "v100", 2, [0, 1]),
+        ("v100 x2, 32 GB + 16 GB refuses",        [v100, GpuInfo(1, "Tesla V100-SXM2-16GB", (7, 0), 16384)], "v100", 2, None),
     ]
     for label, inv, alias, n, want in n_cases:
         try:

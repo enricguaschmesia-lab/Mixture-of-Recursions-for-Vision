@@ -37,6 +37,8 @@ assertions below work unchanged. What differs is WHERE large outputs may live:
 there is no /data on RCP, and the private project root is named by the alias's
 `large_output_env` (`MOR_EO_RCP`). Preflight enforces that root on RCP, and
 /data on the workstation, so the remote setting can never relax the local guard.
+`v100` (2026-11-08) is EPFL SCITAS Izar's V100, launched through an sbatch wrapper
+(`MOR_EO_IZAR`). Slurm exposes only the allocated cards, so resolution is unchanged.
 
 SEVERAL GPUS (2026-10-20). `resolve_n(alias, n)` picks n cards of one alias for a
 multi-GPU (DDP) run, and `assert_selected(alias, n)` proves the process sees exactly
@@ -97,6 +99,17 @@ GPU_ALIASES: Dict[str, GpuSpec] = {
         note="Ampere, EPFL RCP (Run:AI). fp16/bf16 tensor cores. Remote: launched only through "
              "the RCP job wrapper; large outputs under $MOR_EO_RCP, not /data.",
         large_output_env="MOR_EO_RCP",
+    ),
+    # Same sm_70 as the TITAN V, so only the name tells them apart: "TITAN V" is not
+    # in "Tesla V100-PCIE-32GB" and "V100" is not in "NVIDIA TITAN V".
+    "v100": GpuSpec(
+        alias="v100",
+        name_contains="V100",
+        compute_capability=(7, 0),
+        note="Volta, EPFL SCITAS Izar (Slurm). fp16 tensor cores (93.4 TFLOP/s fp16, 13.4 fp32, "
+             "measured 2026-11-07); bf16 is emulated. Remote: launched only through the Izar "
+             "sbatch wrapper; large outputs under $MOR_EO_IZAR, not /data.",
+        large_output_env="MOR_EO_IZAR",
     ),
 }
 
