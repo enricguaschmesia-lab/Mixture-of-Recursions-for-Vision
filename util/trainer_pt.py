@@ -88,6 +88,15 @@ class PerModalityLossMixin:
     into `loss_<modality>` would quietly corrupt the training curve.
     """
 
+    def _get_train_sampler(self, train_dataset=None):
+        """A dataset that orders its own epochs (the temporal stage's micro-batches) is read in index
+        order. HF's shuffled sampler is replayed in epoch 0's order after a mid-epoch resume on one
+        process: accelerate's skip_first_batches loader resets it (eo/data/temporal_dataset.py)."""
+        dataset = self.train_dataset if train_dataset is None else train_dataset
+        if getattr(dataset, "orders_itself", False):
+            return torch.utils.data.SequentialSampler(dataset)
+        return super()._get_train_sampler(train_dataset)
+
     def init_per_modality(self, cfg):
         """Call from __init__ AFTER super().__init__ (needs self.args.device).
 
@@ -167,7 +176,16 @@ class PerModalityLossMixin:
         are (B, 1048, 87556) and gathering them across the eval set needs
         hundreds of GB -- so the per-modality CE has to be accumulated inside
         compute_loss, where the logits still exist, and folded in here.
+
+        ⚠ A DICT OF EVAL SETS (the temporal stage's `single` and `temporal`). HF's evaluate calls
+        self.evaluate once per set, with metric_key_prefix "eval_<name>", and each of those calls
+        logs its own per-modality CE. The outer call must add nothing: its accumulators hold the
+        LAST set's values, which it would log again as plain `eval_loss_<modality>` (A1 finding 12).
         """
+        named = kwargs.get("eval_dataset", args[0] if args else None)
+        if isinstance(getattr(self, "eval_dataset", None) if named is None else named, dict):
+            return super().evaluate(*args, **kwargs)
+
         for name in self.modality_ev_loss:                # zero_(): see log()
             self.modality_ev_loss[name].zero_()
             self.modality_ev_count[name].zero_()

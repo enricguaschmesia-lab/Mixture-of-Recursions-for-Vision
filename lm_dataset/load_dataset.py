@@ -36,12 +36,20 @@ MULTIMODAL_DATASETS = {
     "ben_multimodal": {
         "root_dir": BEN_ROOT,
     },
+    # The temporal stage (A1 Step 4): whole locations and Major TOM scenes, one micro-batch per
+    # index (eo/data/temporal_dataset.py). Val's root; a train run reads TERRAMESH_TRAIN_TOK_ROOT.
+    "terramesh_temporal": {
+        "root_dir": TERRAMESH_TOK_ROOT,
+    },
 }
 
 
 
-def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
+def _build_terramesh(cfg, mm_cfg, root_dir, want="train", max_length=None):
     """Construct the EO dataset, applying the held-out split if one is configured.
+
+    `max_length` overrides cfg.max_length: the temporal stage's single-date eval set keeps T360's
+    1,048 while its sequences run to 2,793 (A1 finding 11).
 
     `multimodal.eval_split` names the committed split artifact (a path, or a
     bare tag resolved to eo/data/eval_rows_<tag>.json). When it is null the
@@ -62,6 +70,7 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
     from eo.terramesh_tok.clean import resolve_token_root
 
     token_set = mm_cfg.get("token_set", "original")
+    max_length = cfg.max_length if max_length is None else int(max_length)
     if want == "train" and mm_cfg.get("split", "val") == "train":
         # The TRAIN split (2026-10-25): every row of its own consolidated root, from
         # TERRAMESH_TRAIN_TOK_ROOT. Evaluation stays on val's held-out rows (want="eval"
@@ -74,7 +83,7 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
             root_dir=root_dir,
             split="train",
             active_modalities=mm_cfg.get("active_modalities", None),
-            max_length=cfg.max_length,
+            max_length=max_length,
             modality_order=mm_cfg.get("modality_order", "fixed"),
             seed=cfg.get("seed", 42),
             shuffle_image_patches=mm_cfg.get("shuffle_image_patches", False),
@@ -106,7 +115,7 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train"):
         root_dir=root_dir,
         split="val",                   # this path always reads val's root (a train run's eval too)
         active_modalities=mm_cfg.get("active_modalities", None),
-        max_length=cfg.max_length,
+        max_length=max_length,
         modality_order=mm_cfg.get("modality_order", "fixed"),
         seed=cfg.get("seed", 42),
         shuffle_image_patches=mm_cfg.get("shuffle_image_patches", False),
@@ -151,16 +160,32 @@ def _build_ben(cfg, want="train"):
     return ds
 
 
+def _build_temporal(cfg, want="train"):
+    """The temporal stage (A1 Step 4, eo/data/temporal_dataset.py). Train: one micro-batch per index.
+    Eval: {"single": the held-out rows built exactly as T360's eval set, at the stage's single-date
+    length (finding 11), "temporal": the dev locations}, which HF evaluates one by one."""
+    from eo.data import temporal_dataset as T
+
+    root_dir = MULTIMODAL_DATASETS["terramesh_temporal"]["root_dir"]
+    if want == "train":
+        return T.build_train(cfg, root_dir)
+    single = _build_terramesh(cfg, cfg.get("multimodal", {}), root_dir, want="eval",
+                              max_length=T.TemporalConfig.from_cfg(cfg).single_max_length)
+    return T.build_eval(cfg, root_dir, single)
+
+
 def load_eval_dataset_from_config(cfg):
     """The held-out evaluation dataset, or None if this run has no split.
 
     Separate from load_dataset_from_config rather than returning a pair: the
     CLEVR path has no eval split and every existing caller expects exactly one
-    dataset back.
+    dataset back. The temporal stage returns a dict of two named sets.
     """
     dataset_name = [ds.strip() for ds in cfg.dataset.split(',')]
     if dataset_name == ["ben_multimodal"]:
         return _build_ben(cfg, want="eval")
+    if dataset_name == ["terramesh_temporal"]:
+        return _build_temporal(cfg, want="eval")
     if len(dataset_name) != 1 or dataset_name[0] != "terramesh_multimodal":
         return None
     mm_cfg = cfg.get("multimodal", {})
@@ -188,6 +213,8 @@ def load_dataset_from_config(cfg):
             return _build_terramesh(cfg, mm_cfg, ds_cfg["root_dir"], want="train")
         if ds_name == "ben_multimodal":
             return _build_ben(cfg, want="train")
+        if ds_name == "terramesh_temporal":
+            return _build_temporal(cfg, want="train")
 
         active_modalities = list(mm_cfg.get("active_modalities", ["tok_rgb@256"]))
         modality_order = mm_cfg.get("modality_order", "fixed")

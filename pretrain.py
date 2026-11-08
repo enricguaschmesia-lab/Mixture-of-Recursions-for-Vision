@@ -111,8 +111,13 @@ def main(cfg: DictConfig):
     # names one via multimodal.eval_split, so the CLEVR path is untouched.
     eval_dataset = load_eval_dataset_from_config(cfg)
     if eval_dataset is not None:
-        print(f"Eval split: {len(eval_dataset)} held-out rows "
+        sizes = ({k: len(v) for k, v in eval_dataset.items()} if isinstance(eval_dataset, dict)
+                 else len(eval_dataset))
+        print(f"Eval split: {sizes} held-out items "
               f"(train: {len(train_dataset)})")
+    # A micro-batch dataset (the temporal stage) serves one batch per index and brings the collator
+    # that unwraps it. None everywhere else, which is HF's default collator.
+    data_collator = getattr(train_dataset, "collate_fn", None)
     if cfg.resume_from_checkpoint:
         latest_checkpoint = get_latest_checkpoint_path(
             cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None,
@@ -269,7 +274,11 @@ def main(cfg: DictConfig):
 
     if fixed_save_steps is not None:
         callbacks.append(ScalingLawsSaveCallback(fixed_save_steps,))
-    if hasattr(train_dataset, "set_epoch"):
+    if hasattr(train_dataset, "epoch_callback"):
+        # The temporal stage takes its epoch from global_step // steps_per_epoch: SetEpochCallback
+        # rounds state.epoch, which names the next epoch on a resume past mid-epoch (A1 finding 18).
+        callbacks.append(train_dataset.epoch_callback())
+    elif hasattr(train_dataset, "set_epoch"):
         # BEN draws each example's input set from (seed, epoch, row); HF calls on_epoch_begin
         # before it spawns the epoch's dataloader workers, so they see the new epoch.
         from util.callback import SetEpochCallback
@@ -288,7 +297,8 @@ def main(cfg: DictConfig):
         
     if "mor" in cfg and cfg.mor.get("enable"):
         trainer = MoRTrainer(model=model, args=train_args, train_dataset=train_dataset,
-                             eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,)
+                             eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,
+                             data_collator=data_collator,)
     elif is_eo(cfg):
         # ⚠ The recursion-OFF arm. A stock Trainer logs `loss` and `eval_loss`
         # and nothing per modality, because per-modality loss lived inside
@@ -297,11 +307,13 @@ def main(cfg: DictConfig):
         # not have produced. EOTrainer adds the logging and nothing else --
         # the loss itself is still the stock Trainer's (Phase 3 Step 5, D3.6).
         trainer = EOTrainer(model=model, args=train_args, train_dataset=train_dataset,
-                            eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,)
+                            eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,
+                            data_collator=data_collator,)
     else:
         # CLEVR and anything else: untouched.
         trainer = Trainer(model=model, args=train_args, train_dataset=train_dataset,
-                          eval_dataset=eval_dataset, callbacks=callbacks,)
+                          eval_dataset=eval_dataset, callbacks=callbacks,
+                          data_collator=data_collator,)
     
     train_result = trainer.train(
         resume_from_checkpoint=cfg.resume_from_checkpoint
