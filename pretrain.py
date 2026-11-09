@@ -215,6 +215,11 @@ def main(cfg: DictConfig):
         gradient_checkpointing=cfg.gradient_checkpointing,
         max_grad_norm=cfg.max_grad_norm,
         dataloader_num_workers=cfg.dataloader_num_workers,
+        # Micro-batches each worker keeps ready (torch's default 2 when None). The Trainer fetches a whole
+        # step's micro-batches before it runs any (get_batch_samples), so with 4 workers and 2 each only 8
+        # of the temporal stage's 30 per rank are ready when a step begins (A1 Step 8). Timing only: which
+        # worker builds which batch, and so the data, does not depend on it.
+        dataloader_prefetch_factor=cfg.get("dataloader_prefetch_factor") if cfg.dataloader_num_workers else None,
         bf16=cfg.precision == "bf16",
         fp16=cfg.precision == "fp16",
         overwrite_output_dir=True,

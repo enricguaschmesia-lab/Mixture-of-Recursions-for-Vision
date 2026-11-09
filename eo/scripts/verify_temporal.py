@@ -1432,6 +1432,7 @@ T360T_DIFF = {
     "pretrain_init.variant": "continue", "pretrain_init.freeze_body": False, "pretrain_init.from_stage1": None,
     "learning_rate": 0.001, "num_train_steps": 10648, "stop_steps": 1332, "num_warmup_steps": 133,
     "lr_scheduler_kwargs.num_decay_steps": 1065, "save_steps": 333, "eval_steps": 333,
+    "dataloader_prefetch_factor": 8,         # Step 8: a whole step's micro-batches ready; timing only
 }
 # Equal to T360's and asserted: the split and eval_on_start are restated in the arm (the first eval_single
 # is read against T360's last, Step 8); T360's 4 workers key the single eval set's modality orders.

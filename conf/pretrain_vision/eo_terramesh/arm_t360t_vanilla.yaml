@@ -20,6 +20,7 @@
 # │   num_warmup_steps                   872                   133                        │
 # │   lr_scheduler_kwargs.num_decay_steps 1744                 1065 (the last 10%)        │
 # │   save_steps, eval_steps             250, 250              333, 333 (one epoch)       │
+# │   dataloader_prefetch_factor         absent (torch's 2)    8 (a whole step ready)     │
 # │ Restated, equal to T360's: multimodal.split train, eval_on_start true.                │
 # │ Nothing else. Y18 in eo/scripts/verify_temporal.py asserts it.                        │
 # └───────────────────────────────────────────────────────────────────────────────────────┘
@@ -114,3 +115,7 @@ lr_scheduler_kwargs:
 save_steps: 333
 eval_steps: 333
 eval_on_start: true
+# The Trainer fetches a step's 30 micro-batches per rank before running any; at torch's default of 2 per
+# worker only 8 are ready, and on cold reads (0.4-0.6 s a micro-batch) each step waited ~2 s of ~22 (A1 Step 8,
+# one A100). 8 per worker x 4 workers holds a whole step. Timing only: the data and its order do not change.
+dataloader_prefetch_factor: 8
