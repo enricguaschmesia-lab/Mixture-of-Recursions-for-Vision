@@ -1,0 +1,1434 @@
+{
+ "tag": "v1",
+ "created": "2026-11-09",
+ "about": "A1 Step 7: every layout of the temporal readings, per target and target date, the target block last. Blocks are MODALITY@date-index of the location's four chronological dates; a date block keeps its year. Written by eo/scripts/eval_temporal.py layouts; frozen by its hash (eo/eval/temporal.FROZEN_LAYOUTS).",
+ "locations": {
+  "rule": "step0",
+  "split": "temporal_rows_v1.json dev",
+  "n": 256,
+  "seed": 20261105,
+  "target_dates": "t = (i + j) % 4: location i of the n, j the target's index in (S2L2A, S1GRD, NDVI) or the layout's fixed j; forecast t = 3; the date task j = 0"
+ },
+ "probe": {
+  "layout": "t.left_out",
+  "which": "target",
+  "day_shift": 36,
+  "year_shift": 0,
+  "null_day_shift": 1,
+  "about": "the target's day bin moved by 36 of 73 (about half a year), its year kept: a real date in the same year; read paired per location, by the target date's quarter. The null moves it by one bin (5 days), the same swap of date rows with almost no change of season: on untrained rows it measures the rows' noise, on a trained model it should read about 0"
+ },
+ "baselines": {
+  "left_out": {
+   "S2L2A": "s0.statics_same_mod",
+   "S1GRD": "s0.statics_same_mod",
+   "NDVI": "s0.statics_same_mod"
+  },
+  "forecast": {
+   "S2L2A": "c.forecast.statics_same_mod",
+   "S1GRD": "c.forecast.statics_same_mod",
+   "NDVI": "c.forecast.statics_same_mod"
+  },
+  "gap_fill": {
+   "S2L2A": "c.gap_fill.same_mod_s1",
+   "NDVI": "c.gap_fill.same_mod_s1"
+  },
+  "date": "prior (Step 12)",
+  "rule": "per task and target, the candidate with the lowest mean CE on the n dev locations; within 0.005 nats, the shorter layout",
+  "chosen": "2026-11-09, on the extended base without date blocks (it reads as T360 in this range: Step 0's units reproduced within 1e-4), Step 0's 256 dev locations and target dates. Left-out season: Step 0's bar, kept; LULC from the first context date's row instead of the near date's moves it by +0.004 [-0.000, +0.008] on S2L2A, 0.000 on the others. Forecast: statics_same_mod for all three (6.278, 7.189, 6.883). Gap fill: same_mod_s1 for both (6.151, 6.899); statics cost it 0.054 [0.04, 0.07]."
+ },
+ "layouts": {
+  "s0.none": {
+   "about": "Step 0's context layout `none` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@0",
+     "1": "S2L2A@1",
+     "2": "S2L2A@2",
+     "3": "S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@0",
+     "1": "S1GRD@1",
+     "2": "S1GRD@2",
+     "3": "S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@0",
+     "1": "NDVI@1",
+     "2": "NDVI@2",
+     "3": "NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_none.npz"
+  },
+  "s0.statics": {
+   "about": "Step 0's context layout `statics` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@1 LULC@1 Coords@1 S1GRD@0",
+     "1": "DEM@0 LULC@0 Coords@0 S1GRD@1",
+     "2": "DEM@1 LULC@1 Coords@1 S1GRD@2",
+     "3": "DEM@2 LULC@2 Coords@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@1 LULC@1 Coords@1 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 NDVI@1",
+     "2": "DEM@1 LULC@1 Coords@1 NDVI@2",
+     "3": "DEM@2 LULC@2 Coords@2 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_statics.npz"
+  },
+  "s0.same_date": {
+   "about": "Step 0's context layout `same_date` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S1GRD@0 DEM@0 NDVI@0 LULC@0 Coords@0 S2L2A@0",
+     "1": "S1GRD@1 DEM@1 NDVI@1 LULC@1 Coords@1 S2L2A@1",
+     "2": "S1GRD@2 DEM@2 NDVI@2 LULC@2 Coords@2 S2L2A@2",
+     "3": "S1GRD@3 DEM@3 NDVI@3 LULC@3 Coords@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S2L2A@0 DEM@0 NDVI@0 LULC@0 Coords@0 S1GRD@0",
+     "1": "S2L2A@1 DEM@1 NDVI@1 LULC@1 Coords@1 S1GRD@1",
+     "2": "S2L2A@2 DEM@2 NDVI@2 LULC@2 Coords@2 S1GRD@2",
+     "3": "S2L2A@3 DEM@3 NDVI@3 LULC@3 Coords@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "S2L2A@0 S1GRD@0 DEM@0 LULC@0 Coords@0 NDVI@0",
+     "1": "S2L2A@1 S1GRD@1 DEM@1 LULC@1 Coords@1 NDVI@1",
+     "2": "S2L2A@2 S1GRD@2 DEM@2 LULC@2 Coords@2 NDVI@2",
+     "3": "S2L2A@3 S1GRD@3 DEM@3 LULC@3 Coords@3 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_same_date.npz"
+  },
+  "s0.same_mod_all": {
+   "about": "Step 0's context layout `same_mod_all` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_same_mod_all.npz"
+  },
+  "s0.all_other": {
+   "about": "Step 0's context layout `all_other` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 NDVI@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 NDVI@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_all_other.npz"
+  },
+  "s0.all_other_same": {
+   "about": "Step 0's context layout `all_other_same` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 NDVI@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@0 NDVI@0 S1GRD@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@1 NDVI@1 S1GRD@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@2 NDVI@2 S1GRD@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 NDVI@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@0 S1GRD@0 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@1 S1GRD@1 NDVI@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S2L2A@2 S1GRD@2 NDVI@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_all_other_same.npz"
+  },
+  "s0.one_other_0": {
+   "about": "Step 0's context layout `one_other_0` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@1",
+     "2": "S2L2A@0 S2L2A@2",
+     "3": "S2L2A@0 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@1",
+     "2": "S1GRD@0 S1GRD@2",
+     "3": "S1GRD@0 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@1 NDVI@0",
+     "1": "NDVI@0 NDVI@1",
+     "2": "NDVI@0 NDVI@2",
+     "3": "NDVI@0 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_one_other_0.npz"
+  },
+  "s0.one_other_1": {
+   "about": "Step 0's context layout `one_other_1` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@2 S2L2A@0",
+     "1": "S2L2A@2 S2L2A@1",
+     "2": "S2L2A@1 S2L2A@2",
+     "3": "S2L2A@1 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@2 S1GRD@0",
+     "1": "S1GRD@2 S1GRD@1",
+     "2": "S1GRD@1 S1GRD@2",
+     "3": "S1GRD@1 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@2 NDVI@0",
+     "1": "NDVI@2 NDVI@1",
+     "2": "NDVI@1 NDVI@2",
+     "3": "NDVI@1 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_one_other_1.npz"
+  },
+  "s0.one_other_2": {
+   "about": "Step 0's context layout `one_other_2` (t360_context.layouts, no date blocks)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@3 S2L2A@0",
+     "1": "S2L2A@3 S2L2A@1",
+     "2": "S2L2A@3 S2L2A@2",
+     "3": "S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@3 S1GRD@0",
+     "1": "S1GRD@3 S1GRD@1",
+     "2": "S1GRD@3 S1GRD@2",
+     "3": "S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@3 NDVI@0",
+     "1": "NDVI@3 NDVI@1",
+     "2": "NDVI@3 NDVI@2",
+     "3": "NDVI@2 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/ctx_{M}_one_other_2.npz"
+  },
+  "s0.one_near": {
+   "about": "the same modality at the near date only (Step 0's one_other at near(t))",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@1",
+     "2": "S2L2A@1 S2L2A@2",
+     "3": "S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@1",
+     "2": "S1GRD@1 S1GRD@2",
+     "3": "S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@1 NDVI@0",
+     "1": "NDVI@0 NDVI@1",
+     "2": "NDVI@1 NDVI@2",
+     "3": "NDVI@2 NDVI@3"
+    }
+   },
+   "step0_unit": "select:one_other_near"
+  },
+  "s0.statics_same_mod": {
+   "about": "Step 0's best-layout candidate `statics_same_mod` (t360_best_layouts.LAYOUTS)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@1 LULC@1 Coords@1 S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "DEM@0 LULC@0 Coords@0 S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "DEM@1 LULC@1 Coords@1 S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "DEM@2 LULC@2 Coords@2 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@1 LULC@1 Coords@1 NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "DEM@1 LULC@1 Coords@1 NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "DEM@2 LULC@2 Coords@2 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_best_layouts/units/statics_same_mod_{M}.npz"
+  },
+  "s0.statics_near_all": {
+   "about": "Step 0's best-layout candidate `statics_near_all` (t360_best_layouts.LAYOUTS)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S1GRD@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 NDVI@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 NDVI@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@2 S1GRD@2 NDVI@2 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_best_layouts/units/statics_near_all_{M}.npz"
+  },
+  "s0.statics_near_others_same_mod": {
+   "about": "Step 0's best-layout candidate `statics_near_others_same_mod` (t360_best_layouts.LAYOUTS)",
+   "role": "step0",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@1 LULC@1 Coords@1 S1GRD@1 NDVI@1 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S1GRD@0 NDVI@0 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@1 LULC@1 Coords@1 S1GRD@1 NDVI@1 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@2 LULC@2 Coords@2 S1GRD@2 NDVI@2 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 NDVI@1 S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 NDVI@0 S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@1 NDVI@1 S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@2 NDVI@2 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "DEM@1 LULC@1 Coords@1 S2L2A@1 S1GRD@1 NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "DEM@2 LULC@2 Coords@2 S2L2A@2 S1GRD@2 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_best_layouts/units/statics_near_others_same_mod_{M}.npz"
+  },
+  "s0.length_k1": {
+   "about": "S2L2A given the last 1 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "NDVI@0 S2L2A@0",
+     "1": "NDVI@1 S2L2A@1",
+     "2": "NDVI@2 S2L2A@2",
+     "3": "NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k1.npz"
+  },
+  "s0.length_k2": {
+   "about": "S2L2A given the last 2 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "S1GRD@3 NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k2.npz"
+  },
+  "s0.length_k3": {
+   "about": "S2L2A given the last 3 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "NDVI@3 S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "NDVI@3 S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "NDVI@3 S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "NDVI@2 S1GRD@3 NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k3.npz"
+  },
+  "s0.length_k4": {
+   "about": "S2L2A given the last 4 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S1GRD@3 NDVI@3 S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "S1GRD@3 NDVI@3 S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "S1GRD@3 NDVI@3 S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "S1GRD@2 NDVI@2 S1GRD@3 NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k4.npz"
+  },
+  "s0.length_k5": {
+   "about": "S2L2A given the last 5 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@3 S1GRD@3 NDVI@3 S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "S2L2A@3 S1GRD@3 NDVI@3 S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "S2L2A@3 S1GRD@3 NDVI@3 S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k5.npz"
+  },
+  "s0.length_k6": {
+   "about": "S2L2A given the last 6 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k6.npz"
+  },
+  "s0.length_k7": {
+   "about": "S2L2A given the last 7 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k7.npz"
+  },
+  "s0.length_k8": {
+   "about": "S2L2A given the last 8 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "S2L2A@1 S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k8.npz"
+  },
+  "s0.length_k11": {
+   "about": "S2L2A given the last 11 blocks of all_other_same (t360_context LENGTH)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@0 NDVI@0 S2L2A@0",
+     "1": "S2L2A@0 S1GRD@0 NDVI@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@1 NDVI@1 S2L2A@1",
+     "2": "S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@3 S1GRD@3 NDVI@3 S1GRD@2 NDVI@2 S2L2A@2",
+     "3": "S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 NDVI@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/length_S2L2A_k11.npz"
+  },
+  "s0.pair_ndvi": {
+   "about": "S2L2A -> NDVI at one date; with the target moved by 198(k-1): the long offsets",
+   "role": "step0",
+   "targets": [
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "NDVI": {
+     "0": "S2L2A@0 NDVI@0",
+     "1": "S2L2A@1 NDVI@1",
+     "2": "S2L2A@2 NDVI@2",
+     "3": "S2L2A@3 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/long_S2L2A>NDVI_k{k}.npz"
+  },
+  "s0.pair_cross": {
+   "about": "S2L2A at the near date -> S2L2A at t: the cross-date pair, and the offset curve",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@1",
+     "2": "S2L2A@1 S2L2A@2",
+     "3": "S2L2A@2 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/long_S2L2A>S2L2A_other_date_k{k}.npz"
+  },
+  "s0.pair_ndvi_none": {
+   "about": "NDVI alone (the pair's no-source reference)",
+   "role": "step0",
+   "targets": [
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "NDVI": {
+     "0": "NDVI@0",
+     "1": "NDVI@1",
+     "2": "NDVI@2",
+     "3": "NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/none_S2L2A>NDVI.npz"
+  },
+  "s0.pair_cross_none": {
+   "about": "S2L2A alone (the cross-date pair's no-source reference)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@0",
+     "1": "S2L2A@1",
+     "2": "S2L2A@2",
+     "3": "S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/none_S2L2A>S2L2A_other_date.npz"
+  },
+  "s0.coords_ndvi_between": {
+   "about": "S2L2A -> NDVI with Coords between (t360_context COORDS)",
+   "role": "step0",
+   "targets": [
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "NDVI": {
+     "0": "S2L2A@0 Coords@0 NDVI@0",
+     "1": "S2L2A@1 Coords@1 NDVI@1",
+     "2": "S2L2A@2 Coords@2 NDVI@2",
+     "3": "S2L2A@3 Coords@3 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/coords_S2L2A>NDVI_between.npz"
+  },
+  "s0.coords_cross_between": {
+   "about": "the cross-date pair with Coords between (t360_context COORDS)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 Coords@0 S2L2A@0",
+     "1": "S2L2A@0 Coords@1 S2L2A@1",
+     "2": "S2L2A@1 Coords@2 S2L2A@2",
+     "3": "S2L2A@2 Coords@3 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/coords_S2L2A>S2L2A_other_date_between.npz"
+  },
+  "s0.coords_ndvi_before": {
+   "about": "S2L2A -> NDVI with Coords before (t360_context COORDS)",
+   "role": "step0",
+   "targets": [
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "NDVI": {
+     "0": "Coords@0 S2L2A@0 NDVI@0",
+     "1": "Coords@1 S2L2A@1 NDVI@1",
+     "2": "Coords@2 S2L2A@2 NDVI@2",
+     "3": "Coords@3 S2L2A@3 NDVI@3"
+    }
+   },
+   "step0_unit": "t360_context/units/coords_S2L2A>NDVI_before.npz"
+  },
+  "s0.coords_cross_before": {
+   "about": "the cross-date pair with Coords before (t360_context COORDS)",
+   "role": "step0",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Coords@0 S2L2A@1 S2L2A@0",
+     "1": "Coords@1 S2L2A@0 S2L2A@1",
+     "2": "Coords@2 S2L2A@1 S2L2A@2",
+     "3": "Coords@3 S2L2A@2 S2L2A@3"
+    }
+   },
+   "step0_unit": "t360_context/units/coords_S2L2A>S2L2A_other_date_before.npz"
+  },
+  "s0.profile": {
+   "about": "one full chronological sequence, no date blocks: Coords, DEM, LULC at date 0, then S2L2A, S1GRD, NDVI at dates 0-3 (t360_lattice.profile), every block scored",
+   "role": "step0",
+   "targets": [
+    "*"
+   ],
+   "dates": {
+    "rule": "none"
+   },
+   "blocks": {
+    "*": {
+     "*": "Coords@0 DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3 S1GRD@3 NDVI@3"
+    }
+   },
+   "n": 64,
+   "step0_unit": "t360_lattice.json:profile"
+  },
+  "t.left_out": {
+   "about": "T360-T's left_out task: Step 6's defaults (eo/eval/temporal.task_blocks)",
+   "role": "task",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 S2L2A@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 S2L2A@1",
+     "2": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 S2L2A@2",
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 S1GRD@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 S1GRD@1",
+     "2": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 S1GRD@2",
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 NDVI@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 NDVI@1",
+     "2": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 NDVI@2",
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 NDVI@3"
+    }
+   },
+   "task": "left_out"
+  },
+  "t.forecast": {
+   "about": "T360-T's forecast task: Step 6's defaults (eo/eval/temporal.task_blocks)",
+   "role": "task",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "t.gap_fill": {
+   "about": "T360-T's gap_fill task: Step 6's defaults (eo/eval/temporal.task_blocks)",
+   "role": "task",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 S1GRD@0 S2L2A@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 S1GRD@1 S2L2A@1",
+     "2": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 S1GRD@2 S2L2A@2",
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 S1GRD@0 NDVI@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 S1GRD@1 NDVI@1",
+     "2": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 S1GRD@2 NDVI@2",
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "t.date": {
+   "about": "T360-T's date task: Step 6's defaults (eo/eval/temporal.task_blocks)",
+   "role": "task",
+   "targets": [
+    "Date"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "Date": {
+     "0": "Coords@0 DEM@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@0",
+     "1": "Coords@0 DEM@0 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@1",
+     "2": "Coords@0 DEM@0 S2L2A@2 S1GRD@2 NDVI@2 LULC@2 Date@2",
+     "3": "Coords@0 DEM@0 S2L2A@3 S1GRD@3 NDVI@3 LULC@3 Date@3"
+    }
+   },
+   "task": "date"
+  },
+  "t.bar2": {
+   "about": "two dates: statics, the near date's group (all three, LULC), then the target's group",
+   "role": "reading",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@0 S2L2A@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1",
+     "2": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2",
+     "3": "Coords@0 DEM@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 LULC@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@0 S1GRD@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S1GRD@1",
+     "2": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S1GRD@2",
+     "3": "Coords@0 DEM@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 LULC@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@0 NDVI@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 NDVI@1",
+     "2": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 NDVI@2",
+     "3": "Coords@0 DEM@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 LULC@2 Date@3 NDVI@3"
+    }
+   }
+  },
+  "t.ctx_a": {
+   "about": "statics and the same modality at the other three dates, chronological groups, LULC in the first",
+   "role": "reading",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 LULC@1 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@0 S2L2A@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 LULC@0 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@1 S2L2A@1",
+     "2": "Coords@0 DEM@0 Date@0 S2L2A@0 LULC@0 Date@1 S2L2A@1 Date@3 S2L2A@3 Date@2 S2L2A@2",
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 LULC@0 Date@1 S2L2A@1 Date@2 S2L2A@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "Coords@0 DEM@0 Date@1 S1GRD@1 LULC@1 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@0 S1GRD@0",
+     "1": "Coords@0 DEM@0 Date@0 S1GRD@0 LULC@0 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@1 S1GRD@1",
+     "2": "Coords@0 DEM@0 Date@0 S1GRD@0 LULC@0 Date@1 S1GRD@1 Date@3 S1GRD@3 Date@2 S1GRD@2",
+     "3": "Coords@0 DEM@0 Date@0 S1GRD@0 LULC@0 Date@1 S1GRD@1 Date@2 S1GRD@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "Coords@0 DEM@0 Date@1 NDVI@1 LULC@1 Date@2 NDVI@2 Date@3 NDVI@3 Date@0 NDVI@0",
+     "1": "Coords@0 DEM@0 Date@0 NDVI@0 LULC@0 Date@2 NDVI@2 Date@3 NDVI@3 Date@1 NDVI@1",
+     "2": "Coords@0 DEM@0 Date@0 NDVI@0 LULC@0 Date@1 NDVI@1 Date@3 NDVI@3 Date@2 NDVI@2",
+     "3": "Coords@0 DEM@0 Date@0 NDVI@0 LULC@0 Date@1 NDVI@1 Date@2 NDVI@2 Date@3 NDVI@3"
+    }
+   }
+  },
+  "t.ctx_b": {
+   "about": "t.ctx_a with the other two modalities added to the near date's group (finding 17)",
+   "role": "reading",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@0 S2L2A@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@1 S2L2A@1",
+     "2": "Coords@0 DEM@0 Date@0 S2L2A@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 Date@2 S2L2A@2",
+     "3": "Coords@0 DEM@0 Date@0 S2L2A@0 LULC@0 Date@1 S2L2A@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@0 S1GRD@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@1 S1GRD@1",
+     "2": "Coords@0 DEM@0 Date@0 S1GRD@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S1GRD@3 Date@2 S1GRD@2",
+     "3": "Coords@0 DEM@0 Date@0 S1GRD@0 LULC@0 Date@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "Coords@0 DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 NDVI@2 Date@3 NDVI@3 Date@0 NDVI@0",
+     "1": "Coords@0 DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 NDVI@2 Date@3 NDVI@3 Date@1 NDVI@1",
+     "2": "Coords@0 DEM@0 Date@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 NDVI@3 Date@2 NDVI@2",
+     "3": "Coords@0 DEM@0 Date@0 NDVI@0 LULC@0 Date@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 NDVI@3"
+    }
+   }
+  },
+  "t.profile": {
+   "about": "s0.profile with a date block first in every group (LULC after date 0's): the block profile",
+   "role": "reading",
+   "targets": [
+    "*"
+   ],
+   "dates": {
+    "rule": "none"
+   },
+   "blocks": {
+    "*": {
+     "*": "Coords@0 DEM@0 Date@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3"
+    }
+   }
+  },
+  "t.profile_drop0": {
+   "about": "t.profile without date 0's group (its date block, S2L2A, S1GRD, NDVI); LULC stays",
+   "role": "reading",
+   "targets": [
+    "*"
+   ],
+   "dates": {
+    "rule": "none"
+   },
+   "blocks": {
+    "*": {
+     "*": "Coords@0 DEM@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3"
+    }
+   }
+  },
+  "t.lattice": {
+   "about": "the cross-date pair with the target's date block between (lattice positions)",
+   "role": "reading",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 Date@0 S2L2A@0",
+     "1": "S2L2A@0 Date@1 S2L2A@1",
+     "2": "S2L2A@1 Date@2 S2L2A@2",
+     "3": "S2L2A@2 Date@3 S2L2A@3"
+    }
+   }
+  },
+  "t.lattice_each": {
+   "about": "the cross-date pair with a date block before each block",
+   "role": "reading",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Date@1 S2L2A@1 Date@0 S2L2A@0",
+     "1": "Date@0 S2L2A@0 Date@1 S2L2A@1",
+     "2": "Date@1 S2L2A@1 Date@2 S2L2A@2",
+     "3": "Date@2 S2L2A@2 Date@3 S2L2A@3"
+    }
+   }
+  },
+  "c.forecast.same_mod": {
+   "about": "T360's forecast candidate `same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.forecast.one_near": {
+   "about": "T360's forecast candidate `one_near`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.forecast.statics_same_mod": {
+   "about": "T360's forecast candidate `statics_same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 LULC@0 Coords@0 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "DEM@0 LULC@0 Coords@0 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.forecast.statics_near_all": {
+   "about": "T360's forecast candidate `statics_near_all`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@2 S1GRD@2 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.forecast.statics_near_others_same_mod": {
+   "about": "T360's forecast candidate `statics_near_others_same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 LULC@0 Coords@0 S1GRD@2 NDVI@2 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@2 NDVI@2 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@2 S1GRD@2 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.gap_fill.s1": {
+   "about": "T360's gap-fill candidate `s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S1GRD@0 S2L2A@0",
+     "1": "S1GRD@1 S2L2A@1",
+     "2": "S1GRD@2 S2L2A@2",
+     "3": "S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "S1GRD@0 NDVI@0",
+     "1": "S1GRD@1 NDVI@1",
+     "2": "S1GRD@2 NDVI@2",
+     "3": "S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.statics_s1": {
+   "about": "T360's gap-fill candidate `statics_s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 Coords@0 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 LULC@0 Coords@0 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 LULC@0 Coords@0 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 Coords@0 S1GRD@0 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 S1GRD@1 NDVI@1",
+     "2": "DEM@0 LULC@0 Coords@0 S1GRD@2 NDVI@2",
+     "3": "DEM@0 LULC@0 Coords@0 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.same_mod_s1": {
+   "about": "T360's gap-fill candidate `same_mod_s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@2 S2L2A@3 S1GRD@0 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@2 S2L2A@3 S1GRD@1 S2L2A@1",
+     "2": "S2L2A@0 S2L2A@1 S2L2A@3 S1GRD@2 S2L2A@2",
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "NDVI@1 NDVI@2 NDVI@3 S1GRD@0 NDVI@0",
+     "1": "NDVI@0 NDVI@2 NDVI@3 S1GRD@1 NDVI@1",
+     "2": "NDVI@0 NDVI@1 NDVI@3 S1GRD@2 NDVI@2",
+     "3": "NDVI@0 NDVI@1 NDVI@2 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.statics_same_mod_s1": {
+   "about": "T360's gap-fill candidate `statics_same_mod_s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 Coords@0 S2L2A@1 S2L2A@2 S2L2A@3 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S2L2A@2 S2L2A@3 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 LULC@0 Coords@0 S2L2A@0 S2L2A@1 S2L2A@3 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@0 S2L2A@1 S2L2A@2 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 Coords@0 NDVI@1 NDVI@2 NDVI@3 S1GRD@0 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 NDVI@0 NDVI@2 NDVI@3 S1GRD@1 NDVI@1",
+     "2": "DEM@0 LULC@0 Coords@0 NDVI@0 NDVI@1 NDVI@3 S1GRD@2 NDVI@2",
+     "3": "DEM@0 LULC@0 Coords@0 NDVI@0 NDVI@1 NDVI@2 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.statics_s1_same_mod": {
+   "about": "T360's gap-fill candidate `statics_s1_same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 Coords@0 S1GRD@0 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S1GRD@1 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@0 LULC@0 Coords@0 S1GRD@2 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@0 LULC@0 Coords@0 S1GRD@3 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 Coords@0 S1GRD@0 NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 S1GRD@1 NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "DEM@0 LULC@0 Coords@0 S1GRD@2 NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "DEM@0 LULC@0 Coords@0 S1GRD@3 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.statics_near_all_s1": {
+   "about": "T360's gap-fill candidate `statics_near_all_s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 Coords@0 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 LULC@0 Coords@0 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 Coords@0 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@0 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S1GRD@0 NDVI@0 S1GRD@1 NDVI@1",
+     "2": "DEM@0 LULC@0 Coords@0 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@2 NDVI@2",
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.left_out.statics_same_mod_lulc_o1": {
+   "about": "s0.statics_same_mod with T360-T's statics rows (LULC from the first context date, as its prompt holds), to measure what LULC's row changes",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 Coords@0 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 LULC@0 Coords@0 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@0 LULC@0 Coords@0 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@0 LULC@0 Coords@0 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 LULC@1 Coords@0 S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "DEM@0 LULC@0 Coords@0 S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "DEM@0 LULC@0 Coords@0 S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "DEM@0 LULC@0 Coords@0 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 Coords@0 NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "DEM@0 LULC@0 Coords@0 NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "DEM@0 LULC@0 Coords@0 NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "DEM@0 LULC@0 Coords@0 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "left_out"
+  }
+ }
+}

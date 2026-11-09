@@ -151,6 +151,41 @@ takes about 11 minutes on this workstation's CPU.
     dev locations and the Major TOM rows outside the held-out split (the dataset refuses a test
     location), and they evaluate nothing. The miniature's identity batch is the real one's less its
     row on a test location (row 84,920, a held-out row), topped up with a dev-side held-out row.
+
+Step 7 (the evaluation tools: eo/eval/temporal.py's scoring, eo/scripts/eval_temporal.py, the frozen
+layouts eo/eval/temporal_layouts_v1.json, 2026-11-09). Y20 reads the real T360-T base on CPU.
+
+  Y19 The layout file is frozen (its hash pinned in eo/eval/temporal.FROZEN_LAYOUTS) and equal to its
+      sources: every Step 0 layout to Step 0's own functions (t360_context, t360_best_layouts,
+      t360_lattice's profile), every T360-T task layout to task_blocks (Step 6's defaults), the target
+      dates to t360_context.date_of; T360's baselines are named for every task and target, layouts of
+      the file without date blocks and inside T360's working range, and forecast's and gap fill's hold
+      no block T360-T's prompt lacks; the date task's baseline is the prior
+                                     | a Step 0 layout with two blocks swapped; the file edited by one
+                                       block (refused by its pinned hash); a target in its own context; a
+                                       date block in T360's forecast baseline
+  Y20 The scorer's three paths, on T360-T's base, CPU, fp32, Step 0's first locations and target dates:
+      the target path (run_pass, labels masked to the target block) gives Step 0's stored per-location
+      CE (T360 itself, Titan X) within 1e-4; the profile path's block means (run_pass's fp16 per-token
+      arrays) are within one fp16 step of fp32 block means taken directly; the date path's CE of Y and
+      D and year distribution equal a direct log-softmax within 1e-4
+                                     | the same units at the next target date; labels left on every
+                                       body; a profile's blocks off by one; a date block without its
+                                       year
+  Y21 The wrong date (the date probe's settings from the file, and every date block moved, and a year
+      moved) changes exactly the moved date's tokens, in input_ids and labels alike, and nothing else:
+      positions, modality ids, mask and the prompt as the sequence's prefix
+                                     | a mover that moves the first date block instead; one that also
+                                       shifts the target's positions; one that leaves the labels; a
+                                       wrong date on the date task's own target, and on a sequence
+                                       without date blocks, refused
+  Y23 The cache at the task prompts' length on the GTX Titan X, from eval_temporal.py cache's artifact:
+      T360 on the gap-fill prompt without date blocks (2,382 tokens) and T360-T's base on it with them
+      (2,398, lattice positions), every one of the 197 steps cached against a full pass, at fp32 within
+      1e-3 and at fp16 within 5e-2 or 4 fp16 steps at the largest |logit| (eo/eval/ben.py), all finite;
+      a timed batch of decodes at each precision. SKIPPED while the artifact is missing
+                                     | decoded one position off (both models); on default positions
+                                       behind date blocks
 """
 from __future__ import annotations
 
@@ -2348,8 +2383,459 @@ def y16():
     y16_generation()
 
 
+# ================================================================ Step 7: the evaluation tools
+STEP0_REPORTS = Path("/data/enric/reports/temporal")
+STEP0_CODE = REPO / "eo/experiments/temporal"
+REPRO_TOL = 1e-4          # eval_temporal.REPRO_TOL; Step 0's own control reproduced stored CE to 1.5e-6
+WORKING_RANGE = 1_600     # T360's working range in tokens (finding 4): its baselines stay inside it
+
+
+def _layouts():
+    from eo.eval import temporal as ET
+    return ET.load_layouts(allow_unfrozen=ET.FROZEN_LAYOUTS.get(ET.LAYOUTS_TAG) is None)
+
+
+def _step0_modules():
+    if str(STEP0_CODE) not in sys.path:
+        sys.path.insert(0, str(STEP0_CODE))
+    import t360_best_layouts as BL
+    import t360_context as C
+    return C, BL
+
+
+def layout_source_problems(doc) -> list:
+    """The layout file against its sources: every Step 0 layout against Step 0's own functions
+    (t360_context.layouts, its one_other, length, pairs and coords; t360_best_layouts.LAYOUTS; t360_lattice's
+    profile list), every T360-T task layout against task_blocks, and the target-date rules against
+    t360_context.date_of. Rows are a location's four, 100 + date."""
+    from eo.eval import temporal as ET
+    C, BL = _step0_modules()
+    L, r, out = doc["layouts"], [100, 101, 102, 103], []
+
+    def check(name, m, t, want):
+        got = [(b.modality, r[b.t]) for b in ET.layout_blocks(L[name], m, t)]
+        if got != [(k, x) for k, x in want] + ([(m, r[t])] if t is not None else []):
+            out.append(f"{name} {m} t{t}")
+
+    for m in C.TARGETS:
+        for t in range(4):
+            o = [x for x in range(4) if x != t]
+            for nm, blocks in C.layouts(m, r, t):
+                check(f"s0.{nm}", m, t, blocks)
+            for k in range(3):
+                check(f"s0.one_other_{k}", m, t, [(m, r[o[k]])])
+            check("s0.one_near", m, t, [(m, r[C.near(t)])])
+            for nm, fn in BL.LAYOUTS.items():
+                check(f"s0.{nm}", m, t, fn(m, r, t))
+    for t in range(4):
+        tail = C.date_blocks(r, t) + C.others_at("S2L2A", r, t)
+        for k in C.LENGTH_K:
+            check(f"s0.length_k{k}", "S2L2A", t, tail[-k:])
+        check("s0.pair_ndvi", "NDVI", t, [("S2L2A", r[t])])
+        check("s0.pair_cross", "S2L2A", t, [("S2L2A", r[C.near(t)])])
+        check("s0.pair_ndvi_none", "NDVI", t, [])
+        check("s0.pair_cross_none", "S2L2A", t, [])
+        c = ("Coords", r[t])
+        for src, nm in ((("S2L2A", r[t]), "ndvi"), (("S2L2A", r[C.near(t)]), "cross")):
+            tgt = "NDVI" if nm == "ndvi" else "S2L2A"
+            check(f"s0.coords_{nm}_between", tgt, t, [src, c])
+            check(f"s0.coords_{nm}_before", tgt, t, [c, src])
+    # t360_lattice.profile builds its list inline: Coords, DEM, LULC of date 0, then the targets by date.
+    check("s0.profile", "*", None, [("Coords", r[0]), ("DEM", r[0]), ("LULC", r[0])]
+          + [(m, r[t]) for t in range(4) for m in C.TARGETS])
+    for i in range(12):
+        for j, m in enumerate(C.TARGETS):
+            if ET.target_date(L["s0.none"], i, m) != C.date_of(i, j):
+                out.append(f"target date of location {i}, {m}")
+        for nm, m in (("s0.pair_ndvi", "NDVI"), ("s0.pair_cross", "S2L2A"), ("s0.length_k3", "S2L2A")):
+            if ET.target_date(L[nm], i, m) != C.date_of(i, 0):
+                out.append(f"target date of location {i}, {nm}")
+    for name in ("t.left_out", "t.forecast", "t.gap_fill", "t.date"):
+        e = L[name]
+        for m in e["targets"]:
+            for t in ([3] if name == "t.forecast" else range(4)):
+                if ET.layout_blocks(e, m, t) != ET.task_blocks(e["task"], t, m):
+                    out.append(f"{name} {m} t{t} is not task_blocks'")
+    return out
+
+
+def baseline_problems(doc) -> list:
+    """T360's frozen baselines: named for every task's targets, layouts of the file, no date block, inside
+    T360's working range, and for the baselines chosen in Step 7 (forecast, gap fill) no block that
+    T360-T's prompt lacks. The left-out season's is Step 0's statics_same_mod, whose LULC comes from the
+    near date's row where T360-T's prompt holds the first context date's (measured in Step 7)."""
+    from eo.eval import temporal as ET
+    L, B, out = doc["layouts"], doc.get("baselines") or {}, []
+    for task in ("left_out", "forecast", "gap_fill"):
+        tl = L[f"t.{task}"]
+        for m in tl["targets"]:
+            name = (B.get(task) or {}).get(m)
+            if name not in L:
+                out.append(f"{task} {m}: no baseline ({name})")
+                continue
+            e = L[name]
+            for t, spec in e["blocks"][m].items():
+                blocks = ET.parse_blocks(spec)
+                n = sum(ET.block_width(b) for b in blocks)
+                if any(b.modality == "Date" for b in blocks) or n > WORKING_RANGE:
+                    out.append(f"{task} {m} t{t}: {name} holds a date block or {n} tokens")
+                if task != "left_out":
+                    have = {(b.modality, b.t) for b in ET.layout_blocks(tl, m, int(t))[:-1]}
+                    extra = [b for b in blocks[:-1] if (b.modality, b.t) not in have]
+                    if extra:
+                        out.append(f"{task} {m} t{t}: {name} holds {extra}, which T360-T's prompt lacks")
+    if B.get("date") != "prior (Step 12)":
+        out.append(f"the date task's baseline is {B.get('date')!r}, not the prior")
+    return out
+
+
+def y19():
+    """Step 7's layout file: frozen, equal to its sources, and T360's baselines inside the rules."""
+    import copy
+    from eo.eval import temporal as ET
+    frozen = ET.FROZEN_LAYOUTS.get(ET.LAYOUTS_TAG)
+    doc = _layouts()
+    src = layout_source_problems(doc)
+    base = baseline_problems(doc)
+    ok = frozen is not None and doc["sha256"] == frozen and not src and not base and not ET.layout_problems(doc)
+    # Controls: a frozen file edited by one block is refused; a Step 0 layout with two blocks swapped and a
+    # layout holding its own target are flagged; a baseline with a date block, or past the range, is flagged.
+    bad = copy.deepcopy({k: v for k, v in doc.items() if k != "sha256"})
+    spec = bad["layouts"]["s0.statics_same_mod"]["blocks"]["S2L2A"]["2"].split()
+    spec[3], spec[4] = spec[4], spec[3]
+    bad["layouts"]["s0.statics_same_mod"]["blocks"]["S2L2A"]["2"] = " ".join(spec)
+    swapped = any("s0.statics_same_mod S2L2A t2" in p for p in layout_source_problems(bad))
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / ET.layouts_path().name
+        p.write_text(json.dumps(bad, indent=1) + "\n")
+        edited = frozen is not None and refused(ET.load_layouts, path=p)
+    inside = copy.deepcopy(bad)
+    inside["layouts"]["t.left_out"]["blocks"]["NDVI"]["1"] = "NDVI@1 " + inside["layouts"]["t.left_out"]["blocks"]["NDVI"]["1"]
+    target_in = any("also in the context" in p for p in ET.layout_problems(inside))
+    dated = copy.deepcopy(bad)
+    name = (dated.get("baselines") or {}).get("forecast", {}) or {}
+    name = name.get("S2L2A") if isinstance(name, dict) else None
+    date_caught = False
+    if name in dated["layouts"]:
+        e = dated["layouts"][name]["blocks"]["S2L2A"]
+        e["3"] = "Date@2 " + e["3"]
+        date_caught = any("date block" in p for p in baseline_problems(dated))
+    B = doc.get("baselines") or {}
+    record("Y19 layouts", ok, f"temporal_layouts_{ET.LAYOUTS_TAG}.json, {len(doc['layouts'])} layouts, sha "
+           f"{doc['sha256'][:12]} ({'frozen' if frozen else 'NOT FROZEN'}); every Step 0 layout equals Step 0's own "
+           f"functions, every T360-T task layout equals task_blocks, the target dates t360_context.date_of "
+           f"({len(src)} problems); T360's baselines: forecast {B.get('forecast')}, gap fill {B.get('gap_fill')}, "
+           f"date {B.get('date')!r} ({len(base)} problems{': ' + str(base[:3]) if base else ''})"
+           + (f"; {src[:3]}" if src else ""),
+           swapped and edited and target_in and date_caught,
+           f"a Step 0 layout with two blocks swapped flagged: {swapped}; the file edited by one block refused by its "
+           f"pinned hash: {edited}; a target in its own context flagged: {target_in}; a date block in T360's "
+           f"forecast baseline flagged: {date_caught}")
+
+
+def _step0_unit(e, m, delta):
+    return np.load(STEP0_REPORTS / e["step0_unit"].replace("{M}", m).replace("{k}", str(delta // 198 + 1)))
+
+
+def y20():
+    """The scorer's three paths on the real T360-T base, CPU, fp32: the target path reproduces Step 0's
+    stored units, the profile path a direct per-token pass, the date path a direct log-softmax."""
+    if _no_base("Y20 scorer"):
+        return
+    from eo.eval import temporal as ET
+    f = fx()
+    T = f.T
+    A = t360t().model
+    temporal = T.TemporalLocations(f.base, f.index, f.dev, T.TemporalConfig(), 42)
+    L = _layouts()["layouts"]
+    locs, _, _ = ET.step0_locations(f.index)
+    n = 4
+
+    def items(name, m, delta=0, shift=0, with_dates=True):
+        e, out = L[name], []
+        for i in range(n):
+            t = ET.target_date(e, i, m)
+            ts = ET.task_sequence(temporal, int(locs[i]), ET.layout_blocks(e, m, (t + shift) % 4, with_dates))
+            out.append(ET.scored(ET.move_target(ts, delta) if delta else ts))
+        return out
+
+    units = [("s0.none", m, 0) for m in GROUP] + [("s0.statics_same_mod", "NDVI", 0), ("s0.same_date", "S1GRD", 0),
+                                                  ("s0.pair_cross", "S2L2A", 198)]
+    worst, flips, ctrl = 0.0, 0, []
+    for name, m, delta in units:
+        got = ET.score_target(A, items(name, m, delta), m, 4, dtype=None, device="cpu")
+        ref = _step0_unit(L[name], m, delta)
+        worst = max(worst, float(np.abs(got["ce"] - ref["ce"][:n]).max()))
+        flips += int(np.abs(np.round((got["top1"] - ref["top1"][:n]) * 196)).sum())     # in tokens
+    for name, m, delta in units[:2]:                 # control: the same units scored at the next target date
+        got = ET.score_target(A, items(name, m, delta, shift=1), m, 4, dtype=None, device="cpu")
+        ctrl.append(float(np.abs(got["ce"] - _step0_unit(L[name], m, delta)["ce"][:n]).mean()))
+    unmasked = [ET.task_sequence(temporal, int(locs[0]), ET.layout_blocks(L["s0.statics_same_mod"], "NDVI", 2)).full]
+    unmasked_refused = refused(ET.score_target, A, unmasked, "NDVI", 1, dtype=None, device="cpu")
+
+    # The profile path: per-block means from run_pass's fp16 per-token arrays, against fp32 CE taken directly.
+    prof = L["t.profile"]
+    blocks = ET.layout_blocks(prof, "*", None)
+    seqs = [ET.task_sequence(temporal, int(locs[i]), blocks).full for i in range(2)]
+    pb = ET.score_blocks(A, seqs, blocks, 1, dtype=None, device="cpu")
+    direct, step = np.empty_like(pb), np.empty_like(pb)
+    with torch.no_grad():
+        for i, s in enumerate(seqs):
+            lg = A(input_ids=s["input_ids"][None], position_ids=s["position_ids"][None],
+                   attention_mask=s["attention_mask"][None], use_cache=False).logits[0, :-1].float()
+            c64 = torch.nn.functional.cross_entropy(lg, s["input_ids"][1:], reduction="none").double().numpy()
+            for k, (st, b) in enumerate(zip(ET.block_starts(blocks), blocks)):
+                body = c64[st:st + ET.block_width(b) - 2]
+                direct[i, k], step[i, k] = body.mean(), _token_tol(body, body).max()
+            del lg
+    # Each stored token is within one fp16 step (or 1e-4) of fp32 (Y12's rule), so a block's mean is within the
+    # largest step among its tokens: a 2-token date block can move by half a step at CE ~13.
+    prof_gap = float(np.abs(pb - direct).max())
+    prof_ratio = float((np.abs(pb - direct) / step).max())
+    misaligned = refused(ET.score_blocks, A, seqs[:1], blocks[1:] + blocks[:1], 1, dtype=None, device="cpu")
+
+    # The date path: CE of Y and D and the distributions over years and days, against a direct log-softmax.
+    de = L["t.date"]
+    ds = [ET.task_sequence(temporal, int(locs[i]), ET.layout_blocks(de, "Date", ET.target_date(de, i, "Date"))).full
+          for i in range(n)]
+    dr = ET.score_dates(A, ds, 4, dtype=None, device="cpu")
+    with torch.no_grad():
+        x = torch.stack([s["input_ids"] for s in ds])
+        lg = A(input_ids=x, position_ids=torch.stack([s["position_ids"] for s in ds]), use_cache=False).logits.float()
+        lsm = torch.log_softmax(lg[:, -4:-2], -1)
+        want_y = -lsm[:, 0].gather(-1, x[:, -3:-2]).squeeze(-1)
+        want_d = -lsm[:, 1].gather(-1, x[:, -2:-1]).squeeze(-1)
+        py = torch.softmax(lg[:, -4, TV.YEAR_IDS], -1)
+    date_gap = max(float(np.abs(dr["ce_y"] - want_y.numpy()).max()), float(np.abs(dr["ce_d"] - want_d.numpy()).max()),
+                   float(np.abs(dr["p_year"] - py.numpy()).max()))
+    year_less = []
+    for i in range(1):
+        b = ET.layout_blocks(de, "Date", 0)
+        b[-1] = replace(b[-1], with_year=False)
+        year_less.append(ET.task_sequence(temporal, int(locs[i]), b).full)
+    yearless_refused = refused(ET.score_dates, A, year_less, 1, dtype=None, device="cpu")
+    ok = worst <= REPRO_TOL and prof_ratio <= 1.0 and date_gap <= LOGIT_TOL
+    record("Y20 scorer", ok, f"T360-T's base on CPU, fp32, Step 0's first {n} locations and target dates: the target "
+           f"path (run_pass, labels masked to the target) gives Step 0's stored per-location CE (T360, Titan X) on "
+           f"{len(units)} units within {worst:.1e} (tolerance {REPRO_TOL:g}), top-1 equal on all but {flips} tokens; the profile path's "
+           f"block means, from run_pass's fp16 per-token arrays, equal fp32 block means taken directly within one fp16 "
+           f"step of their tokens (largest gap {prof_gap:.1e}, {prof_ratio:.2f} of a step), on two whole chronological "
+           f"sequences with date blocks; the date path's CE of Y and "
+           f"D and its year distribution equal a direct log-softmax within {date_gap:.1e} (Y {dr['ce_y'].mean():.2f}, "
+           f"D {dr['ce_d'].mean():.2f} nats on the untrained rows)",
+           min(ctrl) > 100 * REPRO_TOL and unmasked_refused and misaligned and yearless_refused,
+           f"the same units at the next target date: mean |dCE| {', '.join(f'{c:.3f}' for c in ctrl)}; labels left on "
+           f"every body refused: {unmasked_refused}; a profile with its blocks off by one refused: {misaligned}; a "
+           f"date block without its year refused: {yearless_refused}")
+
+
+def move_problems(ts, moved, which: str, day_shift: int, year_shift: int) -> list:
+    """What a wrong date may change (eo/eval/temporal.move_dates): the year and day tokens of the target
+    date's own date block ('target') or of every date block before the target ('all'), in input_ids and
+    labels alike, to the moved date; nothing else, anywhere."""
+    from eo.eval import temporal as ET
+    blocks = list(ts.draw.blocks)
+    starts = ET.block_starts(blocks)
+    k = starts.index(ts.target[0])
+    dated = [i for i, b in enumerate(blocks[:k]) if b.modality == "Date"]
+    chosen = [i for i in dated if blocks[i].t == blocks[k].t][-1:] if which == "target" else dated
+    want = ts.full["input_ids"].clone()
+    for i in chosen:
+        s = starts[i]
+        y, d = TV.decode_date_block(want[s:s + ET.block_width(blocks[i])].tolist())
+        want[s:s + ET.block_width(blocks[i])] = torch.tensor(TV.date_block(y + year_shift, (d + day_shift) % N_DOY_BINS))
+    out = []
+    if not torch.equal(moved.full["input_ids"], want):
+        out.append(f"input_ids differ from the moved date at {torch.nonzero(moved.full['input_ids'] != want).flatten()[:4].tolist()}")
+    if not torch.equal(moved.full["labels"], want):
+        out.append("labels do not follow the moved tokens")
+    for key in ("position_ids", "modality_ids", "attention_mask"):
+        if not torch.equal(moved.full[key], ts.full[key]):
+            out.append(f"{key} changed")
+    if any(not torch.equal(moved.prompt[key], moved.full[key][: ts.target[0] + 1]) for key in KEYS):
+        out.append("the prompt is not the moved sequence's prefix")
+    return out
+
+
+def y21():
+    """The wrong date and the date probe change the date tokens and nothing else."""
+    from eo.eval import temporal as ET
+    f = fx()
+    T = f.T
+    temporal = T.TemporalLocations(f.base, f.index, f.dev, T.TemporalConfig(), 42)
+    doc = _layouts()
+    L, p = doc["layouts"], doc["probe"]
+    locs, _, _ = ET.step0_locations(f.index)
+    problems, n, changed = [], 0, {"target": set(), "all": set(), "year": set()}
+    for i in range(16):
+        for m in GROUP:
+            e = L[p["layout"]]
+            t = ET.target_date(e, i, m)
+            ts = ET.task_sequence(temporal, int(locs[i]), ET.layout_blocks(e, m, t))
+            for key, which, ds, ys in (("target", p["which"], p["day_shift"], p["year_shift"]),
+                                       ("all", "all", p["day_shift"], p["year_shift"]), ("year", "target", 0, -1)):
+                mv = ET.move_dates(ts, which, ds, ys)
+                problems += [f"loc {i} {m} {key}: {q}" for q in move_problems(ts, mv, which, ds, ys)]
+                changed[key].add(int((mv.full["input_ids"] != ts.full["input_ids"]).sum()))
+            n += 1
+
+    def first_block(ts, which, ds, ys):             # moves the sequence's first date block, not the target's
+        full = {k: v.clone() for k, v in ts.full.items()}
+        s = next(st for st, b in zip(ET.block_starts(ts.draw.blocks), ts.draw.blocks) if b.modality == "Date")
+        y, d = TV.decode_date_block(full["input_ids"][s:s + 4].tolist())
+        full["input_ids"][s:s + 4] = full["labels"][s:s + 4] = torch.tensor(TV.date_block(y, (d + ds) % N_DOY_BINS))
+        return ET._with(ts, full)
+
+    def and_position(ts, which, ds, ys):            # the right date moved, and the target shifted one position
+        return ET.move_target(ET.move_dates(ts, which, ds, ys), 1)
+
+    def tokens_only(ts, which, ds, ys):             # the input moved, the labels left on the right date
+        mv = ET.move_dates(ts, which, ds, ys)
+        full = dict(mv.full, labels=ts.full["labels"].clone())
+        return ET._with(ts, full)
+
+    ts = ET.task_sequence(temporal, int(locs[3]), ET.layout_blocks(L[p["layout"]], "NDVI", ET.target_date(L[p["layout"]], 3, "NDVI")))
+    caught = {fn.__name__: bool(move_problems(ts, fn(ts, "target", 36, 0), "target", 36, 0))
+              for fn in (first_block, and_position, tokens_only)}
+    de = L["t.date"]
+    date_ts = ET.task_sequence(temporal, int(locs[0]), ET.layout_blocks(de, "Date", 0))
+    target_refused = refused(ET.move_dates, date_ts, "target", 36, 0)
+    nodate = ET.task_sequence(temporal, int(locs[0]), ET.layout_blocks(L[p["layout"]], "S2L2A", 0, with_dates=False))
+    nodate_refused = refused(ET.move_dates, nodate, "target", 36, 0)
+    record("Y21 wrong date", not problems and changed == {"target": {1}, "all": {4}, "year": {1}},
+           f"{n} left-out-season sequences ({p['layout']}, 16 of Step 0's locations, every target): the probe "
+           f"({p['which']}, day bin +{p['day_shift']} mod 73, year {p['year_shift']:+d}) changes exactly "
+           f"{sorted(changed['target'])} token, every date block moved ('all') {sorted(changed['all'])}, a year moved "
+           f"{sorted(changed['year'])}: the moved date's tokens in input_ids and labels, nothing else"
+           + (f"; {problems[:3]}" if problems else ""),
+           all(caught.values()) and target_refused and nodate_refused,
+           f"broken movers flagged: {caught}; a wrong date on the date task's own target refused: {target_refused}; on "
+           f"a sequence without date blocks refused: {nodate_refused}")
+
+
+Y22_OUT = Path("/data/enric/reports/arm_eval/t360t_base_fp32/extended_base")
+Y22_REF = Path("/data/enric/reports/arm_eval/t360_fp32/checkpoint-17441")
+Y22_CMD = ("eval_checkpoint.py --arm-tag t360t_base_fp32 --arm-config eo_terramesh/arm_t360_vanilla --model-config "
+           "eo_terramesh/arm_t360t_vanilla --run-dir <any> extended_base --precision fp32 --grid --grid-all-others, on "
+           "the GTX Titan X (bash /data/enric/reports/temporal/step7/run_checkpoint.sh, about 2 h)")
+ROW_TOL = 1e-4            # a row's mean CE: Y12's per-token floor, which a mean of tokens within it cannot exceed
+
+
+def _row_gaps(a, r, key: str):
+    """Rows and token counts equal, and |mean CE per row| differences, for one target-last or grid key."""
+    same = np.array_equal(a[f"{key}|rows"], r[f"{key}|rows"]) and np.array_equal(a[f"{key}|n"], r[f"{key}|n"])
+    if not same:
+        return False, np.inf, 0
+    n = np.maximum(r[f"{key}|n"], 1)
+    gap = np.abs(a[f"{key}|ce_sum"] / n - r[f"{key}|ce_sum"] / n)
+    return True, float(gap.max()) if len(gap) else 0.0, int(np.abs(a[f"{key}|top1"] - r[f"{key}|top1"]).sum())
+
+
+def y22():
+    """eval_checkpoint.py at 87,664 ids: the extended base through --model-config reproduces T360's stored fp32
+    reading (per token, target-last per row, every grid cell per row) and adds the grid's "all" row."""
+    if not (Y22_OUT / "grid_rows.npz").is_file():
+        skip("Y22 eval_checkpoint at 87,664", f"{Y22_OUT} incomplete: the GPU run writes it: {Y22_CMD}")
+        return
+    if _no_base("Y22 eval_checkpoint at 87,664"):
+        return
+    from eo.eval import teacher_forced as TF
+    from lm_dataset.load_dataset import load_eval_dataset_from_config
+    doc, ref = json.loads((Y22_OUT / "metrics.json").read_text()), json.loads((Y22_REF / "metrics.json").read_text())
+    ext = json.loads((EXT / "extension.json").read_text())
+    meta_ok = (doc.get("vocab") == TV.TOTAL_VOCAB_SIZE and doc.get("model_config") == f"eo_terramesh/{ARM}"
+               and (doc.get("loaded") or {}).get("variant") == "continue"
+               and (doc.get("loaded") or {}).get("conversion_weights_sha256") == ext["weights_sha256"]
+               and doc["precision"] == ref["precision"] == "fp32" and doc["arm_config"] == ref["arm_config"]
+               and doc["token_set"] == ref["token_set"] == "clean" and doc["n_eval_rows"] == ref["n_eval_rows"] == 4416
+               and "TITAN V" not in doc["gpu"])
+    a, r = np.load(Y22_OUT / "tokens_router.npz"), np.load(Y22_REF / "tokens_router.npz")
+    rows_ok = (np.array_equal(np.load(Y22_OUT / "eval_rows.npy"), np.load(Y22_REF / "eval_rows.npy"))
+               and a["ce"].shape == r["ce"].shape and np.array_equal(a["label_mod"], r["label_mod"]))
+    lm = a["label_mod"] > 0
+    ca, cr = a["ce"].astype(np.float64)[lm], r["ce"].astype(np.float64)[lm]
+    beyond = int((np.abs(ca - cr) > _token_tol(ca, cr)).sum()) if rows_ok else -1
+    ta, tr = np.load(Y22_OUT / "target_last_rows.npz"), np.load(Y22_REF / "target_last_rows.npz")
+    ga, gr = np.load(Y22_OUT / "grid_rows.npz"), np.load(Y22_REF / "grid_rows.npz")
+    keys_t = sorted({k.split("|")[0] for k in tr.files})
+    keys_g = sorted({k.split("|")[0] for k in gr.files})
+    tl = [_row_gaps(ta, tr, k) for k in keys_t]
+    gd = [_row_gaps(ga, gr, k) for k in keys_g]
+    all_cells = sorted({k.split("|")[0] for k in ga.files if k.startswith("all->")})
+    grid = json.loads((Y22_OUT / "grid.json").read_text())["cells"]
+    p3 = [grid[c].get("p3_abs_diff") for c in all_cells if c in grid]
+    worst_t = max(g for _, g, _ in tl)
+    worst_g = max(g for _, g, _ in gd)
+    ok = (meta_ok and rows_ok and beyond == 0 and all(s for s, _, _ in tl + gd) and worst_t <= ROW_TOL
+          and worst_g <= ROW_TOL and len(all_cells) == 6 and all(x is not None and x <= 1e-6 for x in p3))
+    # Live, on CPU: the first two batches of the held-out loader (batch 4, worker k % 4) through this gate's T360-T
+    # give the artifact's per-token CE; with the table shifted by one row they read far off.
+    A = t360t().model
+    ds = load_eval_dataset_from_config(compose([], name=ARM_T360))
+    from unittest import mock
+    batches = []
+    for k in (0, 1):
+        with mock.patch.object(torch.utils.data, "get_worker_info", lambda k=k: SimpleNamespace(id=k % 4)):
+            batches.append(torch.utils.data.default_collate([ds[4 * k + i] for i in range(4)]))
+    live = TF.run_pass(A, batches, device="cpu", keep_tokens=True, dtype=None)
+    lt = live["tokens"]["ce"].astype(np.float64)
+    keep = a["label_mod"][:8] > 0
+    gap = np.abs(lt - a["ce"][:8].astype(np.float64))[keep]
+    live_ok = bool((gap <= _token_tol(lt, a["ce"][:8].astype(np.float64))[keep]).all())
+    W = A.model.embed_tokens.weight
+    orig = W.detach().clone()
+    with torch.no_grad():
+        W.copy_(torch.cat([orig.mean(0, keepdim=True), orig[:-1]], 0))
+    try:
+        shifted = TF.run_pass(A, batches, device="cpu", keep_tokens=False, dtype=None)
+    finally:
+        with torch.no_grad():
+            W.copy_(orig)
+    del orig
+    rise = shifted["ce_all_body_tokens"] - live["ce_all_body_tokens"]
+    record("Y22 eval_checkpoint at 87,664", ok and live_ok,
+           f"the extended base at {doc.get('vocab')} ids through --model-config ({doc['gpu']}, fp32), against T360's "
+           f"stored fp32 reading ({Y22_REF.parent.name}): per token, {int(lm.sum()):,} tokens of the 4,416 rows, "
+           f"{beyond} beyond one fp16 step (floor {TOKEN_FLOOR:g}); target-last, {len(keys_t)} targets, rows and counts "
+           f"equal, largest per-row gap {worst_t:.1e}; the grid, {len(keys_g)} cells, rows equal, largest per-row gap "
+           f"{worst_g:.1e} (tolerance {ROW_TOL:g}); the 'all' row added for {len(all_cells)} targets, P3 within "
+           f"{max(p3) if p3 else float('nan'):.1e}; live on CPU, the first 8 rows equal the artifact's tokens: {live_ok}",
+           rise > CONTROL_MIN, f"the table shifted by one row: CE {shifted['ce_all_body_tokens']:.2f} against "
+           f"{live['ce_all_body_tokens']:.2f} ({rise:+.2f})")
+
+
+CACHE_ART = Path("/data/enric/reports/temporal/step7/t360t_base/extended_base/cache/cache_check.json")
+CACHE_CMD = ("bash /data/enric/reports/temporal/step7/run_cache.sh  (eval_temporal.py cache --tag t360t_base on the "
+             "GTX Titan X, about 20 min)")
+
+
+def y23():
+    """The cache at the task prompts' length on the GTX Titan X, read from the GPU run's artifact."""
+    if not CACHE_ART.is_file():
+        skip("Y23 cache at length", f"{CACHE_ART} missing: {CACHE_CMD}")
+        return
+    doc = json.loads(CACHE_ART.read_text())
+    c = doc["checks"]
+    need = ("t360/fp32", "t360/fp16", "t360t/fp32", "t360t/fp16")
+    lengths = {k: c[k]["prompt_length"] for k in need if k in c}
+    ok = (all(k in c and c[k]["passed"] and c[k]["finite"] and c[k]["steps"] >= 197 for k in need)
+          and lengths.get("t360t/fp32", 0) >= 2398 and lengths.get("t360/fp32", 0) >= 2382
+          and "TITAN X" in doc["gpu"] and all(doc["timing"].get(p, {}).get("finite") for p in ("fp32", "fp16")))
+    ctrl = [c[k]["max_abs_logit_diff"] for k in ("t360/control_offset_1", "t360t/control_offset_1",
+                                                 "t360t/control_default_positions") if k in c]
+    record("Y23 cache at length", ok, f"{doc['gpu']}: " + "; ".join(
+        f"{k} prompt {c[k]['prompt_length']}, {c[k]['steps']} steps: {c[k]['max_abs_logit_diff']:.1e} "
+        f"({c[k]['max_ulp_diff']:.1f} steps at |logit| {c[k]['max_abs_logit']:.0f}), passed {c[k]['passed']}"
+        for k in need if k in c) + f"; decode of {doc['timing'].get('fp32', {}).get('batch')} blocks: " + ", ".join(
+        f"{p} {v['seconds_per_block']} s a block" for p, v in doc["timing"].items()),
+        len(ctrl) == 3 and min(ctrl) > CACHE_CONTROL_MIN,
+        f"decoded one position off (T360, T360-T) and on default positions behind date blocks: "
+        f"{', '.join(f'{x:.2f}' for x in ctrl)} (floor {CACHE_CONTROL_MIN:g})")
+
+
 CHECKS = {"Y1": y1, "Y2": y2, "Y3": y3, "Y4": y4, "Y5": y5, "Y6": y6, "Y7": y7, "Y8": y8, "Y9": y9, "Y10": y10,
-          "Y11": y11, "Y12": y12, "Y13": y13, "Y14": y14, "Y15": y15, "Y16": y16, "Y17": y17, "Y18": y18}
+          "Y11": y11, "Y12": y12, "Y13": y13, "Y14": y14, "Y15": y15, "Y16": y16, "Y17": y17, "Y18": y18,
+          "Y19": y19, "Y20": y20, "Y21": y21, "Y22": y22, "Y23": y23}
 
 
 def main() -> int:

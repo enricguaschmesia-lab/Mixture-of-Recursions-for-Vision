@@ -81,32 +81,59 @@ def sample(model, prompts, target, *, temperature, top_p, seed, position_ids=Non
 
 @torch.no_grad()
 def cache_check(model, prompts: torch.Tensor, continuation: torch.Tensor, *,
-                position_ids: Optional[torch.Tensor] = None, decode_positions: bool = True) -> Dict:
+                position_ids: Optional[torch.Tensor] = None, decode_positions: bool = True,
+                autocast: Optional[torch.dtype] = None, decode_offset: int = 0) -> Dict:
     """Cached decoding against full teacher-forced passes, feeding a known continuation (B, n global
     ids): after each cached step, the whole sequence so far through the model without a cache, and the
-    last position's logits compared over the whole vocabulary. fp32 (no autocast).
+    last position's logits compared over the whole vocabulary. fp32 unless `autocast` (A1 Step 7): then
+    both sides run under torch.autocast at that dtype, as a decode at that precision would.
 
     The full passes use `position_ids` (the prompt's, then +1 per token) when given, else the default.
     The cached decode uses the same, unless `decode_positions=False`: the model's default positions
-    against lattice references, the control that must disagree."""
+    against lattice references, the control that must disagree. `decode_offset` (a control for any
+    layout) moves the cached steps' positions by that much; it needs `position_ids`.
+
+    Returns the largest |difference| and |logit| (NaN-safe: reduced in torch, so a non-finite step
+    shows), and the difference in rounding steps of the autocast dtype at the largest |logit|
+    (`max_ulp_diff`, eo/eval/ben.py's CACHE_ULPS rule)."""
+    from eo.eval.ben import rounding_step
     n = int(continuation.shape[1])
     lattice = position_ids is not None
-    out = model(input_ids=prompts, use_cache=True, logits_to_keep=1,
-                **_pos(position_ids if decode_positions else None))
-    cache = out.past_key_values
-    seq, pos = prompts, position_ids
+    if decode_offset and not lattice:
+        raise ValueError("decode_offset moves explicit positions: pass position_ids")
+    ctx = torch.autocast(prompts.device.type, dtype=autocast) if autocast is not None else _NullCtx()
     diffs, mags = [], []
-    for t in range(n):
-        ids = continuation[:, t:t + 1]
-        step = next_positions(position_ids, t) if lattice else None
-        o = model(input_ids=ids, past_key_values=cache, use_cache=True, **_pos(step if decode_positions else None))
-        cache = o.past_key_values
-        seq = torch.cat([seq, ids], 1)
-        pos = torch.cat([pos, step], 1) if lattice else None
-        full = model(input_ids=seq, use_cache=False, logits_to_keep=1, **_pos(pos)).logits[:, -1, :].float()
-        a = o.logits[:, -1, :].float()
-        diffs.append(float((a - full).abs().max()))
-        mags.append(float(torch.maximum(a.abs(), full.abs()).max()))
-    return {"max_abs_logit_diff": max(diffs), "per_step": diffs, "max_abs_logit": max(mags), "steps": n,
+    with ctx:
+        out = model(input_ids=prompts, use_cache=True, logits_to_keep=1,
+                    **_pos(position_ids if decode_positions else None))
+        cache = out.past_key_values
+        seq, pos = prompts, position_ids
+        for t in range(n):
+            ids = continuation[:, t:t + 1]
+            step = next_positions(position_ids, t) if lattice else None
+            fed = None if not decode_positions else (step + int(decode_offset) if lattice else None)
+            o = model(input_ids=ids, past_key_values=cache, use_cache=True, **_pos(fed))
+            cache = o.past_key_values
+            seq = torch.cat([seq, ids], 1)
+            pos = torch.cat([pos, step], 1) if lattice else None
+            full = model(input_ids=seq, use_cache=False, logits_to_keep=1, **_pos(pos)).logits[:, -1, :].float()
+            a = o.logits[:, -1, :].float()
+            diffs.append((a - full).abs().max())
+            mags.append(torch.maximum(a.abs(), full.abs()).max())
+    d, m = torch.stack(diffs), torch.stack(mags)
+    worst, big = d.max(), m.max()
+    return {"max_abs_logit_diff": float(worst), "per_step": [float(x) for x in d], "max_abs_logit": float(big),
+            "max_ulp_diff": float(worst / rounding_step(big, autocast or torch.float32)),
+            "finite": bool(torch.isfinite(d).all() and torch.isfinite(m).all()), "steps": n,
             "batch": int(prompts.shape[0]), "prompt_length": int(prompts.shape[1]),
-            "positions": "explicit" if lattice and decode_positions else "default"}
+            "autocast": None if autocast is None else str(autocast).replace("torch.", ""),
+            "positions": ("explicit" if lattice and decode_positions else "default")
+                         + (f", decode offset {int(decode_offset)}" if decode_offset else "")}
+
+
+class _NullCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
