@@ -101,18 +101,21 @@ def build_cost(ds, n: int = 8) -> dict:
     return out
 
 
-def run_setting(dates, locations, args, model, optimizer, acc, stub, base_overrides):
+def run_setting(dates, locations, args, model, optimizer, acc, stub, base_overrides, prefetch=None, seed=None):
     from lm_dataset.load_dataset import load_dataset_from_config
     from util.trainer_pt import PerModalityLossMixin
 
-    cfg = compose(base_overrides + [stage_override(dates, locations)])
+    cfg = compose(base_overrides + [stage_override(dates, locations)] + ([f"seed={seed}"] if seed is not None else []))
     t0 = time.time()
     ds = load_dataset_from_config(cfg)
     rec = {"dates": dates, "locations": locations, "build_set_s": round(time.time() - t0, 1),
            "token_share": ds.token_share(0), "build_cost": build_cost(ds)}
+    workers = int(cfg.dataloader_num_workers)
+    extra = {"prefetch_factor": int(prefetch)} if prefetch and workers else {}
     loader = torch.utils.data.DataLoader(ds, batch_size=1, sampler=torch.utils.data.SequentialSampler(ds),
-                                         num_workers=int(cfg.dataloader_num_workers), collate_fn=ds.collate_fn,
-                                         pin_memory=True)
+                                         num_workers=workers, collate_fn=ds.collate_fn, pin_memory=True, **extra)
+    rec["prefetch_factor"] = int(prefetch) if extra else 2
+    rec["seed"] = int(cfg.seed)
     streams = ["temporal" if a >= 0 else "single" for a in ds.assignment(0)]
     it = iter(loader)
     steps, pos, oom = [], 0, None
@@ -198,6 +201,14 @@ def main():
     ap.add_argument("--split", default="train", choices=["train", "val"])
     ap.add_argument("--lr", type=float, default=1e-5, help="any: only the timing is read")
     ap.add_argument("--test", action="store_true", help="logic only, on CPU: 2 layers, no base, 2 scenes a micro-batch")
+    ap.add_argument("--prefetch", type=int, default=None,
+                    help="DataLoader prefetch_factor (torch's default 2, which HF keeps unless "
+                         "dataloader_prefetch_factor is set): micro-batches ready per worker when a step begins. "
+                         "A setting can carry its own, as 4x6p8")
+    ap.add_argument("--fresh", action="store_true",
+                    help="seed + 1 + k for setting k, so that each setting's walks read rows no earlier setting "
+                         "read (cold pages): with one seed every setting starts the same walk, and reads the "
+                         "first setting's rows from the page cache")
     args = ap.parse_args()
 
     from accelerate import Accelerator
@@ -234,10 +245,13 @@ def main():
            "train_root": os.environ.get("TERRAMESH_TRAIN_TOK_ROOT"), "settings": []}
     print(f"T360-T on {doc['gpu']}: {doc['parameters']:,} parameters, loaded in {load_s:.0f} s; "
           f"{doc['attn']}; accum {args.accum}", flush=True)
-    for spec in args.settings:
+    for k, spec in enumerate(args.settings):
+        spec, _, pf = spec.partition("p")
         d, l = (int(x) for x in spec.split("x"))
-        print(f"setting {d} dates x {l} locations", flush=True)
-        rec = run_setting(d, l, args, model, optimizer, acc, Stub(), base_overrides)
+        prefetch = int(pf) if pf else args.prefetch
+        seed = int(cfg.seed) + 1 + k if args.fresh else None
+        print(f"setting {d} dates x {l} locations, prefetch {prefetch or 2}, seed {seed or int(cfg.seed)}", flush=True)
+        rec = run_setting(d, l, args, model, optimizer, acc, Stub(), base_overrides, prefetch, seed)
         doc["settings"].append(rec)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(doc, indent=1))
