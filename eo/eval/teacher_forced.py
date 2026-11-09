@@ -43,6 +43,19 @@ recursed update is unchanged and ONLY the number of passes moves. Modes:
                   compute, token-level assignment destroyed
   perm_all        shuffled among all real tokens of the row: identical per-row
                   compute, modality-level assignment destroyed too
+  table           (B0 Step 5, 2026-11-08) each position's depth DRAWN from a
+                  per-modality table T[key][d], key = the modality of the token
+                  it predicts (the `label_mod` frame, as `only_mod`), from this
+                  wrapper's own generator; `set_table` gives the rows. A key
+                  mapped to None keeps the router's choice (key 0: positions
+                  that predict no body token). Through the same swap, so the
+                  gate stays the router's top probability; an optional gate
+                  table G[key][d] sets the gate too. "Is the router a
+                  per-modality table?": compute follows the table's histogram
+  assign          (B0 Step 5) each position at a depth given in advance, one
+                  array per row (`set_assignment`, rows in loader order, 0 =
+                  the router's choice), e.g. a cross-fitted token-id table
+                  drawn offline. Through the same swap, so the gate stays
 
 DEPTH SWEEP (random router, 2026-10-27). `install_random_depth` puts every
 token of a RANDOM-router model at one depth d, including depths above the Nr
@@ -77,7 +90,7 @@ import torch.nn.functional as F
 from eo.data.eo_vocab import ID_TO_MODALITY, MODALITIES, MODALITY_TO_ID, PAD_ID
 from eo.routing.telemetry import find_mor_layers, has_learned_router
 
-MODES =("router", "force1", "force2", "force3", "perm_modality", "perm_all", "skip")
+MODES =("router", "force1", "force2", "force3", "perm_modality", "perm_all", "skip", "table", "assign")
 
 
 def check_mode(mode: str) -> None:
@@ -187,10 +200,72 @@ class DepthOverride(torch.nn.Module):
         self.last_top_prob: Optional[torch.Tensor] = None
         self.n_out: Optional[int] = None     # pad the logits to this many depths (install_learned_depth)
         self.only_mod: Optional[int] = None  # force only the positions predicting this modality
+        self.table_cdf: Optional[Dict[int, Optional[torch.Tensor]]] = None   # `table` mode, set_table
+        self.table_gate: Optional[torch.Tensor] = None   # (8, depths), NaN = the router's own gate
+        self.last_gate: Optional[torch.Tensor] = None    # the gate applied in `table` mode
+        self.assignment: Optional[torch.Tensor] = None   # `assign` mode: (rows, positions) depth, 0 = router
+        self.row_ptr = 0                                 # `assign` mode: the next row in loader order
+
+    def set_assignment(self, depth) -> None:
+        """The `assign` mode's depths: (rows, positions) in 1..n, 0 keeping the router's choice, rows in
+        the order the loader serves them (a sequential loader: dataset positions 0, 1, ...). Position t
+        is the router's position t. Restarts at the first row; a pass that runs past the last row, or a
+        batch longer than the array's rows, is refused."""
+        a = torch.as_tensor(np.asarray(depth), dtype=torch.long)
+        if a.dim() != 2 or int(a.min()) < 0:
+            raise ValueError(f"assignment must be (rows, positions) with depths >= 0, got {tuple(a.shape)}")
+        self.assignment, self.row_ptr = a, 0
+
+    def set_table(self, mix: Dict[int, Optional[Sequence[float]]],
+                  gate: Optional[Dict[int, Optional[Sequence[float]]]] = None) -> None:
+        """The `table` mode's rows, keyed by modality id (eo_vocab), plus key 0.
+
+        `mix[k]`: probabilities of depths 1..n for the positions that PREDICT a token of
+        modality k (key 0: they predict BO, EO or padding); None keeps the router's choice
+        there. ⚠ Every key must be present, so a table that forgot a modality is refused here
+        rather than silently routed. `gate[k][d-1]`, optional: the gate of a key-k position
+        sent to depth d (None for a key: the router's own top probability, as without it).
+        Rows are checked against the router's depth count at the first forward.
+        """
+        need = {0} | set(MODALITY_TO_ID.values())
+        if set(mix) != need:
+            raise ValueError(f"table keys {sorted(mix)}: need exactly {sorted(need)} "
+                             f"(missing {sorted(need - set(mix))}, extra {sorted(set(mix) - need)})")
+        cdf = {}
+        for k, row in mix.items():
+            if row is None:
+                cdf[k] = None
+                continue
+            p = torch.tensor([float(v) for v in row], dtype=torch.float64)
+            if (p < 0).any() or not abs(float(p.sum()) - 1.0) < 1e-6:
+                raise ValueError(f"table row {k}: {row} is not a probability vector")
+            c = torch.cumsum(p / p.sum(), 0)
+            c[-1] = 1.0
+            cdf[k] = c
+        lens = {c.numel() for c in cdf.values() if c is not None}
+        if len(lens) > 1:
+            raise ValueError(f"table rows of different lengths {sorted(lens)}")
+        g = None
+        if gate is not None:
+            if not set(gate) <= need:
+                raise ValueError(f"gate keys {sorted(gate)} outside {sorted(need)}")
+            n = lens.pop() if lens else 0
+            g = torch.full((max(need) + 1, n), float("nan"), dtype=torch.float32)
+            for k, row in gate.items():
+                if row is None:
+                    continue
+                if mix[k] is None:
+                    raise ValueError(f"gate row {k} for a key that keeps the router's choice")
+                r = torch.tensor([float(v) for v in row], dtype=torch.float32)
+                if r.numel() != n or bool(((r < 1.0 / n) | (r > 1.0)).any()):
+                    raise ValueError(f"gate row {k}: {row} must hold {n} values in [1/{n}, 1]")
+                g[k] = r
+        self.table_cdf, self.table_gate = cdf, g
 
     def forward(self, x):
         w = self.inner(x)
         self.last_top_prob = torch.softmax(w.float(), -1).amax(-1).detach()
+        self.last_gate = None
         if self.mode in ("router", "skip"):        # skip is applied at the layer; see run_pass
             return w
         # The router's ACTUAL choice, computed exactly as the MoR layer does it
@@ -199,7 +274,45 @@ class DepthOverride(torch.nn.Module):
         # 16500), and argmax and topk break ties differently.
         a = torch.topk(F.softmax(w, dim=-1) * self.alpha, 1, dim=-1,
                        sorted=False).indices.squeeze(-1)    # (B, L)
-        if self.mode.startswith("force"):
+        key = None
+        if self.mode == "table":
+            if self.table_cdf is None:
+                raise ValueError("table mode: call set_table() first")
+            n = self.n_out or w.shape[-1]
+            key = torch.zeros_like(a)
+            key[:, :-1] = self.mod_ids[:, 1:]                      # the label_mod frame
+            known = torch.tensor(sorted(self.table_cdf), device=key.device)
+            if not bool(torch.isin(key, known).all()):
+                raise ValueError(f"table mode: keys {torch.unique(key).tolist()} outside the table")
+            # One draw per position from this wrapper's own generator (CPU, so a pass is
+            # reproducible whatever the card), whether or not its key is sampled.
+            u = torch.rand(a.shape, generator=self.gen, dtype=torch.float64).to(a.device)
+            tgt = a.clone()
+            for k, c in self.table_cdf.items():
+                if c is None:
+                    continue
+                if c.numel() != n:
+                    raise ValueError(f"table row {k} has {c.numel()} depths, the router {n}")
+                sel = key == k
+                if bool(sel.any()):
+                    tgt[sel] = torch.searchsorted(c.to(a.device), u[sel].contiguous(),
+                                                  right=True).clamp_max(n - 1)
+        elif self.mode == "assign":
+            if self.assignment is None:
+                raise ValueError("assign mode: call set_assignment() first")
+            B, L = a.shape
+            if self.row_ptr + B > self.assignment.shape[0]:
+                raise ValueError(f"assign mode: rows {self.row_ptr}..{self.row_ptr + B} beyond the "
+                                 f"assignment's {self.assignment.shape[0]}")
+            n = self.n_out or w.shape[-1]
+            blk = self.assignment[self.row_ptr:self.row_ptr + B, :L].to(a.device)
+            if int(blk.max()) > n:
+                raise ValueError(f"assign mode: depth {int(blk.max())} above the router's {n}")
+            full = torch.zeros_like(a)
+            full[:, :blk.shape[1]] = blk
+            tgt = torch.where(full > 0, full - 1, a)
+            self.row_ptr += B
+        elif self.mode.startswith("force"):
             d = int(self.mode[5:])
             if d > (self.n_out or w.shape[-1]):
                 raise ValueError(f"{self.mode} above the router's {w.shape[-1]} depths: "
@@ -231,6 +344,18 @@ class DepthOverride(torch.nn.Module):
         w2 = w32.clone()
         w2.scatter_(-1, a.unsqueeze(-1), at_tgt)
         w2.scatter_(-1, tgt.unsqueeze(-1), top + self.MARGIN)
+        if key is not None and self.table_gate is not None:
+            # The gate from the table: logits whose softmax puts G at the drawn depth and
+            # shares the rest evenly, with the same margin so the drawn depth wins uniquely
+            # (G >= 1/n always, so it is the maximum). NaN rows keep the swap's logits.
+            n = w2.shape[-1]
+            g = self.table_gate.to(w2.device)[key, tgt]
+            has = ~torch.isnan(g)
+            lp = torch.log(((1 - g) / (n - 1)).clamp_min(1e-30)).unsqueeze(-1).expand_as(w2).clone()
+            lp.scatter_(-1, tgt.unsqueeze(-1), (torch.log(g.clamp_min(1e-30)) + self.MARGIN).unsqueeze(-1))
+            w2 = torch.where(has.unsqueeze(-1), lp, w2)
+        if key is not None:
+            self.last_gate = torch.softmax(w2, -1).gather(-1, tgt.unsqueeze(-1)).squeeze(-1).detach()
         return w2
 
 
@@ -257,25 +382,97 @@ class RandomDepthForce:
     the max of `n_trained` uniforms, so it does not depend on how many blocks
     the layer holds (an extended block list leaves depth <= Nr unchanged,
     exactly). `depth=None` is the pass-through control: r is returned as is.
+
+    B0 Step 6 (2026-11-08) adds three uses, all drawing every position from this
+    object's generator, so that what is not forced is identical across them:
+      only_mod   target scope: the positions that PREDICT this modality (mods[t+1],
+                 run_pass hands over `mod_ids`) at `depth`; every other position at
+                 its own draw (depth argmax, gate max of the same uniforms), the same
+                 draw whatever `depth` is. The training-time computation, conditional
+                 on the target's depth.
+      own_draw   depth None: every position at its own draw from this generator. The
+                 paired "as routed" baseline of the target-scope units.
+      set_table  depth per position from a per-modality table (key 0: positions that
+                 predict no body token; None keeps the position's own draw), from a
+                 second generator, so the gates are the forced passes' own: a table
+                 one-hot at d everywhere is force<d> bit for bit.
     """
 
     def __init__(self, depth: Optional[int], n_trained: int, seed: int = 0):
         self.depth, self.n_trained, self.seed = depth, n_trained, seed
         self.gen: Optional[torch.Generator] = None
+        self.only_mod: Optional[int] = None
+        self.own_draw = False
+        self.mod_ids: Optional[torch.Tensor] = None
+        self.table_cdf: Optional[Dict[int, Optional[torch.Tensor]]] = None
+        self.gen_table: Optional[torch.Generator] = None
+        self.last_out: Optional[torch.Tensor] = None
 
     def reseed(self, seed: Optional[int] = None) -> None:
         self.seed = self.seed if seed is None else seed
         self.gen = None                                 # rebuilt on the draw's device
+        self.gen_table = None
+
+    def set_table(self, mix: Dict[int, Optional[Sequence[float]]]) -> None:
+        """Per-modality rows, as DepthOverride.set_table (every key 0..7 present, None = own draw)."""
+        need = {0} | set(MODALITY_TO_ID.values())
+        if set(mix) != need:
+            raise ValueError(f"table keys {sorted(mix)}: need exactly {sorted(need)}")
+        cdf = {}
+        for k, row in mix.items():
+            if row is None:
+                cdf[k] = None
+                continue
+            pr = torch.tensor([float(v) for v in row], dtype=torch.float64)
+            if (pr < 0).any() or not abs(float(pr.sum()) - 1.0) < 1e-6:
+                raise ValueError(f"table row {k}: {row} is not a probability vector")
+            c = torch.cumsum(pr / pr.sum(), 0)
+            c[-1] = 1.0
+            cdf[k] = c
+        self.table_cdf, self.gen_table = cdf, None
+
+    def _pred(self, like: torch.Tensor) -> torch.Tensor:
+        if self.mod_ids is None:
+            raise ValueError("RandomDepthForce: target scope and tables need mod_ids (run_pass sets them)")
+        pred = torch.zeros(like.shape[:2], dtype=torch.bool, device=like.device)
+        pred[:, :-1] = self.mod_ids[:, 1:].to(like.device) == self.only_mod
+        return pred
 
     def __call__(self, r: torch.Tensor) -> torch.Tensor:
-        if self.depth is None:
+        table = self.table_cdf is not None
+        if self.depth is None and not self.own_draw and not table:
             return r
         if self.gen is None or self.gen.device != r.device:
             self.gen = torch.Generator(device=r.device).manual_seed(self.seed)
-        w = torch.rand(*r.shape[:2], self.n_trained, generator=self.gen, device=r.device).amax(-1)
+        draws = torch.rand(*r.shape[:2], self.n_trained, generator=self.gen, device=r.device)
+        w = draws.amax(-1)
         out = torch.zeros_like(r)
-        # The forced depth must win uniquely: a zero gate would tie with the zeros.
-        out[..., self.depth - 1] = w.clamp_min(1e-4).to(r.dtype)
+        if self.depth is not None and self.only_mod is None and not table:
+            # The forced depth must win uniquely: a zero gate would tie with the zeros.
+            out[..., self.depth - 1] = w.clamp_min(1e-4).to(r.dtype)
+            self.last_out = out
+            return out
+        dep = draws.argmax(-1)                          # each position's own draw, 0..n_trained-1
+        if table:
+            if self.mod_ids is None:
+                raise ValueError("RandomDepthForce: a table needs mod_ids (run_pass sets them)")
+            key = torch.zeros(r.shape[:2], dtype=torch.long, device=r.device)
+            key[:, :-1] = self.mod_ids[:, 1:].to(r.device)
+            if self.gen_table is None:
+                self.gen_table = torch.Generator(device="cpu").manual_seed(self.seed + 7919)
+            u = torch.rand(tuple(key.shape), generator=self.gen_table, dtype=torch.float64).to(r.device)
+            for k, c in self.table_cdf.items():
+                if c is None:
+                    continue
+                if c.numel() > r.shape[-1]:
+                    raise ValueError(f"table row {k} has {c.numel()} depths, the layer {r.shape[-1]}")
+                sel = key == k
+                if bool(sel.any()):
+                    dep[sel] = torch.searchsorted(c.to(r.device), u[sel].contiguous(), right=True).clamp_max(c.numel() - 1)
+        if self.depth is not None:                      # target scope
+            dep = torch.where(self._pred(r), torch.full_like(dep, self.depth - 1), dep)
+        out.scatter_(-1, dep.unsqueeze(-1), w.clamp_min(1e-4).to(r.dtype).unsqueeze(-1))
+        self.last_out = out
         return out
 
 
@@ -385,6 +582,7 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     """
     model.eval()
     mor = [m for m in find_mor_layers(model)]
+    rand_hook = getattr(mor[0], "rand_override", None) if mor else None   # RandomDepthForce, if installed
     grabbed: List[torch.Tensor] = []
     handle = None
     skip = override is not None and override.mode == "skip"
@@ -403,7 +601,8 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     bounds = _slot_bounds()
     names = dict(ID_TO_MODALITY)
     acc = {n: dict(n=0, ce=0.0, top1=0, top5=0, slot=0.0, bm_sum=0.0, bm_n=0) for n in names.values()}
-    toks = {k: [] for k in ("ce", "correct", "rank_ok5", "label_mod", "input_mod", "depth", "gate", "label")}
+    toks = {k: [] for k in ("ce", "correct", "rank_ok5", "label_mod", "input_mod", "depth", "gate", "label",
+                            "gate_applied")}
     rows = {k: [] for k in ("n", "ce_sum", "top1", "d_pred", "d_tgt", "d_src")}
     tid = MODALITY_TO_ID[per_row_target] if per_row_target is not None else None
     try:
@@ -415,6 +614,8 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
             if override is not None:
                 override.mod_ids = mids.to(device)
                 override.att = inputs["attention_mask"]
+            if rand_hook is not None:
+                rand_hook.mod_ids = mids.to(device)
             grabbed.clear()
             with torch.autocast("cuda", dtype=dtype or torch.float16, enabled=dtype is not None):
                 logits = model(**inputs).logits
@@ -481,6 +682,10 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
                     toks["depth"].append((grabbed[-1][:, :-1] + 1).to(torch.int8))
                     if override is not None and override.last_top_prob is not None:
                         toks["gate"].append(override.last_top_prob[:, :-1].half().cpu())
+                    # `table` mode: the gate actually applied (the router's own unless a gate table
+                    # sets it); `gate` above stays the router's top probability in every mode
+                    if override is not None and override.last_gate is not None:
+                        toks["gate_applied"].append(override.last_gate[:, :-1].half().cpu())
             del logits, lg
     finally:
         if handle is not None:

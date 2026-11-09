@@ -27,7 +27,7 @@ training.
 | `terramesh_tok/` | The preprocessing contract, as code. **Single source of truth: import it, never re-derive a constant.** `contract.py` (crop, stats, codebooks, directory naming), `io.py`, `preprocess.py`, `tokenizers.py`, `clean.py` (the S2 BOA offset), `train_split.py` |
 | `data/` | The EO vocabulary (`eo_vocab.py`, final), `TerraMeshTokenDataset`, the held-out split (`eval_split.py`, `eval_rows_v1.json`), the dev/test split of the four-date val locations (`temporal_split.py`, `temporal_rows_v1.json`), their location and date index (`temporal_index.py`), the date rows (`temporal_vocab.py`), the temporal stage's training data (`temporal_dataset.py`: whole locations and Major TOM scenes in homogeneous micro-batches, its two eval sets and its epoch callback), and BEN's vocabulary and dataset |
 | `train/` | Launch machinery: `gpu.py` (resolve a GPU by name), `preflight.py` and `preflight_controls.py`, `distributed.py`, and the pretrained-body inits `clevr_init.py`, `smollm_init.py`. `clevr_init.py`'s variant `continue` continues pretraining from an extended base (the temporal stage, `arm_t360t_vanilla`) |
-| `eval/` | `teacher_forced.py` (the per-checkpoint pass, target-last layout, depth intervention), `curves.py`, `ben.py` (constrained label decoding), `ben_chain.py` |
+| `eval/` | `teacher_forced.py` (the per-checkpoint pass, target-last layout, depth intervention, including `table` and `assign` modes: depth drawn from a per-modality table, or given per row), `curves.py`, `ben.py` (constrained label decoding), `ben_chain.py` |
 | `generate/` | Conditional generation with a KV cache. Decoding ids to pixels is a separate process in `mor` |
 | `finetune/` | Vocabulary extension (identity-checked), hand-rolled LoRA, init from a checkpoint |
 | `routing/` | Recursion-depth telemetry for the MoR arm, including the router-only pass (`capture_router` in `telemetry.py`), and routing statistics (`stats.py`: exact permutation, group bootstrap, the equal-compute lattice) |
@@ -44,7 +44,7 @@ planning repository.
 |---|---|
 | Train | **`train_eo.sh`** (the only supported entry point), `train_chain.sh` (runs back to back), `convert_clevr_init.py`, `convert_smollm_init.py`, `extend_checkpoint.py` |
 | Tokenize | `tokenize_terramesh.py` (val), `tokenize_train.py` and `run_tokenize_train.sh` (train, streamed), `tokenize_coords.py`, `label_s2_offset.py`, `tokenize_clean.py` (`val_clean`), `build_ben_index.py`, `pack_ben.py`, `tokenize_ben.py` |
-| Evaluate | `eval_checkpoint.py` (per-checkpoint pass; `--grid` for the source × target grid, `--force-depth` and `--force-scope` for depth sweeps), `arm_report.py`, `grid_report.py`, `routing_telemetry.py`, `capture_router.py` (the router alone, on held-out, training or probe rows), `patch_stats.py`, `wrong_scene_control.py` |
+| Evaluate | `eval_checkpoint.py` (per-checkpoint pass; `--grid` for the source × target grid, `--force-depth` and `--force-scope` for depth sweeps, `--table` and `--assign` for depth tables), `arm_report.py`, `grid_report.py`, `routing_telemetry.py`, `capture_router.py` (the router alone, on held-out, training or probe rows), `patch_stats.py`, `wrong_scene_control.py` |
 | Downstream | `eval_ben.py`, `eval_forgetting.py`, `ben_report.py`, `ben_chain.py`, `ben_teacher.py` |
 | Generate and decode | `generate_eo.py`, `prepare_decode.py`, `decode_eo.py` (`mor`), `sweep_d311.sh` |
 | Held-out split | `build_eval_split.py`, and `build_temporal_split.py` for the four-date locations |

@@ -51,13 +51,31 @@ that the depth it captured is D at every position, and fails otherwise.
 --gate-seed S (default 0, every sweep unit; random router only) seeds the forced
 run's random gate draws; another S at the same D measures how much the draw
 alone moves a result. A directory holding another S is refused.
---force-scope target (learned router, 2026-10-28) forces only the positions that
-predict the TARGET's tokens, in target-last and the grid; every other position
-keeps the router's choice, so the context is computed exactly as routed. It has
-no main pass (any-to-any has no single target): run it with --modes ''. Its
-check is on the predicting positions alone. A directory holding another scope
-is refused.
+--force-scope target (learned router, 2026-10-28; random router, B0 Step 6, 2026-11-08)
+forces only the positions that predict the TARGET's tokens, in target-last and the
+grid; every other position keeps the router's choice, so the context is computed
+exactly as routed. For a random router "the router's choice" is each position's own
+draw from the hook's generator (RandomDepthForce), the same draw at every depth, so
+the context is identical across --force-depth. It has no main pass (any-to-any has
+no single target): run it with --modes ''. Its check is on the predicting positions
+alone. A directory holding another scope is refused.
+--own-draw (random router, B0 Step 6) runs every position at its own draw from the
+hook's generator: the paired "as routed" baseline of --force-scope target, with the
+same --gate-seed. A random router's --table draws depth from the table and the gate
+from the same generator, both seeded by --gate-seed, which must equal the spec's seed.
 --skip-target-last runs no target-last pass (a main-pass-only unit).
+
+--table SPEC.json:NAME with --modes table (B0 Step 5, 2026-11-08) runs the main pass with
+each position's depth drawn from a per-modality table (DepthOverride's `table` mode):
+SPEC.json holds {"tables": {NAME: {"mix": {"S2L2A": [p1, p2, p3], ..., "Coords": [...],
+"none": null}, "gate": null | {"S2L2A": [g1, g2, g3], ...}, "seed": 0}}}. "none" is key 0,
+the positions that predict no body token (null keeps the router's choice there); every
+modality must have a row. tokens_table.npz keeps ce, correct, depth and the applied gate.
+metrics.json records the table's hash, and a directory holding another table is refused.
+--assign PATH.npz with --modes assign (B0 Step 5): every position at a depth given in advance,
+`depth` (rows, positions) int, rows in the held-out loader's order, 0 keeping the router's choice
+(DepthOverride's `assign` mode), e.g. a cross-fitted token-id table drawn offline. Its hash is
+recorded and checked like a table's, and the pass must consume exactly every row.
 
 --precision fp16|bf16|fp32 (2026-10-29) is the autocast of every pass: fp16 (the default, as
 the trainer's eval and every result before), bf16, or fp32 (no autocast). An LLM-initialised
@@ -68,11 +86,21 @@ records it, and a directory holding another is refused.
 Arm B works unchanged: it has no router, so it gets the accuracy metrics and
 no depth, and any --modes other than `router` are refused for it.
 
+--model-config CONFIG (A1 Step 7, 2026-11-09) builds the model from CONFIG instead of --arm-config:
+T360-T's arm (eo_terramesh/arm_t360t_vanilla) at its 87,664 ids, through eval_forgetting.build_temporal.
+The checkpoint name `extended_base` loads that arm's pretrain_init base through the `continue` hook
+(extension.json verified, strict load, tie): T360-T at step 0, which reads as T360 on these rows (A1
+finding 24); any other name is a T360-T checkpoint under --run-dir, loaded strictly. The rows, layout,
+token set and worker count stay --arm-config's (T360's single-date arm): the temporal arm's own eval set
+is a dict of micro-batch sets, and its batches of 16 key other modality orders. So the reading pairs
+token for token with T360's stored one at the same --arm-config, batch size and worker count.
+
 Runs in `.venv`. Nothing here imports terratorch.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -85,7 +113,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
-from eo.data.eo_vocab import MODALITIES  # noqa: E402
+from eo.data.eo_vocab import MODALITIES, MODALITY_TO_ID  # noqa: E402
 from eo.data.eval_split import load_eval_rows, load_row_table  # noqa: E402
 from eo.eval import teacher_forced as TF  # noqa: E402
 from eo.generate import conditional as G  # noqa: E402
@@ -155,6 +183,7 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
                 ov.only_mod = TF.MODALITY_TO_ID[T] if args.force_scope == "target" else None
             if rf is not None:
                 rf.reseed(args.gate_seed)          # each cell reproducible on its own (resume)
+                rf.only_mod = TF.MODALITY_TO_ID[T] if args.force_scope == "target" else None
             # The batch size only moves fp16 kernel choice (and, under --force-depth, which gate draw
             # lands on which token): trim_collate cuts each batch to its longest row. 16 runs a cell
             # 2.1-2.6x faster (2026-10-27, TITAN V); the "all" row keeps 4, as its P3 reference.
@@ -200,6 +229,30 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
         tmp = npath.with_name(npath.name + ".tmp.npz")
         np.savez(tmp, **arrays)
         os.replace(tmp, npath)
+
+
+def load_table(spec: str) -> dict:
+    """--table SPEC.json:NAME -> {mix, gate, seed, sha, name, spec}, keyed by modality id (0 = "none")."""
+    path, _, name = spec.rpartition(":")
+    if not path or not name:
+        raise SystemExit(f"--table {spec!r}: expected SPEC.json:NAME")
+    doc = json.loads(Path(path).read_text())
+    if name not in doc.get("tables", {}):
+        raise SystemExit(f"--table: {path} has no table {name!r} (has {sorted(doc.get('tables', {}))})")
+    entry = doc["tables"][name]
+    ids = {"none": 0, **MODALITY_TO_ID}
+
+    def keyed(rows):
+        if rows is None:
+            return None
+        bad = sorted(set(rows) - set(ids))
+        if bad:
+            raise SystemExit(f"--table {name}: unknown keys {bad}")
+        return {ids[k]: v for k, v in rows.items()}
+
+    sha = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()[:16]
+    return {"mix": keyed(entry["mix"]), "gate": keyed(entry.get("gate")), "seed": int(entry.get("seed", 0)),
+            "sha": sha, "name": name, "spec": str(Path(path).resolve())}
 
 
 def logged_eval(run_dir: Path, step: int):
@@ -250,11 +303,23 @@ def main() -> int:
     ap.add_argument("--force-scope", choices=("all", "target"), default="all",
                     help="with --force-depth, learned router: 'target' forces only the positions predicting the "
                          "target's tokens (target-last and grid; needs --modes '')")
+    ap.add_argument("--model-config", default=None,
+                    help="build the model from this config (T360-T's arm, 87,664 ids) instead of --arm-config, "
+                         "which still gives the rows, layout, token set and workers; `extended_base` names its base")
     ap.add_argument("--precision", choices=tuple(PRECISION), default="fp16",
                     help="autocast of every pass: fp16 (default, as the trainer), bf16, or fp32 (none)")
+    ap.add_argument("--table", default=None,
+                    help="SPEC.json:NAME, with --modes table: depth drawn per position from a per-modality table")
+    ap.add_argument("--assign", default=None,
+                    help="PATH.npz holding `depth` (rows, positions), with --modes assign: depths given in advance")
+    ap.add_argument("--own-draw", action="store_true",
+                    help="random router: every position at its own draw from the hook's generator (the paired "
+                         "baseline of --force-scope target); not with --force-depth")
     args = ap.parse_args()
-    if args.gate_seed != 0 and args.force_depth is None:
-        raise SystemExit("--gate-seed applies only with --force-depth")
+    if args.own_draw and args.force_depth is not None:
+        raise SystemExit("--own-draw is the unforced baseline: not with --force-depth")
+    if args.gate_seed != 0 and args.force_depth is None and not args.own_draw and args.table is None:
+        raise SystemExit("--gate-seed applies only with --force-depth, --own-draw or a random router's --table")
     if args.force_scope != "all" and args.force_depth is None:
         raise SystemExit("--force-scope applies only with --force-depth")
 
@@ -263,6 +328,22 @@ def main() -> int:
     gpu = torch.cuda.get_device_name(0)
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
     run_dir = Path(args.run_dir)
+    table = None
+    if args.table is not None or "table" in modes:
+        if args.table is None or modes != ["table"]:
+            raise SystemExit("--table goes with --modes table, and --modes table with --table, alone")
+        if args.force_depth is not None:
+            raise SystemExit("--table and --force-depth do not mix")
+        table = load_table(args.table)
+    assign = None
+    if args.assign is not None or "assign" in modes:
+        if args.assign is None or modes != ["assign"]:
+            raise SystemExit("--assign goes with --modes assign, and --modes assign with --assign, alone")
+        if args.force_depth is not None:
+            raise SystemExit("--assign and --force-depth do not mix")
+        arr = np.load(args.assign)["depth"]
+        assign = {"depth": arr, "sha": hashlib.sha256(np.ascontiguousarray(arr).tobytes()).hexdigest()[:16],
+                  "path": str(Path(args.assign).resolve())}
 
     for ck in args.checkpoints:
         out = Path(args.out_root) / args.arm_tag / ck
@@ -273,15 +354,27 @@ def main() -> int:
         if doc and doc.get("force_depth") != args.force_depth:
             raise SystemExit(f"{out} holds force_depth={doc.get('force_depth')!r} results; "
                              f"this run forces {args.force_depth!r}. Use another --arm-tag.")
-        if doc and args.force_depth is not None and doc.get("gate_seed", 0) != args.gate_seed:
+        if doc and bool(doc.get("own_draw", False)) != bool(args.own_draw):
+            raise SystemExit(f"{out} holds own_draw={doc.get('own_draw', False)!r} results; "
+                             f"this run has own_draw={args.own_draw!r}. Use another --arm-tag.")
+        if doc and (args.force_depth is not None or args.own_draw) and doc.get("gate_seed", 0) != args.gate_seed:
             raise SystemExit(f"{out} holds gate_seed={doc.get('gate_seed', 0)!r} results; "
                              f"this run draws with {args.gate_seed!r}. Use another --arm-tag.")
+        if doc and doc.get("model_config") != args.model_config:
+            raise SystemExit(f"{out} holds model_config={doc.get('model_config')!r} results; "
+                             f"this run builds {args.model_config!r}. Use another --arm-tag.")
         if doc and doc.get("precision", "fp16") != args.precision:
             raise SystemExit(f"{out} holds precision={doc.get('precision', 'fp16')!r} results; "
                              f"this run scores at {args.precision!r}. Use another --arm-tag.")
         if doc and args.force_depth is not None and doc.get("force_scope", "all") != args.force_scope:
             raise SystemExit(f"{out} holds force_scope={doc.get('force_scope', 'all')!r} results; "
                              f"this run forces {args.force_scope!r}. Use another --arm-tag.")
+        if doc and (doc.get("assign") or {}).get("sha") != (assign or {}).get("sha"):
+            raise SystemExit(f"{out} holds assign={(doc.get('assign') or {}).get('path')!r} results; "
+                             f"this run assigns {(assign or {}).get('path')!r}. Use another --arm-tag.")
+        if doc and (doc.get("table") or {}).get("sha") != (table or {}).get("sha"):
+            raise SystemExit(f"{out} holds table={(doc.get('table') or {}).get('name')!r} results; "
+                             f"this run's table is {(table or {}).get('name')!r}. Use another --arm-tag.")
         todo = [m for m in modes if m not in doc.get("modes", {})]
         need_tl = "target_last" not in doc and not args.skip_target_last
         # ⚠ A checkpoint with every mode and target_last done must still run a
@@ -294,8 +387,24 @@ def main() -> int:
             continue
 
         torch.manual_seed(42)
-        ck_path = None if ck == "untrained" else str(run_dir / ck)
-        model, cfg = G.build_model(args.arm_config, ck_path)
+        ck_path = None if ck in ("untrained", "extended_base") else str(run_dir / ck)
+        loaded = None
+        if args.model_config is not None:
+            if ck == "untrained":
+                raise SystemExit("--model-config reads a T360-T checkpoint or `extended_base`, not `untrained`")
+            from eo.scripts.eval_forgetting import build_temporal
+            model, mcfg, loaded = build_temporal(args.model_config, ck_path)
+            _, cfg = G.build_model(args.arm_config, None, device="cpu")          # the rows' config only
+            if cfg.dataset != "terramesh_multimodal":
+                raise SystemExit(f"--arm-config {args.arm_config} builds {cfg.dataset}: name the single-date arm "
+                                 f"whose held-out rows are scored (T360's, eo_terramesh/arm_t360_vanilla)")
+            want, have = ((c.get("multimodal") or {}).get("token_set", "original") for c in (mcfg, cfg))
+            if want != have:
+                raise SystemExit(f"{args.model_config} trains on token set {want!r}, {args.arm_config} scores {have!r}")
+        elif ck == "extended_base":
+            raise SystemExit("`extended_base` is a --model-config checkpoint name")
+        else:
+            model, cfg = G.build_model(args.arm_config, ck_path)
         if int(cfg.dataloader_num_workers) != args.num_workers:
             raise SystemExit(f"--num-workers {args.num_workers} != config's "
                              f"{cfg.dataloader_num_workers}: modality orders would differ from training")
@@ -311,13 +420,23 @@ def main() -> int:
                 TF.install_learned_depth(model, args.force_depth)
                 base = f"force{args.force_depth}"
             else:
-                if args.force_scope != "all":
-                    raise SystemExit("--force-scope target needs a learned router")
                 rf = TF.install_random_depth(model, args.force_depth)
+        elif args.own_draw or (table is not None and not has_learned_router(model)):
+            if has_learned_router(model):
+                raise SystemExit("--own-draw: a learned router has no draw")
+            rf = TF.install_random_depth(model, None)
+            rf.own_draw = bool(args.own_draw)
+            if table is not None:
+                if table["gate"] is not None:
+                    raise SystemExit("a random router's gate is its draw: a gate table does not apply")
+                if table["seed"] != args.gate_seed:
+                    raise SystemExit(f"a random router's table draws with --gate-seed ({args.gate_seed}); "
+                                     f"the spec's seed is {table['seed']}: make them equal")
+                rf.set_table(table["mix"])
         ov = TF.install_override(model, base)
-        if ov is None and any(m != "router" for m in todo):
+        if ov is None and rf is None and any(m != "router" for m in todo):
             raise SystemExit(f"{ck}: interventions need a router; this arm has none")
-        step = 0 if ck == "untrained" else int(ck.split("-")[-1])
+        step = 0 if ck in ("untrained", "extended_base") else int(ck.split("-")[-1])
         # The tokens come from the config's multimodal.token_set (absent = original, every
         # run before B10c). Results resume per directory, so one directory holds one set.
         token_set = (cfg.get("multimodal") or {}).get("token_set", "original")
@@ -330,28 +449,47 @@ def main() -> int:
                     "step": step, "gpu": gpu, "n_eval_rows": len(ds),
                     "has_router": ov is not None,
                     "force_depth": args.force_depth, "precision": args.precision,
-                    "logged_eval": logged_eval(run_dir, step) if ck != "untrained" else None})
+                    "model_config": args.model_config, "loaded": loaded, "vocab": int(model.config.vocab_size),
+                    "logged_eval": logged_eval(run_dir, step) if ck not in ("untrained", "extended_base") else None})
         if rf is not None:
             doc["trained_recursions"] = rf.n_trained
             doc["gate_seed"] = args.gate_seed
+        if args.own_draw:
+            doc["own_draw"] = True
         elif forced:
             doc["trained_recursions"] = int(cfg.recursive.num_recursion)
         if forced:
             doc["force_scope"] = args.force_scope
+        if table is not None:
+            doc["table"] = {k: table[k] for k in ("name", "spec", "sha", "seed")}
+        if assign is not None:
+            if assign["depth"].shape[0] != len(ds):
+                raise SystemExit(f"--assign holds {assign['depth'].shape[0]} rows, the held-out set {len(ds)}")
+            doc["assign"] = {k: assign[k] for k in ("path", "sha")}
         doc.setdefault("modes", {})
 
         for mode in todo:
             t0 = time.perf_counter()
             if ov is not None:
-                TF.install_override(model, base if mode == "router" else mode, seed=0)
+                if mode == "table":
+                    TF.install_override(model, "table", seed=table["seed"])
+                    ov.set_table(table["mix"], table["gate"])
+                elif mode == "assign":
+                    TF.install_override(model, "assign")
+                    ov.set_assignment(assign["depth"])
+                else:
+                    TF.install_override(model, base if mode == "router" else mode, seed=0)
             if rf is not None:
                 rf.reseed(args.gate_seed)
             res = TF.run_pass(model, loader, override=ov, dtype=PRECISION[args.precision])
+            if mode == "assign" and ov.row_ptr != len(ds):
+                raise SystemExit(f"{ck}: the assign pass consumed {ov.row_ptr} rows of {len(ds)}")
             tok = res.pop("tokens")
             if forced and not (tok["depth"] == args.force_depth).all():
                 raise SystemExit(f"{ck}: forced depth {args.force_depth}, captured "
                                  f"{np.unique(tok['depth'], return_counts=True)}")
-            keep = tok if mode == "router" else {k: tok[k] for k in ("ce", "correct", "depth") if k in tok}
+            keep = tok if mode == "router" else {k: tok[k] for k in ("ce", "correct", "depth", "gate_applied")
+                                                  if k in tok}
             np.savez_compressed(out / f"tokens_{mode}.npz", **keep)
             if mode == "router":
                 np.save(out / "eval_rows.npy", np.asarray(ds.rows))
@@ -383,6 +521,7 @@ def main() -> int:
                                                  num_workers=args.num_workers)
                 if rf is not None:
                     rf.reseed(args.gate_seed)
+                    rf.only_mod = TF.MODALITY_TO_ID[T] if args.force_scope == "target" else None
                 if ov is not None:
                     ov.only_mod = TF.MODALITY_TO_ID[T] if args.force_scope == "target" else None
                 res = TF.run_pass(model, dl, override=ov, keep_tokens=ov is not None or rf is not None,
@@ -412,6 +551,8 @@ def main() -> int:
             write_json(mpath, doc)
             if ov is not None:
                 ov.only_mod = None
+            if rf is not None:
+                rf.only_mod = None
 
         if need_grid:
             run_grid(model, ov, ds, load_eval_rows(root_dir=ROOT), load_row_table(ROOT).corpus.values,

@@ -82,6 +82,23 @@ unverified deliverable:
                                                     Controls: other rows differ; a random router and
                                                     a wrapped router are refused. W26s (no GPU):
                                                     eo/routing/stats.py gives known answers
+  W27 a random router's target scope     [B0 Step 6, 2026-11-08] on an untrained A10cR, target-last DEM
+                                                    rows at fp32: the target's predicting positions at d,
+                                                    every other position keeps its depth and gate across d,
+                                                    context logits within 1e-4; the own-draw baseline shares
+                                                    those draws; a one-hot table is force<d> bit for bit.
+                                                    Controls: forcing every position moves the context; a
+                                                    table missing a modality and a learned router refused
+  W28 a depth table is what it claims    [B0 Step 5, 2026-11-08] DepthOverride's `table` mode on an
+                                                    untrained A10c: a one-hot table is force<d> bit for
+                                                    bit; key 0 kept as routed; sampled rows reproduce
+                                                    their histogram; the gate stays the router's.
+                                                    Controls: a permuted table differs; a table missing
+                                                    a modality is refused. W28s (no GPU): the same on
+                                                    synthetic logits, plus the gate table and seeds.
+                                                    `assign` (depths given in advance per row): all at
+                                                    d is force<d> bit for bit, rows in loader order,
+                                                    overruns refused
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -1889,6 +1906,320 @@ def w26s_routing_stats() -> bool:
     return bool(c_crit and c_p and c_tie and c_tie_ctl and c_row and c_grp and c_ser and c_lat and c_all)
 
 
+def _w28_rows():
+    """The test table: a different row per modality, key 0 kept as routed."""
+    from eo.data.eo_vocab import MODALITY_TO_ID
+    rows = {"S2L2A": [0.6, 0.3, 0.1], "S1GRD": [0.1, 0.1, 0.8], "S1RTC": [0.2, 0.5, 0.3],
+            "DEM": [0.0, 0.5, 0.5], "NDVI": [0.5, 0.0, 0.5], "LULC": [1 / 3, 1 / 3, 1 / 3],
+            "Coords": [1.0, 0.0, 0.0]}
+    mix = {MODALITY_TO_ID[k]: v for k, v in rows.items()}
+    mix[0] = None
+    return mix
+
+
+def _w28_hist_ok(depth, keys, mix):
+    """Each sampled key's depth shares within 4 standard errors of its row; zero rows never drawn."""
+    ok, worst = True, 0.0
+    for k, row in mix.items():
+        if row is None:
+            continue
+        sel = keys == k
+        n = int(sel.sum())
+        if n == 0:
+            continue
+        for d, p in enumerate(row):
+            share = float((depth[sel] == d).float().mean())
+            if p == 0:
+                ok &= share == 0
+                continue
+            z = abs(share - p) / max((p * (1 - p) / n) ** 0.5, 1e-12)
+            worst = max(worst, z)
+            ok &= z < 4
+    return ok, worst
+
+
+def w28s_depth_table() -> bool:
+    """DepthOverride's `table` mode (B0 Step 5) on synthetic router logits, no model, CPU. A table
+    one-hot at d on every key gives force<d>'s logits bit for bit; sampled rows reproduce their
+    histogram within 4 standard errors and never draw a zero-probability depth; key 0, kept as
+    routed, keeps the router's choice; the gate on the drawn depth is the router's top probability,
+    or a gate table's value, and key 0 keeps the router's gate; one seed reproduces its draw.
+    Controls: another seed draws differently; a permuted table moves the histograms; a table
+    missing a modality, a row that is not a probability vector and a gate below 1/n are refused."""
+    import torch
+    from eo.eval import teacher_forced as TF
+    g = torch.Generator().manual_seed(0)
+    B, L, n = 16, 1048, 3
+    W = torch.randn(B, L, n, generator=g) * 2
+
+    class Inner(torch.nn.Module):
+        def forward(self, x):
+            return W.clone()
+
+    mids = torch.randint(0, 8, (B, L), generator=g)
+    keys = torch.zeros_like(mids)
+    keys[:, :-1] = mids[:, 1:]
+    a = torch.topk(torch.softmax(W, -1), 1, -1).indices.squeeze(-1)
+    top = torch.softmax(W, -1).amax(-1)
+    ov = TF.DepthOverride(Inner(), "router")
+    ov.mod_ids = mids
+
+    def run(mode, seed=0):
+        ov.mode = mode
+        ov.gen.manual_seed(seed)
+        w2 = ov(torch.zeros(1))
+        return w2, w2.argmax(-1)
+
+    c_force = True
+    for d in (1, 2, 3):
+        ov.set_table({k: [float(j == d - 1) for j in range(n)] for k in range(8)})
+        c_force &= torch.equal(run("table")[0], run(f"force{d}")[0])
+    mix = _w28_rows()
+    ov.set_table(mix)
+    w2, dep = run("table")
+    c_hist, worst = _w28_hist_ok(dep, keys, mix)
+    c_key0 = torch.equal(dep[keys == 0], a[keys == 0])
+    pg = torch.softmax(w2, -1).gather(-1, dep.unsqueeze(-1)).squeeze(-1)
+    c_gate = float(((pg - top).abs() / top).max()) < 1e-3
+    c_seed = torch.equal(run("table", 0)[1], dep)
+    c_seed_ctl = not torch.equal(run("table", 1)[1], dep)
+    gate = {k: [0.40 + 0.05 * k, 0.45 + 0.05 * k, 0.50 + 0.05 * k] for k in range(1, 8)}
+    ov.set_table(mix, gate)
+    w2g, depg = run("table")
+    G = torch.tensor([[float("nan")] * 3] + [gate[k] for k in range(1, 8)])
+    pgg = torch.softmax(w2g, -1).gather(-1, depg.unsqueeze(-1)).squeeze(-1)
+    body = keys > 0
+    want = G[keys, depg]
+    c_gtab = float(((pgg[body] - want[body]).abs() / want[body]).max()) < 1e-3
+    c_gkey0 = float(((pgg[~body] - top[~body]).abs() / top[~body]).max()) < 1e-3 and torch.equal(depg, dep)
+    perm = {k: mix[1 + (k % 6)] if 1 <= k <= 6 else mix[k] for k in mix}
+    ov.set_table(perm)
+    _, depp = run("table")
+    c_perm = not _w28_hist_ok(depp, keys, mix)[0]
+    refused = 0
+    for bad, bg in (({k: v for k, v in mix.items() if k != 3}, None),
+                    ({**mix, 2: [0.5, 0.6, 0.1]}, None),
+                    (mix, {1: [0.2, 0.5, 0.5]})):
+        try:
+            ov.set_table(bad, bg)
+        except ValueError:
+            refused += 1
+    # `assign`: depths given in advance per row, in loader order, 0 = the router's choice
+    c_asg = True
+    for d in (1, 2, 3):
+        ov.set_assignment(np.full((B, L), d))
+        c_asg &= torch.equal(run("assign")[0], run(f"force{d}")[0])
+    A = np.zeros((2 * B, L), np.int64)
+    A[:B:2], A[1:B:2] = 1, 3                       # first call: even rows at depth 1, odd rows at depth 3
+    A[B:] = 2                                       # second call: every row at depth 2
+    ov.set_assignment(A)
+    _, d1 = run("assign")
+    _, d2 = run("assign")
+    c_rows = bool((d1[0::2] == 0).all() and (d1[1::2] == 2).all() and (d2 == 1).all()) and ov.row_ptr == 2 * B
+    ov.set_assignment(np.zeros((B, L), np.int64))
+    c_zero = torch.equal(run("assign")[1], a)
+    c_over = False
+    try:
+        run("assign")                               # the array's rows are used up
+    except ValueError:
+        c_over = True
+    ov.set_assignment(np.full((B, L), 4))
+    try:
+        run("assign"); c_deep = False
+    except ValueError:
+        c_deep = True
+    print(f"    one-hot table == force<d>, bitwise, d = 1..3 = {c_force}")
+    print(f"    assign: all at d == force<d>, bitwise = {c_asg}; rows in loader order across calls = {c_rows}; "
+          f"0 keeps the router's choice = {c_zero}")
+    print(f"    assign controls: rows used up refused = {c_over}; a depth above the router's refused = {c_deep}")
+    print(f"    sampled rows within 4 SE of their histogram (worst {worst:.1f} SE), zero rows never drawn = {c_hist}")
+    print(f"    key 0 keeps the router's choice = {c_key0}; gate = the router's top probability = {c_gate}")
+    print(f"    gate table: the drawn depth's gate = G (rel. err < 1e-3) = {c_gtab}; key 0 and depths unchanged = {c_gkey0}")
+    print(f"    one seed reproduces its draw = {c_seed}; control: another seed differs = {c_seed_ctl}")
+    print(f"    control: a permuted table misses the histograms = {c_perm}; refused (missing modality, "
+          f"not a probability vector, gate < 1/n): {refused} of 3")
+    return bool(c_force and c_hist and c_key0 and c_gate and c_gtab and c_gkey0 and c_seed and c_seed_ctl
+                and c_perm and refused == 3 and c_asg and c_rows and c_zero and c_over and c_deep)
+
+
+def w28_depth_table() -> bool:
+    """DepthOverride's `table` mode through an untrained A10c, 4 held-out rows, one card at fp16 (CPU
+    at fp32 without one). A table one-hot at d on every key gives force<d>'s logits and the captured
+    depth bit for bit, d = 1, 2, 3; with key 0 kept as routed, the positions that predict no body
+    token keep the router's depth and every other is at d; sampled rows reproduce their histogram in
+    the depth the MoR layer captures; the gate on the drawn depth is the router's top probability.
+    Controls: a permuted table moves the histogram and the logits; a table missing a modality is
+    refused."""
+    import torch
+    from eo.eval import teacher_forced as TF
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import find_mor_layers
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.manual_seed(42)
+    model, cfg = G.build_model(ARM_A10C, None, device=dev)
+    cap = []
+    find_mor_layers(model)[0].register_forward_hook(
+        lambda mod, i, o: cap.append(o.token_expert_indices.detach().cpu()))
+    ds, _ = TF.eval_loader(cfg, num_workers=0)
+    batch = torch.utils.data.default_collate([ds[i] for i in range(4)])
+    mids = batch.pop("modality_ids"); batch.pop("labels")
+    inp = {k: v.to(dev) for k, v in batch.items()}
+    keys = torch.zeros_like(mids)
+    keys[:, :-1] = mids[:, 1:]
+    ov = TF.install_override(model, "router")
+
+    def fwd(mode, seed=0):
+        TF.install_override(model, mode, seed=seed)
+        ov.mod_ids, ov.att = mids.to(dev), inp["attention_mask"]
+        with torch.no_grad(), torch.autocast(dev, dtype=torch.float16, enabled=dev == "cuda"):
+            lg = model(**inp).logits.float()
+        return lg.cpu(), cap[-1].clone()
+
+    r_lg, r_d = fwd("router")
+    c_force = True
+    for d in (1, 2, 3):
+        ov.set_table({k: [float(j == d - 1) for j in range(3)] for k in range(8)})
+        t_lg, t_d = fwd("table")
+        f_lg, f_d = fwd(f"force{d}")
+        c_force &= torch.equal(t_lg, f_lg) and torch.equal(t_d, f_d) and bool((t_d == d - 1).all())
+    ov.set_table({k: (None if k == 0 else [0.0, 1.0, 0.0]) for k in range(8)})
+    _, k_d = fwd("table")
+    c_key0 = torch.equal(k_d[keys == 0], r_d[keys == 0]) and bool((k_d[keys > 0] == 1).all())
+    mix = _w28_rows()
+    ov.set_table(mix)
+    gates = []
+    gh = ov.register_forward_hook(lambda mod, i, o: gates.append((o.detach().float(), mod.last_top_prob)))
+    s_lg, s_d = fwd("table")
+    gh.remove()
+    c_hist, worst = _w28_hist_ok(s_d, keys, mix)
+    w2, topp = gates[-1]
+    pg = torch.softmax(w2, -1).gather(-1, s_d.to(w2.device).long().unsqueeze(-1)).squeeze(-1)
+    gate_err = float(((pg - topp).abs() / topp).max())
+    perm = {k: mix[1 + (k % 6)] if 1 <= k <= 6 else mix[k] for k in mix}
+    ov.set_table(perm)
+    p_lg, p_d = fwd("table")
+    c_perm = not _w28_hist_ok(p_d, keys, mix)[0] and not torch.equal(p_lg, s_lg)
+    try:
+        ov.set_table({k: v for k, v in mix.items() if k != 4}); c_missing = False
+    except ValueError:
+        c_missing = True
+    # `assign` through the model: all at d == force<d>; per-row depths honoured (0 = as routed)
+    c_asg = True
+    for d in (1, 3):
+        ov.set_assignment(np.full(tuple(mids.shape), d))
+        a_lg, a_d = fwd("assign")
+        f_lg, f_d = fwd(f"force{d}")
+        c_asg &= torch.equal(a_lg, f_lg) and torch.equal(a_d, f_d)
+    A = np.zeros(tuple(mids.shape), np.int64)
+    A[0], A[1] = 1, 3
+    ov.set_assignment(A)
+    _, m_d = fwd("assign")
+    c_rows = bool((m_d[0] == 0).all() and (m_d[1] == 2).all()) and torch.equal(m_d[2:], r_d[2:])
+    print(f"    one-hot table == force<d>: logits and captured depth bitwise, d = 1..3 = {c_force}")
+    print(f"    key 0 kept as routed: those positions at the router's depth, the rest at d = {c_key0}")
+    print(f"    sampled rows within 4 SE in the captured depth (worst {worst:.1f} SE) = {c_hist}")
+    print(f"    gate on the drawn depth = the router's top probability (max rel. err {gate_err:.1e}) = {gate_err < 1e-3}")
+    print(f"    control: a permuted table moves the histogram and the logits = {c_perm}; "
+          f"a table missing a modality is refused = {c_missing}")
+    print(f"    assign: all at d == force<d>, logits and depth bitwise = {c_asg}; per-row depths honoured, "
+          f"0 as routed = {c_rows}")
+    return bool(c_force and c_key0 and c_hist and gate_err < 1e-3 and c_perm and c_missing and c_asg and c_rows)
+
+
+def w27_random_target_scope() -> bool:
+    """RandomDepthForce's target scope, own draw and table (B0 Step 6) on an untrained A10cR, 2 target-last
+    DEM rows at fp32 (the card's precision is off: the context's logits are compared to 1e-4). With
+    only_mod = DEM at d = 1, 2, 3: the positions predicting DEM are at d; every other position keeps its depth
+    and its gate across d; the context's logits stay within 1e-4 of each other. The own-draw baseline has
+    those same depths and gates. A table one-hot at d on every key gives force<d>'s logits and depth bit for
+    bit; a table that keeps key 0 as drawn draws those positions as the own-draw pass does. Controls: forcing
+    every position moves the context; a table missing a modality is refused; a learned router is refused
+    (its target scope is DepthOverride's, which W21 checks)."""
+    import torch
+    from eo.data.eval_split import load_eval_rows, load_row_table
+    from eo.eval import teacher_forced as TF
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import find_mor_layers
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.manual_seed(42)
+    model, cfg = G.build_model(ARM_A10CR, None, device=dev)
+    cap = []
+    find_mor_layers(model)[0].register_forward_hook(
+        lambda mod, i, o: cap.append(o.token_expert_indices.detach().cpu()))
+    ds, _ = TF.eval_loader(cfg, num_workers=0)
+    root = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
+    T = "DEM"; tid = TF.MODALITY_TO_ID[T]
+    rows = TF.stratified_target_rows(ds, load_eval_rows(root_dir=root), load_row_table(root).corpus.values,
+                                     T, 512)[:2]
+    tl = TF.TargetLast(ds, rows, T)
+    tb = torch.utils.data.default_collate([tl[i] for i in range(len(rows))])
+    mids = tb.pop("modality_ids"); tb.pop("labels")
+    inp = {k: v.to(dev) for k, v in tb.items()}
+    pred = torch.zeros_like(mids, dtype=torch.bool)
+    pred[:, :-1] = mids[:, 1:] == tid
+    real = tb["attention_mask"].bool()
+    ctx = real & (torch.arange(mids.shape[1]).unsqueeze(0) < pred.float().argmax(1, keepdim=True))
+    rest = real & ~pred
+
+    def fwd(rf):
+        rf.reseed(0)
+        rf.mod_ids = mids.to(dev)
+        with torch.no_grad():
+            lg = model(**inp).logits.float()
+        return lg.cpu(), cap[-1].clone(), rf.last_out.detach().float().amax(-1).cpu()
+
+    res = {}
+    for d in (1, 2, 3):
+        rf = TF.install_random_depth(model, d)
+        rf.only_mod = tid
+        res[d] = fwd(rf)
+    c_tgt = all(bool((res[d][1][pred] == d - 1).all()) for d in (1, 2, 3))
+    c_rest = all(torch.equal(res[d][1][rest], res[1][1][rest]) and torch.equal(res[d][2][rest], res[1][2][rest])
+                 for d in (2, 3))
+    tol = 1e-4 * float(res[1][0].abs().max())
+    worst = max(float((res[d][0] - res[1][0]).abs().amax(-1)[ctx].max()) for d in (2, 3))
+    rf = TF.install_random_depth(model, None)
+    rf.own_draw = True
+    own = fwd(rf)
+    c_own = torch.equal(own[1][rest], res[1][1][rest]) and torch.equal(own[2], res[1][2])
+    rf = TF.install_random_depth(model, 3)
+    a3 = fwd(rf)
+    moved = float((a3[0] - res[3][0]).abs().amax(-1)[ctx].max())
+    c_tab = True
+    for d in (1, 2, 3):
+        rf = TF.install_random_depth(model, None)
+        rf.set_table({k: [float(j == d - 1) for j in range(3)] for k in range(8)})
+        t_ = fwd(rf)
+        f_ = fwd(TF.install_random_depth(model, d))
+        c_tab &= torch.equal(t_[0], f_[0]) and torch.equal(t_[1], f_[1]) and torch.equal(t_[2], f_[2])
+    rf = TF.install_random_depth(model, None)
+    rf.set_table({k: (None if k == 0 else [0.0, 1.0, 0.0]) for k in range(8)})
+    k0 = fwd(rf)
+    keys = torch.zeros_like(mids)
+    keys[:, :-1] = mids[:, 1:]
+    z = real & (keys == 0)
+    c_key0 = torch.equal(k0[1][z], own[1][z]) and bool((k0[1][real & (keys > 0)] == 1).all())
+    try:
+        TF.install_random_depth(model, None).set_table({k: [0.0, 1.0, 0.0] for k in range(7)}); c_missing = False
+    except ValueError:
+        c_missing = True
+    m2, _ = G.build_model(ARM_A10C, None, device="cpu")
+    try:
+        TF.install_random_depth(m2, 2); c_learned = False
+    except ValueError:
+        c_learned = True
+    print(f"    target scope (DEM, d = 1, 2, 3): its predicting positions at d = {c_tgt}; every other position "
+          f"keeps its depth and gate across d = {c_rest}")
+    print(f"    target scope: context logits across d, fp32 (max |diff| {worst:.1e} <= {tol:.1e}) = {worst <= tol}")
+    print(f"    own draw: the same depths and gates as the target scope's other positions = {c_own}")
+    print(f"    table one-hot at d == force<d>: logits, depth and gate bitwise, d = 1..3 = {c_tab}; "
+          f"key 0 kept as drawn = {c_key0}")
+    print(f"    control: forcing every position moves the context (max |diff| {moved:.2f}) = {moved > 100 * tol}")
+    print(f"    control: a table missing a modality is refused = {c_missing}; a learned router is refused = {c_learned}")
+    return bool(c_tgt and c_rest and worst <= tol and c_own and c_tab and c_key0 and moved > 100 * tol
+                and c_missing and c_learned)
+
+
 def w16_t360() -> bool:
     """T360 differs from B10c in exactly its size, data split and budget; it is 2 epochs of the
     train split at a 5% warmup and 10% decay; it builds at 314.64 M non-embedding parameters; and
@@ -2503,6 +2834,7 @@ def main() -> int:
         ("W24  a nan per-modality CE marks one interval [LLM init]", w24_per_modality_reset),
         ("W25  LoRA on the frozen LLM body            [LLM LoRA]", w25_smollm_lora),
         ("W26s routing statistics: known answers      [B0]", w26s_routing_stats),
+        ("W28s a depth table is what it claims        [B0 Step 5]", w28s_depth_table),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]
@@ -2514,6 +2846,8 @@ def main() -> int:
         checks.append(("W18  forced depth is what it claims       [depth sweep]", w18_forced_depth))
         checks.append(("W21  learned-router forced depth           [depth sweep]", w21_learned_depth))
         checks.append(("W26  the router-only pass is the router    [B0]", w26_router_capture))
+        checks.append(("W27  a random router's target scope        [B0 Step 6]", w27_random_target_scope))
+        checks.append(("W28  a depth table is what it claims       [B0 Step 5]", w28_depth_table))
 
     results = []
     for title, fn in checks:
