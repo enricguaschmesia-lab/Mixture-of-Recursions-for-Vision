@@ -215,7 +215,8 @@ def main():
     init = {} if args.test else CI.pretrain_init(model, cfg)
     load_s = time.time() - t0
     args.max_grad_norm = float(cfg.max_grad_norm)
-    acc = Accelerator(mixed_precision="bf16", cpu=not CUDA)
+    # bf16 on a CPU without native bf16 is emulated and very slow: --test on CPU runs fp32 (logic only).
+    acc = Accelerator(mixed_precision="bf16" if CUDA else "no", cpu=not CUDA)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(float(cfg.adam_beta1), float(cfg.adam_beta2)),
                                   weight_decay=float(cfg.weight_decay))
     model.train()
