@@ -344,6 +344,14 @@ def check_index(root_dir, modalities: Optional[Sequence[str]] = None, metadata_p
     """The token checks on a built index, written to its temporal_check.json. `modalities` limits
     them to a part of the blocks, for a root that holds only some; the report is then not complete,
     and load_temporal_index refuses it."""
+    report = token_report(root_dir, modalities, metadata_path)
+    atomic_json(report, index_dir(root_dir) / CHECK_FILE)
+    return report
+
+
+def token_report(root_dir, modalities: Optional[Sequence[str]] = None, metadata_path=None) -> Dict:
+    """check_index's report, written nowhere: a gate reruns the checks without rewriting the artifact
+    (eo/scripts/verify_temporal.py, Y2)."""
     root = Path(root_dir)
     index = load_temporal_index(root, require_checked=False)
     build = index.build
@@ -364,7 +372,6 @@ def check_index(root_dir, modalities: Optional[Sequence[str]] = None, metadata_p
               "twins": tokens.twins(locations), "controls": token_controls(tokens, locations)}
     report["controls_fired"] = all(c["fired"] for c in report["controls"].values())
     report["passed"] = bool(report["presence"]["passed"] and report["static"]["passed"] and report["controls_fired"])
-    atomic_json(report, index_dir(root) / CHECK_FILE)
     return report
 
 

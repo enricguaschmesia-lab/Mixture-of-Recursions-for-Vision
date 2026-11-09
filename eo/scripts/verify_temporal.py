@@ -14,6 +14,22 @@ whose artifact does not exist yet is SKIPPED and reported as such, never passed.
                                      | date rows before BEN's, on PAD, past a gap, a repeated id and a
                                        missing bin are rejected; date blocks out of range or out of
                                        order are refused; the wrong untrained years are flagged
+  Y2  (Step 6) Step 2's index checks, rerun: both indices load through load_temporal_index; the
+      structural checks, recomputed from each root's metadata (val's, and train_meta's with
+      train_coords' tok_index.parquet, in a child process: 9.3 GB), find no offence and equal
+      temporal_build.json, and val_clean holds exactly temporal_rows_v1.json's locations; the token
+      checks on val_clean (presence, statics, twins) give temporal_check.json's report, through
+      temporal_index.token_report, which writes nothing; an untampered copy of the index loads
+                                     | every structural control by its own offence, the wrong day
+                                       rule, the split with a pair swapped; the token controls (one
+                                       pair, 1% and every location swapped); the loader refuses another
+                                       row order, a changed array, a missing, failed, partial or stale
+                                       check and no build file; rows swapped with the hashes made
+                                       consistent fail the token report
+      ⚠ Train's token checks need g49's tokens: SKIPPED here, rerun in Step 8. The val_clean token
+        checks read the static tokens and presence flags of all 2,176 locations, test side included,
+        as Step 2's check did: integrity only; no model reads them, and Y3's audit counts the rows the
+        dataset code and the parse-backs read.
   Y9  The extended base: extension.json records a passed fp32 identity and both controls fired; its
       weights hash to the record and carry the current layout; the table is 87,664 rows and every
       tensor of the source checkpoint is unchanged, bit for bit; lm_head is tied, so not stored
@@ -73,12 +89,75 @@ controls in eo/train/preflight_controls.py):
                                        that meets no save); the block without year_drop; a stray key
                                        in each pilot arm; a resume with single_share 0.4, seed 43,
                                        no eval split, or the no-ramp arm's stages
+
+Step 6 (the gate's own checks, 2026-11-09). Y10, Y11, Y12 and Y16 read the real T360-T, built once on
+CPU at fp32 from the arm and loaded through pretrain_init's `continue` hook (~6 GB with Y10's two
+other builds; 12 GB peak). Y11 and Y15 share one set of pretrain.py runs on a miniature T360-T. The whole gate
+takes about 11 minutes on this workstation's CPU.
+
+  Y10 Logits at shared positions are equal at max_length 1,048 and 2,793: T360-T built from the arm and
+      with max_length=1048, the same extended base in both, fed a scene micro-batch and a two-date
+      sequence cut to 1,048 (date blocks, lattice positions); and the whole two-date sequence at 2,793
+      against the cut. RoPE has no position table: max_length only reaches max_position_embeddings
+                                     | model_config.rope_theta 20000 moves them
+  Y11 Continuation. The hook on the real model: 290 tensors loaded strictly, lm_head the only missing
+      key, a date row the base's, the tie kept, every parameter training, the record naming the base,
+      `continue` and T360's checkpoint, and accepted on a resume under the same init. Through
+      pretrain.py on the miniature: a run stopped on a save (stop_steps a multiple of save_steps) and
+      resumed with only stop_steps changed logs the uninterrupted run's learning_rate at every step of
+      a schedule that changes it at every step (warmup 3, decay 3 of 6), and its loss within 1e-4
+                                     | the record refuses another base and another variant; the resume
+                                       with scheduler.pt removed (HF then loads neither scheduler nor
+                                       optimizer, silently) changes the LR and the loss; pretrain.py
+                                       refuses a base whose weights no longer hash to extension.json and
+                                       a resume under another base's config, exit 1, nothing written
+  Y12 The extended base reproduces T360's 5.0361 on the 4,416 held-out rows within 0.01 (measured
+      +4.5e-09, where +0.001 was expected: the new rows sit at the mean row, whose logit lies far below the
+      log-sum-exp, so they hold almost no softmax mass), read from the GPU run's artifact (eval_forgetting.py --model
+      temporal, fp32, the GTX Titan X) and paired per token against T360's BEN-base reading (same rows,
+      layout and worker-keyed modality orders), every token within one fp16 step (at least 1e-4 nats);
+      live on CPU, the first two batches (8 Major TOM rows) reproduce the artifact's per-token CE within
+      the same. SKIPPED while the artifact is missing
+                                     | the table shifted by one row (every id reads its neighbour's) reads
+                                       far off on those rows. Step 3's control 1, the rows inserted
+                                       before PAD, cannot fire here: it moves only PAD, which these rows
+                                       never score
+  Y13 Each task's prompt (eo/eval/temporal.py, Step 12's four tasks at every target date, on dev
+      locations) is the prefix of its sequence through the target's BO, assembled by
+      TemporalLocations.sequence(draw=...) on the lattice, and equal to its context assembled alone;
+      every block is its declared row's (tokens.npy), and nothing of the target's (modality, date) is in
+      it, by declaration and by tokens; the layouts keep the defaults; without date blocks the positions
+      are T360's; a test location is refused before any read
+                                     | the target left in context; a prompt on sequential positions; a
+                                       context one token short of the prompt
+  Y15 Two real steps and a resume through pretrain.py, launched as train_eo.sh launches it, on a
+      miniature T360-T (T360's arm, two layers of 96, extended to 87,664 through extend_checkpoint's own
+      writer and identity check), CPU, fp32: pretrain_init.json and temporal_data.json written at
+      launch, the latter the config's data settings; TemporalEpochCallback reports the draw epoch from
+      global_step at every epoch begun (0, 1, 2; 1 and 2 after a resume at step 3), with HF's epoch
+      length checked and unwrap_microbatch collating; stopped on a save and resumed with only stop_steps
+      changed: accepted
+                                     | a flipped init hash: exit 1, nothing trained or recorded; a resume
+                                       with temporal.year_drop changed: exit 1, the run untouched; the
+                                       callback refuses an epoch of another length and HF's default
+                                       collator
+  Y16 (generation half) On T360-T, a left-out-season prompt behind four date blocks (the lattice 16
+      positions behind the token count): each KV-cached step with explicit positions
+      (eo/generate/cached.py) has the logits of a full teacher-forced pass at the same positions; the
+      sampler's explicit 0..L-1 path gives its default path's tokens bit for bit
+                                     | the same cached steps on default positions
+
+  ⚠ Y3's audit covers this process. Y15's pretrain.py runs read their rows in child processes: the
+    dev locations and the Major TOM rows outside the held-out split (the dataset refuses a test
+    location), and they evaluate nothing. The miniature's identity batch is the real one's less its
+    row on a test location (row 84,920, a held-out row), topped up with a dev-side held-out row.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -1112,7 +1191,7 @@ def variant_positions(ids: np.ndarray, rewinds) -> np.ndarray:
     return pos
 
 
-def y16():
+def y16_dataset():
     f = fx()
     ds = make()
     seqs = [ds.temporal.sequence(int(loc), e, ds.stage_of(e)[1].dates) for e in range(4) for loc in f.dev[e::29][:16]]
@@ -1194,7 +1273,7 @@ def run_loop(tcfg, out: Path, workers: int, callback: str = "temporal", mixed_cl
             ds.set_draw_epoch(int(round(state.epoch or 0)))
 
     log = Steps()
-    epoch_cb = ds.epoch_callback() if callback == "temporal" else Rounding()
+    epoch_cb = ds.epoch_callback(verbose=False) if callback == "temporal" else Rounding()
     args = TrainingArguments(output_dir=str(out), per_device_train_batch_size=1, gradient_accumulation_steps=ga,
                              max_steps=max_steps, save_strategy="steps", save_steps=1, logging_steps=1, report_to=[],
                              use_cpu=True, dataloader_num_workers=workers, seed=42, data_seed=42,
@@ -1426,8 +1505,851 @@ def y18():
                f"{k}: {'yes' if v else 'NO'}" for k, v in fired.items()))
 
 
-CHECKS = {"Y1": y1, "Y3": y3, "Y4": y4, "Y5": y5, "Y6": y6, "Y7": y7, "Y8": y8, "Y9": y9, "Y14": y14,
-          "Y16": y16, "Y17": y17, "Y18": y18}
+# ================================================================ Step 6: the gate's own checks
+# ---------------------------------------------------------------- Y2
+TRAIN_META = Path("/data/enric/data/TerraMesh/train_meta/train_metadata.parquet")
+META = {"val_clean": None, "train": TRAIN_META}     # None: val's metadata, eval_split.DEFAULT_METADATA_PATH
+
+
+def _refused(fn, *args, **kwargs) -> bool:
+    """`refused`, plus the loader's FileNotFoundError for a missing file."""
+    try:
+        fn(*args, **kwargs)
+    except (ValueError, RuntimeError, OSError):
+        return True
+    return False
+
+
+def _structure(name: str) -> dict:
+    """Step 2's structural checks on one root, recomputed from its metadata. Run in a child process:
+    train's row table holds 8.9M rows and takes 9.3 GB, which the gate's later checks need back."""
+    from eo.data import temporal_index as TI
+    from eo.data.eval_split import DEFAULT_METADATA_PATH, _sha256
+    from eo.data.temporal_split import row_dates
+    root, meta = ROOTS[name], META[name]
+    index = load_temporal_index(root)
+    locations, dates = index.locations, np.asarray(index.dates)
+    table = row_dates(root, meta)
+    out = {"report": TI.structure_report(locations, dates, table),
+           "controls": TI.structure_controls(locations, dates, table),
+           "split": TI.split_report(locations, root, meta),
+           "metadata_equal": _sha256(Path(meta or DEFAULT_METADATA_PATH)) == index.build["inputs"]["metadata"],
+           "recorded": index.build["structure"]}
+    if out["split"] is not None:            # the split check against its control: one pair of rows swapped
+        bad = TI.split_report(TI.swap_rows(locations, 1), root, meta)
+        out["split_control"] = not bad["passed"]
+    return out
+
+
+def _tampered_root(tmp: Path, name: str) -> Path:
+    """val_clean's index in a root of its own: every entry symlinked, temporal/ copied."""
+    r = tmp / name
+    r.mkdir()
+    for e in VAL.iterdir():
+        if e.name != "temporal":
+            (r / e.name).symlink_to(e)
+    shutil.copytree(VAL / "temporal", r / "temporal")
+    return r
+
+
+def _rehash(root: Path) -> None:
+    """Make temporal_build.json's array hashes consistent with the arrays, as a careful forger would."""
+    from eo.data import temporal_index as TI
+    from eo.data.eval_split import _sha256
+    d = root / TI.INDEX_DIR
+    build = json.loads((d / TI.BUILD_FILE).read_text())
+    build["arrays"] = {n: _sha256(d / n) for n in build["arrays"]}
+    (d / TI.BUILD_FILE).write_text(json.dumps(build))
+
+
+def y2():
+    import concurrent.futures as cf
+    import multiprocessing as mp
+
+    import pandas as pd
+
+    from eo.data import temporal_index as TI
+    rule, wrong = TI.date_rule_report(), TI.date_rule_report(TI._wrong_rule)
+    with cf.ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as pool:
+        st = {name: pool.submit(_structure, name).result() for name in ("val_clean", "train")}
+    problems, fired = [], {"the wrong day rule": not wrong["passed"]}
+    for name, s in st.items():
+        rep = s["report"]
+        if not rep["passed"] or rep != s["recorded"] or not s["metadata_equal"]:
+            problems.append(f"{name}: {dict((k, v) for k, v in rep.items() if v)}, recorded equal "
+                            f"{rep == s['recorded']}, metadata equal {s['metadata_equal']}")
+        for k, c in s["controls"].items():
+            fired[f"{name} {k}"] = c["fired"]
+        if name == "val_clean":
+            if s["split"] is None or not s["split"]["passed"]:
+                problems.append(f"val_clean's index is not temporal_rows_v1.json's locations: {s['split']}")
+            fired["val_clean split, a pair swapped"] = s.get("split_control", False)
+        elif s["split"] is not None:
+            problems.append("train's root claims val's split")
+    if not rule["passed"]:
+        problems.append(f"date rule: {rule}")
+    v, t = st["val_clean"]["report"], st["train"]["report"]
+    record("Y2 structure", not problems,
+           f"recomputed from the metadata, no offence on either root and equal to temporal_build.json: val_clean "
+           f"{v['locations']:,} locations over {v['rows']:,} rows, train {t['locations']:,} over {t['rows']:,} (the "
+           f"metadata each was built from, by hash); val_clean holds exactly temporal_rows_v1.json's locations; "
+           f"{rule['cases']} hand-worked dates pass the day rule" + (f"; {problems[:3]}" if problems else ""),
+           all(fired.values()), f"{sum(fired.values())} of {len(fired)} controls caught by their own offence"
+           + ("" if all(fired.values()) else f": MISSED {[k for k, x in fired.items() if not x]}"))
+
+    # The token checks on val_clean, rerun without rewriting temporal_check.json, against the stored one.
+    # They read the static tokens and presence flags of all 2,176 locations, test side included, as
+    # Step 2's check did: integrity only, no model reads them (Y3's audit counts what the dataset code reads).
+    rep = TI.token_report(VAL)
+    stored = json.loads((VAL / TI.INDEX_DIR / TI.CHECK_FILE).read_text())
+    keys = ("complete", "presence", "static", "twins", "controls", "controls_fired", "passed", "arrays", "inputs")
+    same = all(rep[k] == stored[k] for k in keys)
+    stat = rep["static"]["per_modality"]
+    ctrl = rep["controls"]
+    record("Y2 tokens (val_clean)", rep["passed"] and rep["complete"] and same,
+           f"every date holds all six blocks; Coords differ in {stat['Coords']['tokens_differing']} of "
+           f"{stat['Coords']['tokens_compared']:,} tokens, DEM in {stat['DEM']['tokens_differing']} of "
+           f"{stat['DEM']['tokens_compared']:,} (limits {TI.STATIC_LIMITS}); {rep['twins']} twins; the same report as "
+           f"temporal_check.json: {same}", rep["controls_fired"],
+           ", ".join(f"{k}: {c['locations_over_limit']} of {c['locations_moved']} moved locations caught"
+                     for k, c in ctrl.items()))
+    skip("Y2 tokens (train)", "train's tokens are on g49 only: its token checks ran there in Step 2 "
+         "(temporal_check.json, loaded above) and rerun with Step 8")
+
+    # The loader refuses tampered copies, and accepts an untampered one.
+    tmp = Path(tempfile.mkdtemp(prefix="y2_"))
+    d = TI.INDEX_DIR
+    same_root = _tampered_root(tmp, "same")
+    accepted = not _refused(load_temporal_index, same_root)
+
+    def tamper(name, how):
+        r = _tampered_root(tmp, name)
+        how(r)
+        return r
+
+    def order(r):
+        t = pd.read_parquet(VAL / TI.INDEX_NAME)
+        cols = [c for c in t.columns if c != "row"]
+        t.loc[[0, 1], cols] = t.loc[[1, 0], cols].to_numpy()          # two rows' scenes exchanged
+        (r / TI.INDEX_NAME).unlink()
+        t.to_parquet(r / TI.INDEX_NAME, index=False)
+
+    def array(r):
+        loc = np.load(r / d / TI.LOCATIONS_FILE)
+        loc[5, 2] += 1
+        np.save(r / d / TI.LOCATIONS_FILE, loc)
+
+    def check_key(**kv):
+        def go(r):
+            p = r / d / TI.CHECK_FILE
+            doc = json.loads(p.read_text())
+            doc.update(kv)
+            p.write_text(json.dumps(doc))
+        return go
+
+    def gone(f):
+        return lambda r: (r / d / f).unlink()
+
+    def swapped(r):
+        np.save(r / d / TI.LOCATIONS_FILE, TI.swap_rows(np.load(r / d / TI.LOCATIONS_FILE), 1))
+        _rehash(r)
+
+    cases = {"another row order": order, "a changed array": array, "no check file": gone(TI.CHECK_FILE),
+             "a failed check": check_key(passed=False), "a partial check": check_key(complete=False),
+             "a check of other arrays": check_key(arrays={TI.LOCATIONS_FILE: "0" * 64, TI.DATES_FILE: "0" * 64}),
+             "no build file": gone(TI.BUILD_FILE), "rows swapped, hashes made consistent": swapped}
+    roots = {k: tamper(k.replace(" ", "_").replace(",", ""), how) for k, how in cases.items()}
+    refusals = {k: _refused(load_temporal_index, r) for k, r in roots.items()}
+    # The forged copy passes every hash, so only the checks themselves can see it: the token report
+    # fails and the structure counts the mixed locations, as check would (exit 1).
+    forged = roots["rows swapped, hashes made consistent"]
+    forged_tokens = TI.token_report(forged)
+    forged_index = load_temporal_index(forged, require_checked=False)
+    shutil.rmtree(tmp, ignore_errors=True)
+    record("Y2 loader", accepted, f"an untampered copy of val_clean's index loads; {sum(refusals.values())} of "
+           f"{len(refusals)} tampered copies refused", all(refusals.values()) and not forged_tokens["passed"],
+           ", ".join(f"{k}: {'refused' if x else 'ACCEPTED'}" for k, x in refusals.items())
+           + f"; the forged copy's token report: passed {forged_tokens['passed']}, "
+           f"{forged_tokens['static']['locations_over_limit']} locations over the limit "
+           f"({len(forged_index)} locations, hashes consistent)")
+
+
+# ---------------------------------------------------------------- the real T360-T (Y10, Y11, Y12, Y16)
+_T360: dict = {}
+LOGIT_TOL = 1e-4          # fp32 round-off where two kernels block differently (extend_checkpoint.IDENTITY_TOL)
+CACHE_TOL = 1e-3          # cached against full logits at fp32 (eo/eval/ben.py CACHE_TOL["none"])
+CONTROL_MIN = 1.0         # a broken position or table is off by whole logits (tm_compare_gen's control floor)
+CACHE_CONTROL_MIN = 100 * CACHE_TOL   # Y16's control must fail its check by two orders of magnitude
+
+
+def t360t() -> SimpleNamespace:
+    """T360-T as its arm builds it (CPU, fp32, 87,664 ids), loaded from the extended base through
+    pretrain_init's `continue` hook, once per process: the model Y10, Y11, Y12 and Y16 read."""
+    if not _T360:
+        import time
+
+        from eo.generate import conditional as G
+        from eo.train import clevr_init as CI
+        t0 = time.time()
+        torch.manual_seed(0)
+        model, cfg = G.build_model(f"eo_terramesh/{ARM}", None, device="cpu", overrides=list(DRY))
+        probe = TV.YEAR_IDS[5]                        # the 2020 row: fresh before the hook, the base's after
+        fresh = model.model.embed_tokens.weight[probe].detach().clone()
+        rep = CI.pretrain_init(model, cfg)
+        _T360.update(model=model.eval(), cfg=cfg, rep=rep, fresh=fresh, probe=probe, seconds=time.time() - t0)
+    return SimpleNamespace(**_T360)
+
+
+def _no_base(check: str) -> bool:
+    if (EXT / "extension.json").is_file():
+        return False
+    skip(check, f"{EXT} has no extension.json: Step 3's extension has not run")
+    return True
+
+
+def _hidden(model, mb):
+    with torch.no_grad():
+        return model.model(input_ids=mb["input_ids"], attention_mask=mb["attention_mask"],
+                           position_ids=mb["position_ids"], use_cache=False).last_hidden_state
+
+
+def _logit_gap(m1, mb1, m2, mb2, n=None, chunk: int = 512) -> float:
+    """Largest |logit difference| between two models' fp32 logits, at the real positions both inputs hold
+    (the first n of them when given), through the lm_head in chunks: vocabulary-sized logits dominate
+    memory on CPU."""
+    h1, h2 = _hidden(m1, mb1), _hidden(m2, mb2)
+    worst = 0.0
+    with torch.no_grad():
+        for b in range(h1.shape[0]):
+            real = int(min(mb1["attention_mask"][b].sum(), mb2["attention_mask"][b].sum()))
+            real = real if n is None else min(real, n)
+            for s in range(0, real, chunk):
+                e = min(real, s + chunk)
+                worst = max(worst, float((m1.lm_head(h1[b, s:e]) - m2.lm_head(h2[b, s:e])).abs().max()))
+    return worst
+
+
+# ---------------------------------------------------------------- Y10
+def y10():
+    if _no_base("Y10 lengths"):
+        return
+    import gc
+
+    from eo.finetune.extend import assert_tied
+    from eo.finetune.init import strict_load
+    from eo.generate import conditional as G
+    f = fx()
+    T = f.T
+    m = t360t()
+    A = m.model
+
+    def build(extra):
+        model, cfg = G.build_model(f"eo_terramesh/{ARM}", None, device="cpu", overrides=list(DRY) + list(extra))
+        strict_load(model, EXT)
+        assert_tied(model)
+        return model.eval()
+
+    tcfg = T.TemporalConfig()
+    single = T.SingleScenes(f.base, f.index, f.majortom, tcfg, 42)
+    scenes = T.stack_trim([single.sequence(int(r), 0) for r in f.majortom[100:102]])
+    seq = T.TemporalLocations(f.base, f.index, f.dev, tcfg, 42).sequence(int(f.dev[7]), 0, 2)
+    real = int(seq["attention_mask"].sum())
+    full = {k: v[:real][None] for k, v in seq.items()}
+    cut = {k: v[:1048][None] for k, v in seq.items()}
+    B = build(["max_length=1048"])
+    conf = {"rope_theta": (A.config.rope_theta, B.config.rope_theta),
+            "rope_scaling": (A.config.rope_scaling, B.config.rope_scaling),
+            "max_position_embeddings": (A.config.max_position_embeddings, B.config.max_position_embeddings)}
+    gaps = {"a scene micro-batch": _logit_gap(A, scenes, B, scenes),
+            "two dates cut to 1,048": _logit_gap(A, cut, B, cut),
+            f"two dates whole ({real}) against cut": _logit_gap(A, full, B, cut, n=1048)}
+    del B
+    gc.collect()
+    C = build(["+model_config.rope_theta=20000.0"])      # a key the arm does not set
+    theta_c = C.config.rope_theta
+    ctrl = _logit_gap(A, cut, C, cut)
+    del C
+    gc.collect()
+    ok = (all(g <= LOGIT_TOL for g in gaps.values()) and conf["rope_theta"] == (10000.0, 10000.0)
+          and conf["rope_scaling"] == (None, None) and conf["max_position_embeddings"] == (2793, 1048))
+    record("Y10 lengths", ok, f"T360-T built from {ARM} (max_length 2,793) and with max_length=1048, the extended base "
+           f"in both (rope_theta {conf['rope_theta'][0]:g}, rope_scaling null, max_position_embeddings "
+           f"{conf['max_position_embeddings']}): largest fp32 logit difference at shared positions "
+           + ", ".join(f"{k} {v:.1e}" for k, v in gaps.items()) + f" (tolerance {LOGIT_TOL:g}; "
+           f"{int((cut['input_ids'] == TV.BO_DATE).sum())} date blocks in the cut, lattice positions)",
+           ctrl > CONTROL_MIN, f"rope_theta {theta_c:g}: {ctrl:.2f}")
+
+
+# ---------------------------------------------------------------- Y11
+def y11():
+    if _no_base("Y11 hook (real model)"):
+        return
+    from safetensors import safe_open
+
+    from eo.train import clevr_init as CI
+    m = t360t()
+    rep, model = m.rep, m.model
+    doc = json.loads((EXT / "extension.json").read_text())
+    with safe_open(str(EXT / doc["weights_file"]), "pt") as fh:
+        row = fh.get_tensor(TABLE)[m.probe]
+    n_params = int(sum(p.numel() for p in model.parameters()))
+    checks = {
+        "290 tensors loaded strictly, lm_head the only missing key": rep["load"] == {
+            "tensors": 290, "missing_allowed": ["lm_head.weight"]},
+        "tied": model.lm_head.weight is model.model.embed_tokens.weight,
+        "a date row is the base's, not the fresh init's": bool(torch.equal(model.model.embed_tokens.weight[m.probe], row))
+        and not torch.equal(m.fresh, row),
+        "every parameter trains": rep["trainable_params"] == rep["total_params"] == n_params
+        and all(p.requires_grad for p in model.parameters()),
+        "the record names the base and continue": (rep["variant"] == "continue" and rep["freeze_body"] is False
+                                                   and rep["from_stage1"] is None and rep["lora"] is None
+                                                   and rep["conversion_weights_sha256"] == doc["weights_sha256"]),
+        "its source is T360's checkpoint": rep["source"]["weights_sha256"] == doc["source_weights_sha256"],
+    }
+    tmp = Path(tempfile.mkdtemp(prefix="y11_"))
+    CI.write_record(tmp, rep)
+    again = not refused(CI.write_record, tmp, rep)            # a resume under its own init
+    refusals = {"another base": refused(CI.check_record, tmp, {**rep, "conversion_weights_sha256": "f" * 64}),
+                "another variant": refused(CI.check_record, tmp, {**rep, "variant": "smollm"})}
+    shutil.rmtree(tmp, ignore_errors=True)
+    record("Y11 hook (real model)", all(checks.values()) and again,
+           f"T360-T at {model.config.vocab_size:,} ids, {n_params:,} parameters, built and loaded on CPU in "
+           f"{m.seconds:.0f} s through pretrain_init: " + "; ".join(k for k, v in checks.items() if v)
+           + ("" if all(checks.values()) else f"; FAILED {[k for k, v in checks.items() if not v]}")
+           + f"; its record accepted on a resume under the same init: {again}", all(refusals.values()),
+           ", ".join(f"{k}: {'refused' if v else 'ACCEPTED'}" for k, v in refusals.items()))
+
+    r = _runs()
+    if r is None:
+        return
+    lr_u, lr_r, lr_c = (r.lr[k] for k in ("uninterrupted", "resumed", "no_scheduler"))
+    loss_u, loss_r, loss_c = (r.loss[k] for k in ("uninterrupted", "resumed", "no_scheduler"))
+    steps = sorted(lr_u)
+    changes = all(lr_u[s] != lr_u[s + 1] for s in steps[:-1])
+    same_lr = lr_r == lr_u
+    loss_gap = max(abs(loss_r[s] - loss_u[s]) / abs(loss_u[s]) for s in steps)
+    ctrl_lr = [s for s in steps if lr_c.get(s) != lr_u[s]]
+    ctrl_loss = max(abs(loss_c[s] - loss_u[s]) / abs(loss_u[s]) for s in steps if s > r.stop)
+    # (step stop + 1's loss is computed before its update, from the same weights, so only later steps can differ)
+    record("Y11 resume keeps the LR curve", changes and same_lr and loss_gap <= 1e-4 and r.rc["resumed"] == 0,
+           f"through pretrain.py on a miniature T360-T (CPU, fp32): {RUN_STEPS} steps uninterrupted against "
+           f"{r.stop} steps stopped on a save, then resumed (only stop_steps changed): learning_rate at every step "
+           f"{'equal' if same_lr else 'DIFFERENT'} ({', '.join(f'{lr_u[s]:.2e}' for s in steps)}: it changes at every "
+           f"step, warmup and decay inside the run), loss within {loss_gap:.1e} relative",
+           bool(ctrl_lr) and ctrl_loss > 1e-4,
+           f"the resume with scheduler.pt removed (HF then loads neither scheduler nor optimizer, silently; "
+           f"preflight refuses it): learning_rate differs at steps {ctrl_lr}, loss by {ctrl_loss:.1e}")
+    record("Y11 refusals (pretrain.py)", r.rc["uninterrupted"] == 0 and r.records_name_base,
+           "the runs from the miniature base record its weights' hash in pretrain_init.json",
+           r.rc["flipped_hash"] == 1 and r.nothing["flipped_hash"] and r.rc["other_base_resume"] == 1
+           and r.refused_by["other_base_resume"],
+           f"a base whose weights no longer hash to its extension.json: exit {r.rc['flipped_hash']}, nothing written "
+           f"({r.nothing['flipped_hash']}); a resume under another base's config (a second valid miniature base): "
+           f"exit {r.rc['other_base_resume']}, refused by the run record ({r.refused_by['other_base_resume']}), "
+           f"checkpoints unchanged ({r.nothing['other_base_resume']})")
+
+
+# ---------------------------------------------------------------- Y11 and Y15: pretrain.py on a miniature
+# T360's arm with these overrides is T360-T's shape in miniature: the same class, config and rope, two layers.
+TINY = ("model_config.hidden_size=96", "model_config.intermediate_size=256", "model_config.num_hidden_layers=2",
+        "model_config.num_attention_heads=6", "model_config.num_key_value_heads=2")
+# One location or two scenes a micro-batch, two a step, two steps an epoch: CPU-sized, the ramp kept.
+TINY_DATA = ("temporal.stages=[{dates:2,locations:1,epochs:1},{dates:3,locations:1,epochs:null}]",
+             "temporal.scenes_per_microbatch=2", "temporal.steps_per_epoch=2", "total_batch_size=2")
+RUN_STEPS, RUN_STOP = 6, 3      # warmup 3 and decay 3: the LR changes at every step; the first leg stops on a save
+_RUNS: dict = {}
+
+
+def _save_dir() -> Path:
+    """MOR_SAVE_DIR as pretrain.py reads it (.env, unless the environment sets it). Not paths.SAVE_DIR,
+    which is fixed when `paths` is first imported (verify_phase3's W20 found it)."""
+    val = os.environ.get("MOR_SAVE_DIR")
+    env_file = REPO / ".env"
+    if val is None and env_file.is_file():
+        for raw in env_file.read_text().splitlines():
+            key, _, value = raw.strip().partition("=")
+            if key.strip() == "MOR_SAVE_DIR":
+                val = value.strip().strip("'\"")
+    if not val or not val.startswith("/data/"):
+        raise RuntimeError(f"MOR_SAVE_DIR {val!r} is not under /data: refusing to write checkpoints")
+    return Path(val)
+
+
+def _identity_rows() -> list:
+    """The real base's identity batch (extension.json), less its rows on val's temporal test side, topped
+    up with dev-side held-out rows: the miniature's identity check reads no test row (Y3's audit)."""
+    f = fx()
+    real = json.loads((EXT / "extension.json").read_text())["identity"]["batch_rows"]
+    keep = [int(r) for r in real if int(r) not in f.test_rows]
+    more = [int(r) for r in np.sort(np.asarray(f.held)) if int(r) in f.dev_rows and int(r) not in keep]
+    return keep + more[: len(real) - len(keep)]
+
+
+def _snapshot(d: Path) -> dict:
+    return {str(p.relative_to(d)): (p.stat().st_size, p.stat().st_mtime_ns) for p in sorted(d.rglob("*")) if p.is_file()}
+
+
+def _history(d: Path) -> tuple:
+    """{step: learning_rate}, {step: loss} from a run directory's trainer_state.json."""
+    log = json.loads((d / "trainer_state.json").read_text())["log_history"]
+    rows = [e for e in log if "learning_rate" in e and "loss" in e]
+    return {e["step"]: e["learning_rate"] for e in rows}, {e["step"]: e["loss"] for e in rows}
+
+
+def _runs():
+    """The miniature's runs through pretrain.py, launched as train_eo.sh launches it, on CPU at fp32:
+    uninterrupted; stopped on a save and resumed with only stop_steps changed; and four that must go wrong:
+    the resume with scheduler.pt removed, with a changed temporal setting, under another base, and a fresh
+    launch from a base whose weights no longer hash to its extension.json. Shared by Y11 and Y15."""
+    if _RUNS:
+        return SimpleNamespace(**_RUNS) if _RUNS.get("ok") else None
+    import importlib.util
+    import subprocess
+    import time
+
+    from safetensors.torch import load_file, save_file
+
+    from eo.data import temporal_dataset as T
+    from eo.generate import conditional as G
+    from eo.train import clevr_init as CI
+    _RUNS["ok"] = False
+    if not (EXT / "extension.json").is_file():
+        skip("Y11/Y15 runs", f"{EXT} has no extension.json")
+        return None
+    pretrain = _save_dir() / "pretrain"
+    rel = Path("gate_y15") / time.strftime("%Y%m%d_%H%M%S")
+    root = pretrain / rel
+    base = root / "base"
+    base.mkdir(parents=True)
+    spec = importlib.util.spec_from_file_location("extend_checkpoint", REPO / "eo/scripts/extend_checkpoint.py")
+    XC = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(XC)
+    torch.manual_seed(0)
+    tiny, _ = G.build_model(f"eo_terramesh/{ARM_T360}", None, device="cpu", overrides=list(TINY))
+    tiny.save_pretrained(base / "tiny", safe_serialization=True)
+    del tiny
+    rows = _identity_rows()
+    docs = {name: XC.extend(f"eo_terramesh/{ARM_T360}", base / "tiny", base / name, seed=seed, layout="temporal",
+                            device="cpu", overrides=list(TINY), batch_rows=rows)
+            for name, seed in (("ext", 0), ("ext_other", 1))}
+    shutil.copytree(base / "ext", base / "ext_flipped")
+    state = load_file(str(base / "ext_flipped" / "model.safetensors"))
+    state[TABLE][TV.BO_DATE, 0] += 1.0                        # extension.json still records the old hash
+    save_file(state, str(base / "ext_flipped" / "model.safetensors"), metadata={"format": "pt"})
+
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false", CUDA_VISIBLE_DEVICES="")
+    common = list(TINY) + list(TINY_DATA) + [
+        "multimodal.split=val", "precision=fp32", "wandb=false", "eval_on_start=false", "eval_steps=1000",
+        "dataloader_num_workers=0", "logging_steps=1", f"num_train_steps={RUN_STEPS}", "num_warmup_steps=3",
+        "lr_scheduler_kwargs.num_decay_steps=3", f"save_steps={RUN_STOP}"]
+    rc, logs = {}, {}
+
+    def run(name, out, extra, conversion="ext"):
+        cmd = [sys.executable, "pretrain.py", "--config-path", "conf/pretrain_vision", "--config-name",
+               f"eo_terramesh/{ARM}", f"name={name}", f"output_dir={rel / out}", f"wandb_run_name={name}",
+               f"hydra.run.dir={root / 'hydra' / name}", f"pretrain_init.conversion={base / conversion}",
+               *common, *extra]
+        r = subprocess.run(cmd, cwd=str(REPO), env=env, capture_output=True, text=True, timeout=1800)
+        rc[name], logs[name] = r.returncode, r.stdout + r.stderr
+        (root / f"{name}.log").write_text(logs[name])
+        print(f"      [{name}] exit {r.returncode}", flush=True)
+
+    run("uninterrupted", "u", [f"stop_steps={RUN_STEPS}"])
+    run("leg1", "l", [f"stop_steps={RUN_STOP}"])
+    for out in ("nosched", "changed", "otherbase"):                     # leg 1 as it stands, for the controls
+        shutil.copytree(root / "l", root / out)
+    (root / "nosched" / f"checkpoint-{RUN_STOP}" / "scheduler.pt").unlink()
+    run("resumed", "l", [f"stop_steps={RUN_STEPS}", "resume_from_checkpoint=true"])
+    run("no_scheduler", "nosched", [f"stop_steps={RUN_STEPS}", "resume_from_checkpoint=true"])
+    before = {out: _snapshot(root / out) for out in ("changed", "otherbase")}
+    run("changed_data", "changed", [f"stop_steps={RUN_STEPS}", "resume_from_checkpoint=true", "temporal.year_drop=0.2"])
+    run("other_base_resume", "otherbase", [f"stop_steps={RUN_STEPS}", "resume_from_checkpoint=true"],
+        conversion="ext_other")
+    run("flipped_hash", "flipped", [f"stop_steps={RUN_STEPS}"], conversion="ext_flipped")
+
+    hist = {k: _history(root / d) for k, d in (("uninterrupted", "u"), ("resumed", "l"), ("no_scheduler", "nosched"))
+            if (root / d / "trainer_state.json").is_file()}
+    flipped = root / "flipped"
+    nothing = {"flipped_hash": not flipped.exists() or not any(flipped.glob("checkpoint-*"))
+               and not (flipped / CI.RECORD).exists() and not (flipped / T.DATA_RECORD).exists(),
+               "changed_data": _snapshot(root / "changed") == before["changed"],
+               "other_base_resume": _snapshot(root / "otherbase") == before["otherbase"]}
+    refused_by = {"changed_data": "records other data" in logs["changed_data"],
+                  "other_base_resume": "records another init" in logs["other_base_resume"],
+                  "flipped_hash": "does not hash to what extension.json recorded" in logs["flipped_hash"]}
+    rec = {d: json.loads((root / d / CI.RECORD).read_text()) for d in ("u", "l") if (root / d / CI.RECORD).is_file()}
+    data = json.loads((root / "l" / T.DATA_RECORD).read_text()) if (root / "l" / T.DATA_RECORD).is_file() else None
+    want_data = T.data_settings(compose(common))
+    epoch_lines = {k: [line for line in logs[k].splitlines() if line.startswith("TemporalEpochCallback:")]
+                   for k in ("uninterrupted", "leg1", "resumed")}
+    ok = all(k in hist for k in ("uninterrupted", "resumed", "no_scheduler")) and set(rec) == {"u", "l"}
+    # Written at launch: before the first checkpoint of the uninterrupted run, and kept by its resume (leg 1's).
+    first = root / "u" / f"checkpoint-{RUN_STOP}" / "trainer_state.json"
+    at_launch = first.is_file() and all((root / "u" / f).stat().st_mtime < first.stat().st_mtime
+                                        for f in (CI.RECORD, T.DATA_RECORD))
+    _RUNS.update(ok=ok, root=root, rc=rc, logs=logs, stop=RUN_STOP, docs=docs, rows=rows, at_launch=at_launch,
+                 lr={k: v[0] for k, v in hist.items()}, loss={k: v[1] for k, v in hist.items()},
+                 nothing=nothing, refused_by=refused_by, rec=rec, data=data, want_data=want_data,
+                 epoch_lines=epoch_lines,
+                 records_name_base=all(r["conversion_weights_sha256"] == docs["ext"]["weights_sha256"]
+                                       and r["variant"] == "continue" for r in rec.values()))
+    if not ok:
+        record("Y11/Y15 runs", False, f"a run that had to train did not: exits {rc}; logs in {root}")
+        return None
+    return SimpleNamespace(**_RUNS)
+
+
+def _epoch_line_problems(lines: list, want: list) -> list:
+    """The callback's own report (eo/data/temporal_dataset.TemporalEpochCallback), one line per epoch begun:
+    (global_step, draw epoch), each with HF's epoch length checked and the micro-batch collator in use."""
+    got = []
+    for line in lines:
+        words = line.replace(",", "").split()
+        got.append((int(words[words.index("global_step") + 1]), int(words[words.index("epoch") + 1])))
+    out = [] if got == want else [f"epochs {got}, not {want}"]
+    tail = "HF's epoch 4 micro-batches / 2 accumulation = 2 steps; collator unwrap_microbatch"
+    return out + [f"line without the checks: {line}" for line in lines if not line.endswith(tail)]
+
+
+def y15():
+    from transformers import TrainingArguments
+
+    from eo.data import temporal_dataset as T
+    r = _runs()
+    if r is None:
+        return
+    rc = r.rc
+    rec_l = r.rec["l"]
+    probs = []
+    if r.data != r.want_data:
+        probs.append(f"temporal_data.json is not the config's data settings: "
+                     f"{T.data_record_changes(r.want_data, r.data or {})[:3]}")
+    if not (rec_l["load"]["missing_allowed"] == ["lm_head.weight"] and rec_l["trainable_params"] == rec_l["total_params"]):
+        probs.append(f"pretrain_init.json: load {rec_l['load']}, trainable {rec_l['trainable_params']}")
+    want = {"uninterrupted": [(0, 0), (2, 1), (4, 2)], "leg1": [(0, 0), (2, 1)], "resumed": [(3, 1), (4, 2)]}
+    for k, w in want.items():
+        probs += [f"{k}: {p}" for p in _epoch_line_problems(r.epoch_lines[k], w)]
+    # The resumed leg's first epoch line is at global_step 3: it continued from its checkpoint (HF says so
+    # only at INFO), and Y11 holds its learning rate and loss to the uninterrupted run's at every step.
+    if not r.at_launch:
+        probs.append("the records are not older than the run's first checkpoint")
+    ok = (rc["leg1"] == 0 and rc["resumed"] == 0 and rc["uninterrupted"] == 0 and not probs
+          and (r.root / "l" / f"checkpoint-{RUN_STEPS}").is_dir())
+    # The callback's two refusals, which no config of a working run can reach (its controls):
+    ds = make(small_cfg(), per_step=2)
+    cb = ds.epoch_callback(verbose=False)
+    args = TrainingArguments(output_dir=tempfile.mkdtemp(prefix="y15_"), use_cpu=True, report_to=[],
+                             gradient_accumulation_steps=2, per_device_train_batch_size=1)
+    state = SimpleNamespace(global_step=0, is_world_process_zero=True)
+    loaders = {"an epoch one micro-batch short": torch.utils.data.DataLoader(list(range(len(ds) - 1)), batch_size=1,
+                                                                           collate_fn=T.unwrap_microbatch),
+               "HF's default collator": torch.utils.data.DataLoader(list(range(len(ds))), batch_size=1)}
+    fired = {k: refused(cb.on_epoch_begin, args, state, None, train_dataloader=ld) for k, ld in loaders.items()}
+    accepted = not refused(cb.on_epoch_begin, args, state, None, train_dataloader=torch.utils.data.DataLoader(
+        list(range(len(ds))), batch_size=1, collate_fn=T.unwrap_microbatch))
+    shutil.rmtree(args.output_dir, ignore_errors=True)
+    record("Y15 two real steps and a resume", ok and accepted,
+           f"pretrain.py on the miniature (CPU, fp32), launched as train_eo.sh launches it: the run writes "
+           f"pretrain_init.json (the base's hash, a strict load, every parameter training) and temporal_data.json "
+           f"(the config's data settings) at launch; TemporalEpochCallback reports the draw epoch from global_step "
+           f"at every epoch begun, with HF's epoch length checked and unwrap_microbatch collating "
+           f"({sum(len(v) for v in r.epoch_lines.values())} lines over three runs); stopped on a save at step "
+           f"{RUN_STOP} and resumed with only stop_steps changed: accepted, continued from step {RUN_STOP} to "
+           f"{RUN_STEPS}" + (f"; {probs[:3]}" if probs else ""),
+           rc["flipped_hash"] == 1 and r.nothing["flipped_hash"] and r.refused_by["flipped_hash"]
+           and rc["changed_data"] == 1 and r.refused_by["changed_data"] and r.nothing["changed_data"]
+           and all(fired.values()),
+           f"a flipped init hash: exit {rc['flipped_hash']}, refused by verify_init ({r.refused_by['flipped_hash']}), "
+           f"nothing trained or recorded ({r.nothing['flipped_hash']}); a resume with temporal.year_drop 0.2: exit "
+           f"{rc['changed_data']}, refused by the data record ({r.refused_by['changed_data']}), the run directory "
+           f"untouched ({r.nothing['changed_data']}); the callback itself: "
+           + ", ".join(f"{k}: {'refused' if v else 'ACCEPTED'}" for k, v in fired.items()))
+
+
+# ---------------------------------------------------------------- Y12
+Y12_OUT = Path("/data/enric/reports/temporal/forgetting/t360t_base/extended_base")
+Y12_REF = Path("/data/enric/reports/ben/forgetting/t360_base/extended_base")
+Y12_TOL = 0.01
+Y12_CMD = ("CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$(python -m eo.train.gpu titanx) python "
+           "eo/scripts/eval_forgetting.py --model temporal --arm-config eo_terramesh/arm_t360_vanilla --precision fp32 "
+           "--tag t360t_base")
+
+
+#: Per-token CE agrees across devices within one fp16 step (tokens_ce.npz stores fp16) at the larger value, and
+#: never closer than this: the CPU and the Titan X differ by at most 3.0e-05 nats in fp32 (2026-11-09), and below
+#: 6.1e-05 fp16 is subnormal, a fixed 6e-08 apart, so two steps there are 1.2e-07 nats.
+TOKEN_FLOOR = 1e-4
+
+
+def _fp16_step(x: np.ndarray) -> np.ndarray:
+    """One rounding step of fp16 at |x|: tokens_ce.npz stores per-token CE as fp16."""
+    return np.exp2(np.floor(np.log2(np.maximum(np.abs(x), 2.0 ** -14)))) * 2.0 ** -10
+
+
+def _token_tol(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    return np.maximum(_fp16_step(np.maximum(np.abs(x), np.abs(y))), TOKEN_FLOOR)
+
+
+def y12():
+    art = Y12_OUT / "forgetting.json"
+    if not art.is_file():
+        skip("Y12 forgetting reading", f"{art} missing: the GPU run writes it, on the GTX Titan X, about 30 min "
+             f"in tmux: {Y12_CMD}")
+        return
+    if _no_base("Y12 forgetting reading"):
+        return
+    from unittest import mock
+
+    from eo.eval import teacher_forced as TF
+    from lm_dataset.load_dataset import load_eval_dataset_from_config
+    doc, ref = json.loads(art.read_text()), json.loads((Y12_REF / "forgetting.json").read_text())
+    ext = json.loads((EXT / "extension.json").read_text())
+    a, r = np.load(Y12_OUT / "tokens_ce.npz"), np.load(Y12_REF / "tokens_ce.npz")
+    same_rows = (np.array_equal(a["rows"], r["rows"]) and a["ce"].shape == r["ce"].shape
+                 and np.array_equal(a["label_mod"], r["label_mod"]))
+    lm = a["label_mod"] > 0 if same_rows else None
+    d_mean = doc["ce_all_body_tokens"] - ref["ce_all_body_tokens"]
+    ok = (doc["model"] == "temporal" and doc["checkpoint"] is None and doc["vocab"] == TV.TOTAL_VOCAB_SIZE
+          and doc["loaded"]["conversion_weights_sha256"] == ext["weights_sha256"] and doc["loaded"]["variant"] == "continue"
+          and doc["precision"] == ref["precision"] == "fp32" and doc["arm_config"] == ref["arm_config"]
+          and doc["token_set"] == ref["token_set"] == "clean" and doc["n_rows"] == ref["n_rows"] == 4416
+          and same_rows and abs(d_mean) <= Y12_TOL and "TITAN V" not in doc["gpu"])
+    detail = (f"{doc['ce_all_body_tokens']:.4f} on the {doc['n_rows']:,} held-out rows ({doc['gpu']}, fp32, "
+              f"{doc['seconds']:.0f} s), against T360's {ref['ce_all_body_tokens']:.4f} through its BEN base: "
+              f"{d_mean:+.1e} (tolerance {Y12_TOL})")
+    if same_rows:
+        ca, cr = a["ce"].astype(np.float64)[lm], r["ce"].astype(np.float64)[lm]
+        diff = ca - cr
+        tol = _token_tol(ca, cr)
+        ok = ok and not (np.abs(diff) > tol).any()
+        per_mod = {n: doc["per_modality"][n]["ce"] - ref["per_modality"][n]["ce"] for n in ref["per_modality"]}
+        detail += (f"; per token, paired on the same rows, layout and modality orders ({lm.sum():,} tokens): mean "
+                   f"{diff.mean():+.1e}, {np.mean(diff == 0):.2%} equal in fp16, the rest up ({np.mean(diff > 0):.2%}) "
+                   f"or down ({np.mean(diff < 0):.2%}) by fp16 steps, {int((np.abs(diff) > tol).sum())} beyond one step "
+                   f"(floor {TOKEN_FLOOR:g} nats); "
+                   f"per modality " + ", ".join(f"{n} {v:+.4f}" for n, v in per_mod.items()))
+    else:
+        detail += "; the rows, their order or their modalities differ from the reference"
+
+    # Live, on CPU: the first two batches of the reference's loader (batch size 4, 4 workers, so batch k came
+    # from worker k % 4, which keys the modality orders) through this gate's T360-T must give the artifact's
+    # per-token CE; the same batches with the table shifted by one row must read far off. Major TOM rows only.
+    m = t360t()
+    A = m.model
+    ds = load_eval_dataset_from_config(compose([], name=ARM_T360))
+    batches = []
+    for k in (0, 1):
+        with mock.patch.object(torch.utils.data, "get_worker_info", lambda k=k: SimpleNamespace(id=k % 4)):
+            batches.append(torch.utils.data.default_collate([ds[4 * k + i] for i in range(4)]))
+    live = TF.run_pass(A, batches, device="cpu", keep_tokens=True, dtype=None)
+    lt = live["tokens"]["ce"].astype(np.float64)
+    keep = a["label_mod"][:8] > 0
+    gap = np.abs(lt - a["ce"][:8].astype(np.float64))[keep]
+    live_ok = (np.array_equal(np.asarray(ds.rows[:8]), a["rows"][:8])
+               and np.array_equal(live["tokens"]["label_mod"], a["label_mod"][:8])
+               and bool((gap <= _token_tol(lt, a["ce"][:8].astype(np.float64))[keep]).all()))
+    # What the 108 rows over T360's 87,556 add to the softmax, on the first row: they sit at the mean row, so
+    # their logit is the mean logit, far below the log-sum-exp, and their mass is negligible.
+    one = {k: v[:1] for k, v in batches[0].items()}
+    n_one = int(one["attention_mask"][0].sum())
+    h = _hidden(A, one)[0]
+    with torch.no_grad():
+        mass = torch.cat([torch.softmax(A.lm_head(h[i: min(n_one, i + 512)]).float(), -1)[:, EV.TOTAL_VOCAB_SIZE:].sum(-1)
+                          for i in range(0, n_one, 512)])
+    W = A.model.embed_tokens.weight
+    orig = W.detach().clone()
+    with torch.no_grad():
+        W.copy_(torch.cat([orig.mean(0, keepdim=True), orig[:-1]], 0))    # every id reads its neighbour's row
+    try:
+        shifted = TF.run_pass(A, batches, device="cpu", keep_tokens=False, dtype=None)
+    finally:
+        with torch.no_grad():
+            W.copy_(orig)
+    del orig
+    rise = shifted["ce_all_body_tokens"] - live["ce_all_body_tokens"]
+    record("Y12 forgetting reading", ok and live_ok, detail + f"; live on CPU, the first 8 rows: per-token CE equal "
+           f"to the artifact's within one fp16 step or {TOKEN_FLOOR:g} nats ({live_ok}, largest gap {gap.max():.4f}); the "
+           f"{TV.TOTAL_VOCAB_SIZE - EV.TOTAL_VOCAB_SIZE} rows over T360's hold {float(mass.mean()):.1e} of the "
+           f"softmax per position on row {int(ds.rows[0])} (largest {float(mass.max()):.1e})",
+           rise > CONTROL_MIN, f"the table shifted by one row: CE {shifted['ce_all_body_tokens']:.2f} on those rows, "
+           f"against {live['ce_all_body_tokens']:.2f} ({rise:+.2f})")
+
+
+# ---------------------------------------------------------------- Y13
+def _prompt_problems(ts, rows4, reader, task: str, t: int, target: str) -> list:
+    """Y13 on one task sequence: the prompt is the prefix, the lattice holds, every block is its declared
+    row's, and nothing of the target's (modality, date) is in the prompt, by declaration and by tokens."""
+    out = []
+    s, e = ts.target
+    full_ids, pos = ts.full["input_ids"].numpy(), ts.full["position_ids"].numpy()
+    if any(not torch.equal(ts.prompt[k], ts.full[k][: s + 1]) for k in KEYS) or len(ts.prompt["input_ids"]) != s + 1:
+        out.append("the prompt is not the sequence's prefix through the target's BO")
+    out += lattice_problems(full_ids, pos)
+    blocks = parse(full_ids)
+    declared = list(ts.draw.blocks)
+    if [b[0] for b in blocks] != [d.modality for d in declared] or blocks[-1][1] != s:
+        return out + ["the token stream is not the declared layout, target last"]
+    for d, (mod, a, b) in zip(declared, blocks):
+        row = int(rows4[d.t])
+        if mod == "Date":
+            y, day = TV.decode_date_block(full_ids[a:b])
+            if (y, day) != (reader.date(row)[0] if d.with_year else None, reader.date(row)[1]):
+                out.append(f"the date block at {a} is not date {d.t}'s")
+        elif not np.array_equal(full_ids[a:b], reader.block(mod, row)):
+            out.append(f"the {mod} block at {a} is not date {d.t}'s row")
+    tgt_row = int(rows4[t])
+    for d, (mod, a, b) in zip(declared[:-1], blocks[:-1]):
+        if (d.modality, d.t) == (target, t):
+            out.append(f"the target ({target}, date {t}) is declared in the prompt at {a}")
+        if mod == target and mod != "Date" and np.array_equal(full_ids[a:b], reader.block(mod, tgt_row)):
+            out.append(f"the target's own block is in the prompt at {a}")
+        if target == "Date" and mod == "Date" and TV.decode_date_block(full_ids[a:b])[1] == reader.date(tgt_row)[1]:
+            out.append(f"a date block of the target date is in the prompt at {a}")
+    # The layout's defaults (eo/eval/temporal.py): statics first, a date block first in every group, LULC in
+    # the first context group, the target's group last with its date block first, one target block last.
+    if [d.modality for d in declared[:2]] != ["Coords", "DEM"]:
+        out.append("the statics are not first")
+    groups = []
+    for d in declared[2:]:
+        if groups and groups[-1][0] == d.t:
+            groups[-1][1].append(d.modality)
+        else:
+            groups.append((d.t, [d.modality]))
+    if task == "date":
+        if len(groups) != 1 or groups[0][1][-1] != "Date" or groups[0][1].count("Date") != 1:
+            out.append(f"date estimation's one group is {groups}")
+    else:
+        if any(g[1][0] != "Date" for g in groups) or groups[-1][0] != t or [g[0] for g in groups[:-1]] != sorted(
+                g[0] for g in groups[:-1]) or "LULC" not in groups[0][1] or sum(g[1].count("LULC") for g in groups) != 1:
+            out.append(f"groups {[(g[0], g[1]) for g in groups]} break the defaults")
+        want = ["Date"] + (["S1GRD"] if task == "gap_fill" else []) + [target]
+        if groups[-1][1] != want:
+            out.append(f"the target group is {groups[-1][1]}, not {want}")
+    return out
+
+
+def _alone_problems(temporal, loc, blocks, ts) -> list:
+    """The context assembled alone, as a generation path builds it without the target, then the target's
+    BO at the lattice's next position: it must be the prompt cut from the whole sequence."""
+    from eo.data import temporal_dataset as T
+    from eo.eval import temporal as ET
+    ctx = list(blocks[:-1])
+    alone = temporal.sequence(loc, 0, max(1, len(ET.forced_draw(loc, ctx).dates)), draw=ET.forced_draw(loc, ctx))
+    n = int(alone["attention_mask"].sum())
+    widths = [ET.block_width(b) for b in ctx] + [1]
+    bo_pos = int(T.lattice_positions(widths, [b.modality == T.DATE for b in ctx] + [False], sum(widths))[-1])
+    same = all(torch.equal(alone[k][:n], ts.prompt[k][:-1]) for k in ("input_ids", "position_ids", "modality_ids"))
+    if not same or n != len(ts.prompt["input_ids"]) - 1 or int(ts.prompt["position_ids"][-1]) != bo_pos:
+        return ["the context assembled alone is not the prompt's prefix, or the target's BO is off the lattice"]
+    return []
+
+
+def y13():
+    f = fx()
+    T = f.T
+    from eo.eval import temporal as ET
+    temporal = T.TemporalLocations(f.base, f.index, f.dev, T.TemporalConfig(), 42)
+    locs = [int(x) for x in f.dev[3::67][:8]]
+    inst = ET.task_instances()
+    problems, n, lengths = [], 0, {}
+    for loc in locs:
+        rows4 = [int(r) for r in f.index.locations[loc]]
+        for task, t, target in inst:
+            blocks = ET.task_blocks(task, t, target)
+            ts = ET.task_sequence(temporal, loc, blocks)
+            problems += [f"{task} t{t} {target} loc {loc}: {p}"
+                         for p in _prompt_problems(ts, rows4, f.reader, task, t, target)]
+            problems += [f"{task} t{t} {target} loc {loc}: {p}" for p in _alone_problems(temporal, loc, blocks, ts)]
+            lengths.setdefault(task, set()).add(len(ts.prompt["input_ids"]))
+            n += 1
+    # No date tokens (T360's row): the same blocks without date blocks, positions sequential as T360 trained.
+    plain = ET.task_sequence(temporal, locs[0], ET.task_blocks("left_out", 1, "S2L2A", with_dates=False))
+    seq_pos = np.array_equal(plain.full["position_ids"].numpy(), np.arange(len(plain.full["position_ids"])))
+    test_loc = int(temporal.test_ids[0])
+    read_before = len(READ_ROWS)
+    test_refused = refused(ET.task_sequence, temporal, test_loc, ET.task_blocks("left_out", 1, "S2L2A"))
+    record("Y13 task prompts", not problems and seq_pos and test_refused and len(READ_ROWS) == read_before,
+           f"{n} task sequences ({len(inst)} instances of {', '.join(ET.TASKS)} at {len(locs)} dev locations) through "
+           f"TemporalLocations.sequence(draw=...): every prompt is the prefix through the target's BO, on the "
+           f"lattice, every block its declared row's, nothing of the target's (modality, date) in it; prompt lengths "
+           f"{ {k: sorted(v) for k, v in lengths.items()} }; without date blocks the positions are T360's; a test "
+           f"location is refused before any read" + (f"; {problems[:3]}" if problems else ""))
+
+    def left_in(task, t, target):
+        """The target block also in the first context group: the layout a careless builder would produce.
+        For date estimation the date block also first in its group, LULC dropped to stay within 999 tokens."""
+        b = ET.task_blocks(task, t, target)
+        if task == "date":
+            return b[:2] + [b[-1]] + [x for x in b[2:] if x.modality != "LULC"]
+        return b[:3] + [b[-1]] + b[3:]
+
+    flagged, total = 0, 0
+    for loc in locs[:4]:
+        rows4 = [int(r) for r in f.index.locations[loc]]
+        for task, t, target in inst[::3]:
+            ts = ET.task_sequence(temporal, loc, left_in(task, t, target))
+            flagged += any("in the prompt" in p for p in _prompt_problems(ts, rows4, f.reader, task, t, target))
+            total += 1
+    # Prompts assembled with sequential positions: not the sequence's prefix once a date block has passed.
+    ts = ET.task_sequence(temporal, locs[0], ET.task_blocks("left_out", 2, "NDVI"))
+    seq = np.arange(len(ts.prompt["position_ids"]))           # what a default assembly would give
+    sequential_caught = not np.array_equal(seq, ts.prompt["position_ids"].numpy())
+    shifted = ET.task_blocks("left_out", 2, "NDVI")
+    k = next(i for i, b in enumerate(shifted) if b.modality == "Date")
+    off = list(shifted)
+    off[k] = replace(off[k], with_year=False)                    # a context one token shorter than the prompt's
+    alone_caught = bool(_alone_problems(temporal, locs[0], off, ts))
+    record("Y13 controls", True, "the prompt checks against broken builders",
+           flagged == total and sequential_caught and alone_caught,
+           f"the target left in context: {flagged} of {total} prompts flagged; a prompt on sequential positions "
+           f"differs from the prefix: {sequential_caught}; a context assembled with one year dropped is not the "
+           f"prompt's prefix: {alone_caught}")
+
+
+# ---------------------------------------------------------------- Y16, the generation half
+def y16_generation():
+    if _no_base("Y16 cached generation"):
+        return
+    from eo.eval import temporal as ET
+    from eo.generate import cached as GC
+    f = fx()
+    T = f.T
+    A = t360t().model
+    temporal = T.TemporalLocations(f.base, f.index, f.dev, T.TemporalConfig(), 42)
+    ts = ET.task_sequence(temporal, int(f.dev[11]), ET.task_blocks("left_out", 1, "S2L2A"))
+    ids, pos = ts.prompt["input_ids"][None], ts.prompt["position_ids"][None]
+    s, _ = ts.target_tokens
+    cont = ts.full["input_ids"][s: s + 3][None]
+    behind = int(ids.shape[1] - 1 - int(pos[0, -1]))
+    good = GC.cache_check(A, ids, cont, position_ids=pos)
+    bad = GC.cache_check(A, ids, cont, position_ids=pos, decode_positions=False)
+    # The sampler's default path is the one every earlier result used: explicit 0..L-1 positions give the
+    # same tokens and slot mass bit for bit on a T360 layout (a single scene, no date block).
+    scene = f.T.SingleScenes(f.base, f.index, f.majortom, f.T.TemporalConfig(), 42).sequence(
+        int(f.majortom[5]), 0, draw=f.T.SceneDraw(int(f.majortom[5]), ("S1RTC", "DEM", "S2L2A"), "absent", True))
+    p = scene["input_ids"][: 2 * 198 + 1][None]
+    kw = dict(temperature=1.0, top_p=0.8, seed=7, n_tokens=4)
+    x0, m0 = GC.sample(A, p, "S2L2A", **kw)
+    x1, m1 = GC.sample(A, p, "S2L2A", position_ids=torch.arange(p.shape[1])[None], **kw)
+    same_default = bool(torch.equal(x0, x1) and torch.equal(m0, m1))
+    record("Y16 cached generation", good["max_abs_logit_diff"] <= CACHE_TOL and behind == 16 and same_default,
+           f"T360-T, fp32, CPU: a left-out-season prompt of {good['prompt_length']:,} tokens behind four date blocks "
+           f"(the lattice {behind} positions behind the token count), {good['steps']} cached steps of the real target: "
+           f"every step's logits equal a full teacher-forced pass at the same positions to "
+           f"{good['max_abs_logit_diff']:.1e} (tolerance {CACHE_TOL:g}); the sampler with explicit 0..L-1 positions "
+           f"gives the default path's tokens and slot mass bit for bit: {same_default}",
+           bad["max_abs_logit_diff"] > CACHE_CONTROL_MIN,
+           f"the same steps on default positions: {bad['max_abs_logit_diff']:.2f} (floor {CACHE_CONTROL_MIN:g}; per step "
+           f"{', '.join(f'{v:.2f}' for v in bad['per_step'])})")
+
+
+def y16():
+    y16_dataset()
+    y16_generation()
+
+
+CHECKS = {"Y1": y1, "Y2": y2, "Y3": y3, "Y4": y4, "Y5": y5, "Y6": y6, "Y7": y7, "Y8": y8, "Y9": y9, "Y10": y10,
+          "Y11": y11, "Y12": y12, "Y13": y13, "Y14": y14, "Y15": y15, "Y16": y16, "Y17": y17, "Y18": y18}
 
 
 def main() -> int:
@@ -1441,6 +2363,11 @@ def main() -> int:
         y3_audit()
     failed = [c for c, ok, ctrl in RESULTS if ok is False or ctrl is False]
     skipped = [c for c, ok, _ in RESULTS if ok is None]
+    if _RUNS.get("root") is not None:
+        if failed:
+            print(f"(the miniature's runs are kept for inspection: {_RUNS['root']})")
+        else:
+            shutil.rmtree(_RUNS["root"], ignore_errors=True)
     print(f"\n{len(RESULTS) - len(failed) - len(skipped)} passed, {len(failed)} failed, {len(skipped)} skipped"
           + (f": {failed}" if failed else ""))
     return 1 if failed else 0

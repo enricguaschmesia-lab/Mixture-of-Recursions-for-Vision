@@ -10,6 +10,10 @@
 of eo/data/temporal_vocab.py, 108 rows in all. `--device cpu` runs without a card: the check compares
 before and after on one device, so it holds on either, and a T360 pass takes minutes.
 
+`extend()` is the same, callable (2026-11-09): eo/scripts/verify_temporal.py's Y15 extends a miniature
+of T360's arm through it, with Hydra overrides (recorded in extension.json as `arm_overrides`) and an
+identity batch of its own (`batch_rows`, kept off val's temporal test side). The CLI's output is as before.
+
 Writes the extended weights (same format convention as training: safetensors unless the
 model shares weights) plus `extension.json`, the identity artifact preflight's
 `check_init_from` requires before any fine-tune may start from this directory:
@@ -64,16 +68,25 @@ def weights_file(d: Path) -> Path:
     raise FileNotFoundError(f"no weights in {d}")
 
 
-def fixed_batch(cfg):
-    """A stratified held-out TerraMesh batch, built exactly as evaluation builds it."""
+def fixed_batch(cfg, rows=None):
+    """A stratified held-out TerraMesh batch, built exactly as evaluation builds it. `rows` names
+    held-out rows instead of the stratified pick (a gate's miniature, kept off val's temporal test
+    side: eo/scripts/verify_temporal.py, Y15)."""
     from eo.data.eval_split import load_row_table
     from eo.eval.teacher_forced import eval_loader
     ds, _ = eval_loader(cfg, num_workers=0)
-    corpus = load_row_table(ds.root_dir).corpus.values
-    pos = []
-    for c in ("majortom", "ssl4eos12"):
-        cand = [i for i, r in enumerate(ds.rows) if corpus[r] == c]
-        pos += cand[:: max(1, len(cand) // N_ROWS_PER_CORPUS)][:N_ROWS_PER_CORPUS]
+    if rows is not None:
+        where = {int(r): i for i, r in enumerate(ds.rows)}
+        missing = [int(r) for r in rows if int(r) not in where]
+        if missing:
+            raise ValueError(f"rows {missing} are not held-out rows of {cfg.multimodal.get('eval_split')}")
+        pos = [where[int(r)] for r in rows]
+    else:
+        corpus = load_row_table(ds.root_dir).corpus.values
+        pos = []
+        for c in ("majortom", "ssl4eos12"):
+            cand = [i for i, r in enumerate(ds.rows) if corpus[r] == c]
+            pos += cand[:: max(1, len(cand) // N_ROWS_PER_CORPUS)][:N_ROWS_PER_CORPUS]
     items = [ds[i] for i in pos]
     batch = {k: torch.stack([it[k] for it in items]) for k in items[0]}
     return batch, [int(ds.rows[i]) for i in pos]
@@ -87,25 +100,28 @@ def per_row_logits(model, batch, device):
     return torch.cat(out)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--arm-config", required=True)
-    ap.add_argument("--checkpoint", required=True, type=Path)
-    ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--layout", choices=sorted(LAYOUTS), default="ben")
-    ap.add_argument("--device", default="cuda", help="cuda, or cpu")
-    a = ap.parse_args()
-    if a.out.exists() and any(a.out.iterdir()):
-        sys.exit(f"{a.out} exists and is not empty")
-    device = a.device
-    gpu = torch.cuda.get_device_name(0) if device.startswith("cuda") else "cpu"
-    v_total, layout_key, layout_record = LAYOUTS[a.layout]
+class ExtensionRefused(RuntimeError):
+    """The output exists, or the identity check failed or a control did not fire: nothing is saved."""
 
-    model, cfg = G.build_model(a.arm_config, str(a.checkpoint), device=device)
+
+def extend(arm_config: str, checkpoint: Path, out: Path, *, seed: int = 0, layout: str = "ben",
+           device: str = "cuda", overrides=None, batch_rows=None) -> dict:
+    """The extension, its identity check and its two controls; writes the weights and extension.json
+    only if all three hold, and returns extension.json's content. Raises ExtensionRefused otherwise.
+
+    `overrides` are Hydra overrides of the arm, recorded in extension.json: a gate builds a miniature
+    of the arm with them (eo/scripts/verify_temporal.py, Y15), through this same writer and check.
+    `batch_rows` names the identity batch's held-out rows (fixed_batch); None is the stratified pick."""
+    checkpoint, out = Path(checkpoint), Path(out)
+    if out.exists() and any(out.iterdir()):
+        raise ExtensionRefused(f"{out} exists and is not empty")
+    gpu = torch.cuda.get_device_name(0) if device.startswith("cuda") else "cpu"
+    v_total, layout_key, layout_record = LAYOUTS[layout]
+
+    model, cfg = G.build_model(arm_config, str(checkpoint), device=device, overrides=overrides)
     model.float()
     X.assert_tied(model)
-    batch, rows = fixed_batch(cfg)
+    batch, rows = fixed_batch(cfg, batch_rows)
     before = per_row_logits(model, batch, device)
     v_old = EV.TOTAL_VOCAB_SIZE
     assert before.shape[-1] == v_old
@@ -113,7 +129,7 @@ def main():
 
     # Control 1: insert before PAD. Must FAIL identity.
     ctrl = copy.deepcopy(model)
-    X.extend_vocab(ctrl, n_new, seed=a.seed, insert_before_pad=True, pad_id=EV.PAD_ID)
+    X.extend_vocab(ctrl, n_new, seed=seed, insert_before_pad=True, pad_id=EV.PAD_ID)
     rep_c1 = X.identity_report(before, per_row_logits(ctrl, batch, device),
                                batch["attention_mask"], v_old)
     del ctrl
@@ -133,7 +149,7 @@ def main():
     torch.cuda.empty_cache()
 
     # The real extension.
-    rec = X.extend_vocab(model, n_new, seed=a.seed)
+    rec = X.extend_vocab(model, n_new, seed=seed)
     after = per_row_logits(model, batch, device)
     assert after.shape[-1] == v_total
     rep = X.identity_report(before, after, batch["attention_mask"], v_old)
@@ -148,21 +164,21 @@ def main():
     print(f"control 2 (untied resize): {'fired: ' + c2_msg if c2_fired else 'DID NOT FIRE'}")
     print(f"new-row logit mean {new_logit_mean:.3f} vs old-row mean {old_logit_mean:.3f}")
     if not (ok and c1_fired and c2_fired):
-        sys.exit("extension identity check failed; nothing saved")
+        raise ExtensionRefused("extension identity check failed; nothing saved")
 
-    a.out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     shares = bool(cfg.recursive.get("enable")) or bool(cfg.get("mor", {}).get("enable"))
-    model.save_pretrained(a.out, safe_serialization=not shares)
-    wf = weights_file(a.out)
+    model.save_pretrained(out, safe_serialization=not shares)
+    wf = weights_file(out)
     commit = subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse",
                              "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     doc = {
-        "source_checkpoint": str(a.checkpoint),
-        "source_weights_sha256": sha256(weights_file(a.checkpoint)),
-        "arm_config": a.arm_config,
+        "source_checkpoint": str(checkpoint),
+        "source_weights_sha256": sha256(weights_file(checkpoint)),
+        "arm_config": arm_config,
         "token_set": (cfg.get("multimodal") or {}).get("token_set", "original"),
         "extension": rec,
-        "layout": a.layout,
+        "layout": layout,
         layout_key: layout_record,
         "identity": {**rep, "tol": IDENTITY_TOL, "passed": ok, "batch_rows": rows,
                      "precision": "fp32"},
@@ -172,8 +188,27 @@ def main():
         "weights_file": wf.name, "weights_sha256": sha256(wf),
         "tied": True, "fork_commit": commit, "gpu": gpu,
     }
-    (a.out / "extension.json").write_text(json.dumps(doc, indent=2) + "\n")
+    if overrides:
+        doc["arm_overrides"] = list(overrides)
+    (out / "extension.json").write_text(json.dumps(doc, indent=2) + "\n")
     print(f"saved {wf} ({doc['weights_sha256'][:12]}) + extension.json")
+    return doc
+
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arm-config", required=True)
+    ap.add_argument("--checkpoint", required=True, type=Path)
+    ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--layout", choices=sorted(LAYOUTS), default="ben")
+    ap.add_argument("--device", default="cuda", help="cuda, or cpu")
+    a = ap.parse_args()
+    try:
+        extend(a.arm_config, a.checkpoint, a.out, seed=a.seed, layout=a.layout, device=a.device)
+    except ExtensionRefused as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":

@@ -173,26 +173,37 @@ class _null:
 
 @torch.no_grad()
 def cache_check(model, prompts: torch.Tensor, n_steps: int = 3,
-                autocast: Optional[torch.dtype] = None) -> Dict[str, float]:
+                autocast: Optional[torch.dtype] = None,
+                position_ids: Optional[torch.Tensor] = None) -> Dict[str, float]:
     """Max |logit difference| between cached and uncached decoding, on the allowed ids.
 
     Feeds a fixed continuation (the first n_steps class ids) both ways. Also returns the largest |logit|
     compared and the difference in rounding steps of the autocast dtype at it (`max_ulp_diff`; CACHE_ULPS).
     A NaN anywhere propagates (`max(0.0, nan)` in Python is 0.0, so the per-step maxima are reduced in torch).
+
+    `position_ids` (B, L), optional (2026-11-09): the prompt's positions, for a layout whose positions are
+    not 0..L-1 (the temporal stage's lattice, eo/generate/cached.py); step t then sits at the last + 1 + t,
+    in the cached and the full pass alike. None, the default, is the model's own positions, as before.
     """
     ctx = torch.autocast("cuda", dtype=autocast) if autocast is not None else _null()
     cont = torch.tensor(V.CLASS_IDS[:n_steps], device=prompts.device)
     diff, mag = [], []
+    pos = position_ids
+    kw = {} if pos is None else {"position_ids": pos}
     with ctx:
-        out = model(input_ids=prompts, use_cache=True, logits_to_keep=1)
+        out = model(input_ids=prompts, use_cache=True, logits_to_keep=1, **kw)
         cache = out.past_key_values
         seq = prompts
         for t in range(n_steps):
             ids = cont[t].expand(prompts.shape[0], 1)
-            o = model(input_ids=ids, past_key_values=cache, use_cache=True)
+            step = {} if pos is None else {"position_ids": position_ids[:, -1:] + 1 + t}
+            o = model(input_ids=ids, past_key_values=cache, use_cache=True, **step)
             cache = o.past_key_values
             seq = torch.cat([seq, ids], 1)
-            full = model(input_ids=seq, use_cache=False, logits_to_keep=1).logits[:, -1, :]
+            if pos is not None:
+                pos = torch.cat([pos, step["position_ids"]], 1)
+            full = model(input_ids=seq, use_cache=False, logits_to_keep=1,
+                         **({} if pos is None else {"position_ids": pos})).logits[:, -1, :]
             a, b = o.logits[:, -1, ALLOWED].float(), full[:, ALLOWED].float()
             diff.append((a - b).abs().max())
             mag.append(torch.maximum(a.abs(), b.abs()).max())

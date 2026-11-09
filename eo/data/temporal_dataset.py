@@ -540,8 +540,8 @@ class MixedMicrobatches(Dataset):
         after a mid-epoch resume (module docstring). Only TemporalEpochCallback sets it."""
         self.epoch = int(epoch)
 
-    def epoch_callback(self) -> "TemporalEpochCallback":
-        return TemporalEpochCallback(self, self.cfg.steps_per_epoch)
+    def epoch_callback(self, verbose: bool = True) -> "TemporalEpochCallback":
+        return TemporalEpochCallback(self, self.cfg.steps_per_epoch, verbose)
 
     def __len__(self) -> int:
         return self.n
@@ -658,22 +658,36 @@ class TemporalEpochCallback(TrainerCallback):
 
     Never SetEpochCallback's int(round(state.epoch)): a resume past mid-epoch restores state.epoch
     (5.6, say) before on_epoch_begin, while HF's loop resumes in epoch 5 (finding 18). And it checks
-    that HF's epoch is ours, so the two counts cannot drift apart."""
+    that HF's epoch is ours, so the two counts cannot drift apart, and that the loader collates with
+    unwrap_microbatch (a default collator would stack the micro-batch into a third dimension). Rank 0
+    prints one line per epoch of what it set and checked (A1 Step 6: gate Y15 reads it from pretrain.py's
+    log, and Step 8 reads the draw epoch after a pod restart)."""
 
-    def __init__(self, dataset, steps_per_epoch: int):
-        self.dataset, self.steps_per_epoch = dataset, int(steps_per_epoch)
+    def __init__(self, dataset, steps_per_epoch: int, verbose: bool = True):
+        self.dataset, self.steps_per_epoch, self.verbose = dataset, int(steps_per_epoch), bool(verbose)
 
     def on_epoch_begin(self, args, state, control, train_dataloader=None, **kwargs):
         if args.dataloader_persistent_workers:
             raise RuntimeError("TemporalEpochCallback needs non-persistent workers: persistent ones never "
                                "see a new epoch")
+        epoch = int(state.global_step) // self.steps_per_epoch
+        checked = ""
         if train_dataloader is not None:
             n, ga = len(train_dataloader), int(args.gradient_accumulation_steps)
             if n % ga or n // ga != self.steps_per_epoch:
                 raise RuntimeError(f"HF's epoch is {n} micro-batches / {ga} accumulation = {n / ga} steps, not "
                                    f"temporal.steps_per_epoch {self.steps_per_epoch}: total_batch_size must count "
                                    f"micro-batches, and per_device_train_batch_size must be 1")
-        self.dataset.set_draw_epoch(int(state.global_step) // self.steps_per_epoch)
+            collate = getattr(train_dataloader, "collate_fn", None)
+            if collate is not unwrap_microbatch:
+                raise RuntimeError(f"the training loader collates with {getattr(collate, '__name__', collate)!r}, "
+                                   f"not unwrap_microbatch: pass the dataset's collate_fn as data_collator "
+                                   f"(pretrain.py does), with remove_unused_columns false")
+            checked = f"; HF's epoch {n} micro-batches / {ga} accumulation = {n // ga} steps; collator {collate.__name__}"
+        if self.verbose and getattr(state, "is_world_process_zero", True):
+            print(f"TemporalEpochCallback: global_step {int(state.global_step)} -> draw epoch {epoch}, stage "
+                  f"{self.dataset.stage_of(epoch)[0]}{checked}", flush=True)
+        self.dataset.set_draw_epoch(epoch)
 
 
 # --------------------------------------------------------------------------- roots and builders

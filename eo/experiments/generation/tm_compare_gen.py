@@ -53,7 +53,7 @@ import torch  # noqa: E402
 from eo.data.eval_split import load_eval_rows, load_row_table  # noqa: E402
 from eo.eval import ben_chain as BC  # noqa: E402
 from eo.eval import teacher_forced as TF  # noqa: E402
-from eo.terramesh_tok.contract import GRID, TOKENS_PER_SAMPLE  # noqa: E402
+from eo.terramesh_tok.contract import GRID  # noqa: E402
 
 OUT = Path("/data/enric/generations/tm_compare")
 ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
@@ -79,32 +79,9 @@ def pair_rows(ds, eval_rows, corpus, S, T, n) -> list[int]:
     return sorted(seq[:n])
 
 
-@torch.no_grad()
-def sample(model, prompts, target, *, temperature, top_p, seed):
-    """(B, L) prompts ending in BO_target -> (B, 196) raw codebook indices, and the mean
-    unconstrained softmax mass on the slot. ben_chain.generate_blocks plus top-p over the slot
-    (HF's rule: a token is kept while the mass before it is below top_p). The slot sort is
-    15,360 wide, never vocabulary-sized; run it on the Titan X."""
-    off, size, _, _ = BC.slot(target)
-    out = model(input_ids=prompts, use_cache=True, logits_to_keep=1)
-    cache, logits = out.past_key_values, out.logits[:, -1, :].float()
-    g = torch.Generator(device=prompts.device).manual_seed(int(seed))
-    toks, mass = [], torch.zeros(len(prompts), device=prompts.device)
-    for t in range(TOKENS_PER_SAMPLE):
-        mass += torch.softmax(logits, -1)[:, off:off + size].sum(-1)
-        p = torch.softmax(logits[:, off:off + size] / temperature, -1)
-        if top_p < 1.0:
-            sp, si = torch.sort(p, -1, descending=True)
-            sp = sp * ((sp.cumsum(-1) - sp) < top_p)
-            p = torch.zeros_like(p).scatter(-1, si, sp)
-            p = p / p.sum(-1, keepdim=True)
-        x = torch.multinomial(p, 1, generator=g).squeeze(1)
-        toks.append(x)
-        if t == TOKENS_PER_SAMPLE - 1:
-            break
-        o = model(input_ids=(x + off).unsqueeze(1), past_key_values=cache, use_cache=True)
-        cache, logits = o.past_key_values, o.logits[:, -1, :].float()
-    return torch.stack(toks, 1), mass / TOKENS_PER_SAMPLE
+# The sampler lives in package code since 2026-11-09 (A1 Step 6), unchanged on this script's path
+# (position_ids=None, the model's default positions); the temporal stage passes lattice positions.
+from eo.generate.cached import sample  # noqa: E402,F401
 
 
 def main() -> int:
