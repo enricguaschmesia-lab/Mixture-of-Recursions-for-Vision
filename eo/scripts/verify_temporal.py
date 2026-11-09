@@ -26,7 +26,8 @@ whose artifact does not exist yet is SKIPPED and reported as such, never passed.
                                        row order, a changed array, a missing, failed, partial or stale
                                        check and no build file; rows swapped with the hashes made
                                        consistent fail the token report
-      ⚠ Train's token checks need g49's tokens: SKIPPED here, rerun in Step 8. The val_clean token
+      ⚠ Train's token checks need g49's tokens: SKIPPED here. In Step 8, on g49, `--train-root ROOT` runs
+        them there, with Y3 and Y4 on train's root and the arm as shipped (train_root_checks). The val_clean token
         checks read the static tokens and presence flags of all 2,176 locations, test side included,
         as Step 2's check did: integrity only; no model reads them, and Y3's audit counts the rows the
         dataset code and the parse-backs read.
@@ -529,9 +530,10 @@ def grammar(draw, n: int) -> list:
     return out
 
 
-def parse_back(temporal, loc: int, epoch: int, n: int) -> list:
-    """Y3 on one sequence: its tokens against the location's rows, read here, and its declared layout."""
-    f = fx()
+def parse_back(temporal, loc: int, epoch: int, n: int, ctx=None) -> list:
+    """Y3 on one sequence: its tokens against the location's rows, read here, and its declared layout.
+    `ctx` names another root's index and Reader (train's, Step 8), with dev_quads None; default val's."""
+    f = ctx if ctx is not None else fx()
     seq = temporal.sequence(loc, epoch, n)
     draw = temporal.draw(loc, epoch, n)
     am, ids_all = seq["attention_mask"].numpy(), seq["input_ids"].numpy()
@@ -540,7 +542,7 @@ def parse_back(temporal, loc: int, epoch: int, n: int) -> list:
     if not (am[:real] == 1).all() or (ids_all[real:] != TV.PAD_ID).any():
         out.append("padding is not trailing PAD")
     rows4 = [int(r) for r in f.index.locations[int(loc)]]
-    if tuple(rows4) not in f.dev_quads:
+    if f.dev_quads is not None and tuple(rows4) not in f.dev_quads:
         out.append(f"location {loc}'s rows are not a dev quadruple of temporal_rows_v1.json")
     ids = ids_all[:real]
     try:
@@ -2833,6 +2835,159 @@ def y23():
         f"{', '.join(f'{x:.2f}' for x in ctrl)} (floor {CACHE_CONTROL_MIN:g})")
 
 
+# ================================================================ Step 8: train's root, on g49
+def scene_back(single, row: int, epoch: int, ctx, declared: int = None) -> list:
+    """A Major TOM scene against its row, read here: every image block that row's, every present
+    modality once, the date block dates.npy's date for it (year optional)."""
+    want = int(row if declared is None else declared)
+    ids = real_ids(single.sequence(int(row), epoch))
+    try:
+        blocks = parse(ids)
+    except ValueError as e:
+        return [f"row {want}: {e}"]
+    out = []
+    for m, s, e in blocks:
+        if m == "Date":
+            y, d = TV.decode_date_block(ids[s:e])
+            ry, rd = ctx.reader.date(want)
+            if d != rd or (y is not None and y != ry):
+                out.append(f"row {want}: date block {(y, d)}, dates.npy {(ry, rd)}")
+        elif not np.array_equal(ctx.reader.block(m, want), ids[s:e]):
+            out.append(f"row {want}: the {m} block is not that row's")
+    mods = sorted(m for m, _, _ in blocks if m != "Date")
+    if mods != sorted(single.base.present_modalities(want)):
+        out.append(f"row {want}: blocks {mods}, present {sorted(single.base.present_modalities(want))}")
+    return out
+
+
+def train_root_checks(root: Path) -> None:
+    """Y2's token checks, Y3 and Y4 on train's root (A1 Step 8, a CPU pod on g49), because Step 2 showed
+    that val and the local shards can miss what train holds. The arm as shipped, split train;
+    TERRAMESH_TOK_ROOT names val's root for its eval sets. Same rules and controls as on val, without
+    the dev/test bookkeeping, which train does not have."""
+    from eo.data import temporal_dataset as T
+    from eo.data import temporal_index as TI
+    from lm_dataset.load_dataset import load_dataset_from_config, load_eval_dataset_from_config
+    from lm_dataset.modality_registry import assert_vocab_size
+    os.environ["TERRAMESH_TRAIN_TOK_ROOT"] = str(root)
+
+    # ---- Y2 tokens (train): token_report, which writes nothing, against Step 2's temporal_check.json.
+    rep = TI.token_report(root)
+    stored = json.loads((root / TI.INDEX_DIR / TI.CHECK_FILE).read_text())
+    keys = ("complete", "presence", "static", "twins", "controls", "controls_fired", "passed", "arrays", "inputs")
+    diff = [k for k in keys if rep.get(k) != stored.get(k)]
+    stat = rep["static"]["per_modality"]
+    record("Y2 tokens (train)", rep["passed"] and rep["complete"] and not diff,
+           f"{root}: every date holds all six blocks; Coords differ in {stat['Coords']['tokens_differing']} of "
+           f"{stat['Coords']['tokens_compared']:,} tokens, DEM in {stat['DEM']['tokens_differing']} of "
+           f"{stat['DEM']['tokens_compared']:,} (limits {TI.STATIC_LIMITS}); {rep['twins']} twins; the same report as "
+           f"temporal_check.json ({stored.get('checked')}): {not diff}" + (f", differing in {diff}" if diff else ""),
+           rep["controls_fired"], ", ".join(f"{k}: {c['locations_over_limit']} of {c['locations_moved']} moved "
+                                           f"locations caught" for k, c in rep["controls"].items()))
+
+    # ---- Y3 train: the arm's own training set, parsed back from the tokens alone.
+    cfg = compose([], ARM)
+    ds = T.build_train(cfg, os.environ.get("TERRAMESH_TOK_ROOT"))
+    index = ds.temporal.index
+    ctx = SimpleNamespace(index=index, reader=Reader(root), dev_quads=None)
+    rng = np.random.default_rng(20261110)
+    locs = rng.choice(len(index), 96, replace=False)
+    sample = [(int(loc), e) for e, part in enumerate(np.split(locs, 4)) for loc in part]
+    problems = []
+    for loc, e in sample:
+        problems += parse_back(ds.temporal, loc, e, ds.stage_of(e)[1].dates, ctx)
+    rows = ds.single.rows[rng.choice(len(ds.single.rows), 24, replace=False)]
+    for k, row in enumerate(rows):
+        problems += scene_back(ds.single, int(row), k % 4, ctx)
+    counts = (len(ds.temporal.location_ids), len(ds.single.rows), len(ds))
+    ok = not problems and counts == (239544, 7971665, 333 * 60)
+    record("Y3 train parse-back", ok, f"{len(sample)} sequences at 2, 3 and 4 dates over {len(set(l for l, _ in sample))} "
+           f"train locations, and {len(rows)} Major TOM scenes: every block is its own location's (row's) row, read "
+           f"from tokens.npy, every date dates.npy's, and the declared layouts keep the grammar; the set holds "
+           f"{counts[0]:,} locations and {counts[1]:,} scene rows, an epoch {counts[2]:,} micro-batches"
+           + (f"; {problems[:3]}" if problems else ""))
+
+    class OffByOne(T.TemporalLocations):
+        """Date 1's row read one row along."""
+        def rows(self, loc):
+            r = super().rows(loc).copy()
+            if int(r[1]) + 1 < self.base.n_rows:
+                r[1] += 1
+            return r
+
+    class DateOffByOne(T.TemporalLocations):
+        """Each date's blocks from the next date's row of the same location."""
+        def rows(self, loc):
+            return np.roll(super().rows(loc), -1)
+
+    class TwoLulc(T.TemporalLocations):
+        """LULC in two groups: another group's NDVI becomes LULC, so the length stays."""
+        def draw(self, loc, epoch, n_dates, seed=None):
+            d = super().draw(loc, epoch, n_dates, seed)
+            blocks, done = list(d.blocks), False
+            for i, b in enumerate(blocks):
+                if not done and b.modality == "NDVI" and b.t != d.lulc_t:
+                    blocks[i], done = replace(b, modality="LULC"), True
+            return replace(d, blocks=tuple(blocks))
+
+    class NextRow(T.SingleScenes):
+        """A scene declared for one row and read from the next."""
+        def sequence(self, row, epoch, seed=None, draw=None):
+            return super().sequence(int(row) + 1, epoch, seed)
+
+    fired = {}
+    for name, cls in (("a row off by one", OffByOne), ("a date off by one", DateOffByOne),
+                      ("LULC in two groups", TwoLulc)):
+        bad = cls(ds.temporal.base, index, ds.temporal.location_ids, ds.cfg, ds.seed)
+        hit = ([(loc, e) for loc, e in sample if 1 in bad.draw(loc, e, ds.stage_of(e)[1].dates).dates]
+               if name == "a row off by one" else sample[::4])
+        flagged = sum(bool(parse_back(bad, loc, e, ds.stage_of(e)[1].dates, ctx)) for loc, e in hit)
+        fired[name] = (flagged, len(hit))
+    nxt = NextRow(ds.single.base, index, ds.single.rows, ds.cfg, ds.seed)
+    fired["a scene from the next row"] = (sum(bool(scene_back(nxt, int(r), 0, ctx)) for r in rows), len(rows))
+    record("Y3 train controls", True, "parse-back against four broken datasets on train's root",
+           all(n > 0 and k == n for k, n in fired.values()),
+           ", ".join(f"{k}: {a} of {b} flagged" for k, (a, b) in fired.items()))
+
+    # ---- Y4 train: micro-batches over three stages and both streams, then the dry build of the arm.
+    mbs = []
+    for e in (0, 1, 2):
+        ds.set_draw_epoch(e)
+        a = ds.assignment(e)
+        for i in list(np.flatnonzero(a >= 0)[:3]) + list(np.flatnonzero(a < 0)[:2]):
+            mbs.append(T.unwrap_microbatch([ds[int(i)]]))
+    ds.set_draw_epoch(0)
+    probs = [p for mb in mbs for p in five_key_problems(mb)]
+    sixth = dict(mbs[0], location_ids=torch.zeros_like(mbs[0]["input_ids"]))
+    blind = {k: v.clone() for k, v in mbs[0].items()}
+    blind["modality_ids"][blind["modality_ids"] == TV.MODALITY_TO_ID["Date"]] = 0
+    fired = {"a sixth key": bool(five_key_problems(sixth)) and refused(T.unwrap_microbatch, [sixth]),
+             "Date bodies unlabelled": bool(five_key_problems(blind))}
+    shapes = [tuple(mb["input_ids"].shape) for mb in mbs]
+    record("Y4 train micro-batches", not probs, f"{len(mbs)} micro-batches over three stages and both streams: the "
+           f"closed five keys, labels on the mask, modality_ids on every body and Date; shapes {shapes}"
+           + (f"; {probs[:3]}" if probs else ""), all(fired.values()),
+           ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in fired.items()))
+
+    train = load_dataset_from_config(cfg)
+    evals = load_eval_dataset_from_config(cfg)
+    got, probs = {}, []
+    for name, d in [("train", train)] + sorted(evals.items()):
+        loader = torch.utils.data.DataLoader(d, batch_size=1, shuffle=False, num_workers=0, collate_fn=d.collate_fn)
+        mb = next(iter(loader))
+        got[name] = tuple(mb["input_ids"].shape)
+        probs += [f"{name}: {p}" for p in five_key_problems(mb)]
+    ok = (isinstance(train, T.MixedMicrobatches) and set(evals) == {"single", "temporal"} and not probs
+          and got["single"] == (16, 1048) and got["temporal"][0] == 8 and got["temporal"][1] <= 2793
+          and len(evals["single"].base) == 4416 and len(evals["temporal"].temporal.location_ids) == 544
+          and len(train.temporal.location_ids) == 239544 and len(train) == 333 * 60
+          and assert_vocab_size(cfg) == TV.TOTAL_VOCAB_SIZE)
+    record("Y4 train dry build", ok, f"{ARM} as shipped (split train) through load_dataset_from_config: train "
+           f"{type(train).__name__} of {len(train)} over {len(train.temporal.location_ids):,} locations, eval "
+           f"{sorted(evals)}; first micro-batches {got}, all the closed five keys; vocab {assert_vocab_size(cfg)}"
+           + (f"; {probs[:3]}" if probs else ""))
+
+
 CHECKS = {"Y1": y1, "Y2": y2, "Y3": y3, "Y4": y4, "Y5": y5, "Y6": y6, "Y7": y7, "Y8": y8, "Y9": y9, "Y10": y10,
           "Y11": y11, "Y12": y12, "Y13": y13, "Y14": y14, "Y15": y15, "Y16": y16, "Y17": y17, "Y18": y18,
           "Y19": y19, "Y20": y20, "Y21": y21, "Y22": y22, "Y23": y23}
@@ -2842,7 +2997,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", nargs="+", choices=sorted(CHECKS, key=lambda k: int(k[1:])),
                     default=sorted(CHECKS, key=lambda k: int(k[1:])))
+    ap.add_argument("--train-root", type=Path, default=None,
+                    help="Step 8, on g49: run only Y2's token checks, Y3 and Y4 on this train root")
     args = ap.parse_args()
+    if args.train_root is not None:
+        train_root_checks(args.train_root)
+        args.only = []
     for name in args.only:
         CHECKS[name]()
     if _FX:

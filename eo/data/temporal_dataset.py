@@ -78,11 +78,21 @@ or seed would otherwise resume into other data. Schedule keys are not in the rec
 free. `validate_config` and `microbatches` are the builder's refusals, which preflight calls rather
 than restating them.
 
+THE TRACE (A1 Step 8). With MOR_TEMPORAL_TRACE naming a directory, every training micro-batch served
+appends one line to trace_<host>_rank<r>_pid<pid>.tsv there: the draw epoch, the index, the stream,
+its locations or rows and a digest of its five tensors. Off by default; it changes nothing it serves.
+Step 8 reads it to show that a run resumed mid-epoch on two ranks serves the micro-batches the
+uninterrupted run served (finding 23), by index and by content.
+
 Runs in `.venv`, and in `mor-eo` on RCP.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import socket
+import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -110,6 +120,31 @@ SEQUENCE_MODALITIES = STATICS + GROUP_MODALITIES + (LULC,)
 # RNG stream tags: location draws, scene draws, the two pools' walks, an epoch's stream assignment.
 _TEMPORAL, _SINGLE, _LOC_WALK, _ROW_WALK, _ASSIGN = 0, 1, 2, 3, 4
 EVAL_SEED = 20261108                                 # the in-training temporal set, drawn once
+TRACE_ENV = "MOR_TEMPORAL_TRACE"                     # a directory: log every training micro-batch served
+TRACE_FIELDS = ("time", "host", "rank", "pid", "epoch", "index", "stream", "n_dates", "n_members",
+                "members_sha", "digest", "shape")
+
+
+def trace_digest(mb: Mapping[str, torch.Tensor]) -> str:
+    """sha1 over a micro-batch's five tensors, in KEYS order, with their shapes and dtypes."""
+    h = hashlib.sha1()
+    for k in KEYS:
+        t = mb[k].contiguous()
+        h.update(f"{k}{tuple(t.shape)}{t.dtype}".encode())
+        h.update(t.numpy().tobytes())
+    return h.hexdigest()[:16]
+
+
+def _trace(directory: str, epoch: int, i: int, stream: str, members: np.ndarray, n_dates: int,
+           mb: Mapping[str, torch.Tensor]) -> None:
+    """One line per micro-batch served (module docstring), appended to this process's own file."""
+    host, rank, pid = socket.gethostname(), os.environ.get("RANK", "0"), os.getpid()
+    sha = hashlib.sha1(np.asarray(members, dtype=np.int64).tobytes()).hexdigest()[:16]
+    shape = "x".join(str(s) for s in mb["input_ids"].shape)
+    line = (f"{time.time():.3f}\t{host}\t{rank}\t{pid}\t{int(epoch)}\t{int(i)}\t{stream}\t{int(n_dates)}\t"
+            f"{len(members)}\t{sha}\t{trace_digest(mb)}\t{shape}\n")
+    with open(Path(directory) / f"trace_{host}_rank{rank}_pid{pid}.tsv", "a") as fh:
+        fh.write(line)
 
 
 def width(modality: str) -> int:
@@ -591,7 +626,11 @@ class MixedMicrobatches(Dataset):
             items = [self.temporal.sequence(int(loc), self.epoch, n_dates) for loc in ids]
         else:
             items = [self.single.sequence(int(row), self.epoch) for row in ids]
-        return stack_trim(items)
+        out = stack_trim(items)
+        trace = os.environ.get(TRACE_ENV)
+        if trace:
+            _trace(trace, self.epoch, int(i), stream, ids, n_dates, out)
+        return out
 
     def token_share(self, epoch: Optional[int] = None) -> Dict[str, float]:
         """Expected real tokens per micro-batch of each stream at an epoch's stage, and Major TOM's share
