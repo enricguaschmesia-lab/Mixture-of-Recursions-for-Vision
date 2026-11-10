@@ -1652,7 +1652,8 @@ def y2():
            ", ".join(f"{k}: {c['locations_over_limit']} of {c['locations_moved']} moved locations caught"
                      for k, c in ctrl.items()))
     skip("Y2 tokens (train)", "train's tokens are on g49 only: its token checks ran there in Step 2 "
-         "(temporal_check.json, loaded above) and rerun with Step 8")
+         "(temporal_check.json, loaded above) and again in Step 8, through --train-root on g49 (2026-11-10: "
+         "the stored report again, every control caught)")
 
     # The loader refuses tampered copies, and accepts an untampered one.
     tmp = Path(tempfile.mkdtemp(prefix="y2_"))
