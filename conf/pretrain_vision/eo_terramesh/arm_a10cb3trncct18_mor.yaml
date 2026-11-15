@@ -1,0 +1,36 @@
+# @package _global_
+#
+# ARM A10c-b3-tr-NC-ct18 — the Coords-free 1 + 3 + 1 train cell's learned router under the COMPUTE TARGET at 1.8
+# passes, seed 42. Paper B's factorial (Paper B plan, B2): arm B from step 0, and arm D's target from a warm copy of
+# the cell's random-router checkpoint (eo/train/warm_start.py). v1 vocabulary like arm A (Enric, 2026-11-15).
+#
+# ┌── THE DIFF FROM A10c-b3-tr-NC (arm_a10cb3trnc_mor, arm A), IN FULL ─────────┐
+# │                             A10c-b3-tr-NC    A10c-b3-tr-NC-ct18 (this)       │
+# │   mor.token.balancing       loss (0.1)       compute                         │
+# │   mor.token.compute         (absent)         target 1.8, gain 0.01,          │
+# │                                              proportional 0.5, price_init 0  │
+# │ Nothing else. W34s in eo/scripts/verify_phase3.py asserts it.                │
+# └──────────────────────────────────────────────────────────────────────────────┘
+#
+# The compute target (eo/train/compute_target.py): the equal-load balancing loss is off, and a price holds the
+# router's SOFT expected depth over body positions (padding and delimiters masked) at 1.8; after each update the price
+# moves in proportion to the gap. 1.8 = one image slot at depth 1 and four at 2, the table the cell's swap readout
+# predicts for a gain-following router (DEM at depth 1; Paper B plan, B2, the cell's prediction of 2026-11-15).
+#
+#   arm B (RCP, course project; Enric's yes first):
+#     jobs/train.sh mor10cb3trncct18 eo_terramesh/arm_a10cb3trncct18_mor mor10cb3trncct18_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+#   arm D: eo.train.warm_start from A10cR-b3-tr-NC's checkpoint-<s> with --target-config this file, then --resume
+
+defaults:
+  - arm_a10cb3trnc_mor
+  - _self_
+
+mor:
+  token:
+    balancing: compute
+    compute:
+      target: 1.8
+      gain: 0.01
+      proportional: 0.5
+      price_init: 0.0

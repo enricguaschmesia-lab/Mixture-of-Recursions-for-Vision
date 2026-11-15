@@ -1,0 +1,34 @@
+# @package _global_
+#
+# SMOKE A10c-s2-ct20 — A10c-s2 under the COMPUTE TARGET at 2.0 passes, for 200-step replays from its
+# checkpoint-1650 on the workstation (Paper B, B1/B2: intervention 1's smoke). Never a run from step 0.
+#
+# ┌── THE DIFF FROM A10c-s2 (arm_a10cs2_mor), IN FULL ─────────────────────────┐
+# │                             A10c-s2         A10c-s2-ct20 (this)            │
+# │   mor.token.balancing       loss (0.1)      compute                        │
+# │   mor.token.compute         (absent)        target 2.0, gain 0.01,         │
+# │                                             proportional 0.5, price_init 0 │
+# │ Nothing else. W34 in eo/scripts/verify_phase3.py asserts it.               │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# The compute target (eo/train/compute_target.py): the equal-load balancing loss is off, and a price holds the
+# router's SOFT expected depth over body positions (padding and delimiters masked) at the target; after each
+# update the price moves in proportion to the gap, never by its sign. mor.token.coeff stays in the file and is
+# read by nothing in this mode.
+#
+#   replay (workstation, TITAN V under the watchdog):
+#     /data/enric/reports/b1/smoke/ct_replay.sh <run-id> eo_terramesh/arm_a10cs2ct20_mor \
+#         /data/enric/runs/pretrain/phase3/mor10cs2_20261012_181812/checkpoint-1650 1850
+
+defaults:
+  - arm_a10cs2_mor
+  - _self_
+
+mor:
+  token:
+    balancing: compute
+    compute:
+      target: 2.0
+      gain: 0.01
+      proportional: 0.5
+      price_init: 0.0

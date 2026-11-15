@@ -99,6 +99,59 @@ unverified deliverable:
                                                     `assign` (depths given in advance per row): all at
                                                     d is force<d> bit for bit, rows in loader order,
                                                     overruns refused
+  W29 wave 1 arms differ as intended     [meeting, 2026-11-11] the nine overlays (no Coords, train
+                                                    split, the 1 + 3 + 1 block, A10cR seed 43) against
+                                                    their parents and cross-pairs; 3 x 3 tied, 17.70 M;
+                                                    990-token Coords-free sequences; train arms read
+                                                    TERRAMESH_TRAIN_TOK_ROOT (skipped without one).
+                                                    Also A0.2's two 10x extensions (2026-11-11): the
+                                                    schedule keys only; LR flat 2970-29700; resumed
+                                                    from the 3,300-step state, step 2971 at the peak.
+                                                    And B3's three follow-ups in the 1 + 3 + 1 train
+                                                    cell: the learned router on seeds 42 and 43, the
+                                                    random router on seed 43; the same 3 x 3 block.
+                                                    And the four Coords-free follow-ups (§4 item 59,
+                                                    2026-11-12): learned and random, seeds 42 and 43,
+                                                    each its Coords parent with the six image
+                                                    modalities; 990 tokens held out, and in training
+                                                    with a train root.
+                                                    And B3's optional runs (2026-11-15): the width
+                                                    check (1 + 9 + 1 at width 384, 17.31 M, within 2.5%
+                                                    of the 1 + 3 + 1 block) and the 5-layer vanilla
+                                                    (17.70 M exactly), Coords-free, each scored through
+                                                    a Coords twin whose held-out sequences are
+                                                    A10cR-b3's token for token.
+                                                    Controls: A10c's sequences, split val, a stray key in
+                                                    each overlay, Nr 5 at 11 layers, the 3,300-step
+                                                    schedule resumed at 2970 (decays), the width check
+                                                    at width 576, the seed-43 twin's sequences
+  W30 --drop-modalities removes chunks   [wave 1, 2026-11-11] eo/scripts/gate_drop_modalities.py: no drop
+                                                    serves the held-out set bit for bit; Coords dropped, every
+                                                    sequence is the original minus exactly its chunk, in order;
+                                                    TargetLast likewise. Controls: body only removed, undropped,
+                                                    DEM dropped instead, malformed chunks refused
+  W31 per-update depth shares            [wave 1, 2026-11-11] the MoR layer counts its own top-1
+                                                    decision per class of B0's label frame: logits, balancing
+                                                    and z-loss bit-identical with and without it; counts =
+                                                    a recount from token_expert_indices; none in eval mode;
+                                                    through pretrain.py, one row per update of exactly the
+                                                    training positions. Controls: a moved router weight, the
+                                                    input frame, an eval batch added, a missing update
+  W34 the compute target                 [B1, 2026-11-15] Paper B intervention 1 (eo/train/compute_target.py):
+                                                    the four smoke overlays change only the balancing mode and
+                                                    its block; the controller moves in proportion to the gap
+                                                    (a sign update is the control that fails); the priced soft
+                                                    depth = a recount on body positions of the label frame
+                                                    (padding and delimiters in is the control); forward unchanged;
+                                                    the price saved with each checkpoint and restored on a resume,
+                                                    which is refused without it. Part 2 through pretrain.py
+  W35 the warm start                     [B1, 2026-11-15] Paper B intervention 4 (eo/train/warm_start.py): a
+                                                    random-router checkpoint continued exactly under a learned
+                                                    router: source tensors and Adam state carried by name (groups
+                                                    = MoRTrainer's), a fresh router with no state, logits = the
+                                                    source's at forced depth with the gate unweighted; resumes
+                                                    through pretrain.py. Controls: weighted gate, strict load,
+                                                    raw optimizer, four refusals, the raw copy
 
 Runs in the repo .venv, NOT the `mor` env.
 
@@ -753,6 +806,24 @@ INIT_FAMILIES = {
 }
 EMBED_ROWS, HIDDEN = 87556, 576
 
+#: The init comparison (Enric, 2026-11-14): B10c-tr-x10 without Coords anywhere (data, table, codebook: the nc
+#: vocabulary, eo/data/eo_vocab_nc.py), from scratch, and from SmolLM-135M's body in B10cL's two stages.
+ARM_B10CTRXNC = "eo_terramesh/arm_b10ctrxnc_vanilla"
+ARM_B10CLTRXNC1, ARM_B10CLTRXNC = "eo_terramesh/arm_b10cltrxnc_stage1", "eo_terramesh/arm_b10cltrxnc_vanilla"
+NC_ROWS = 81188
+FIXED_KEYS = {"fixed_eval_steps", "fixed_save_steps"}
+B10CTRXNC_KEYS = {"multimodal.active_modalities", "multimodal.vocab", "model_config.vocab_size", "max_length",
+                  "precision", "per_device_train_batch_size", "num_train_steps", "stop_steps",
+                  "lr_scheduler_kwargs.num_decay_steps"} | FIXED_KEYS
+NC_INIT_DIFFS = (
+    ("eo_terramesh/arm_b10ctr_vanilla", ARM_B10CTRXNC, B10CTRXNC_KEYS),     # B10c-tr (ARM_B10CTR, defined below)
+    (ARM_B10CTRXNC, ARM_B10CLTRXNC, PRETRAIN_INIT_KEYS),
+    (ARM_B10CTRXNC, ARM_B10CLTRXNC1, PRETRAIN_INIT_KEYS | BUDGET_DIFF_KEYS | FIXED_KEYS),
+    (ARM_B10CLTRXNC, ARM_B10CLTRXNC1, STAGE1_DIFF_KEYS | FIXED_KEYS),
+)
+INIT_FAMILIES["smollm_nc"] = dict(v=ARM_B10CLTRXNC, v1=ARM_B10CLTRXNC1, variant="smollm", rows=NC_ROWS,
+                                  extra=["multimodal.split=val"])     # train tokens live on g49 only
+
 #: T360 (2026-10-25): B10c's recipe at the SmolLM-360M shape on the TRAIN split, batch 1024.
 ARM_T360 = "eo_terramesh/arm_t360_vanilla"
 T360_DIFF_KEYS = {
@@ -765,6 +836,70 @@ T360_DIFF_KEYS = {
 #: Measured 2026-10-20 (bench360): 398,688,960 parameters, 314.64 M of them non-embedding.
 T360_NONEMB = 314.64e6
 N_TRAIN_ROWS = 8_929_841          # train_metadata.parquet, TerraMesh rev 01f5f9d8
+
+#: W29, wave 1 of the meeting of 2026-11-11: each new arm against every reference it is read
+#: against, and the exact keys in which they differ.
+ARM_A10CNC, ARM_B10CNC = "eo_terramesh/arm_a10cnc_mor", "eo_terramesh/arm_b10cnc_vanilla"
+ARM_B10CTR, ARM_B10C11TR = "eo_terramesh/arm_b10ctr_vanilla", "eo_terramesh/arm_b10c11tr_vanilla"
+ARM_A10CRTR, ARM_A10CTR = "eo_terramesh/arm_a10crtr_random", "eo_terramesh/arm_a10ctr_mor"
+ARM_A10CRB3, ARM_A10CRB3TR = "eo_terramesh/arm_a10crb3_random", "eo_terramesh/arm_a10crb3tr_random"
+ARM_A10CRS2 = "eo_terramesh/arm_a10crs2_random"
+#: A0.2's 10x extensions (2026-11-11, after both train-split vanillas failed the screen): resumed
+#: from their checkpoint-2970 to 33,000 steps, the decay over the last tenth, eval and save every 330
+#: (save_steps is the recipe's 330, so only eval_steps of the cadence differs; 825/1,650 at launch).
+ARM_B10CTRX, ARM_B10C11TRX = "eo_terramesh/arm_b10ctr_x10_vanilla", "eo_terramesh/arm_b10c11tr_x10_vanilla"
+X10_KEYS = {"num_train_steps", "stop_steps", "lr_scheduler_kwargs.num_decay_steps", "eval_steps"}
+#: B3's follow-ups in the first measurable cell, the 1 + 3 + 1 block on train (2026-11-11): the learned
+#: router on two seeds and the random router's second seed.
+ARM_A10CB3TR, ARM_A10CB3TRS2 = "eo_terramesh/arm_a10cb3tr_mor", "eo_terramesh/arm_a10cb3trs2_mor"
+ARM_A10CRB3TRS2 = "eo_terramesh/arm_a10crb3trs2_random"
+#: The same follow-ups without Coords (worklog §4 item 59, 2026-11-12: "Drop Coords"): the learned router
+#: on two seeds and the random router on two, each its Coords parent with the six image modalities only.
+ARM_A10CB3TRNC, ARM_A10CB3TRS2NC = "eo_terramesh/arm_a10cb3trnc_mor", "eo_terramesh/arm_a10cb3trs2nc_mor"
+ARM_A10CRB3TRNC, ARM_A10CRB3TRS2NC = "eo_terramesh/arm_a10crb3trnc_random", "eo_terramesh/arm_a10crb3trs2nc_random"
+WAVE1_NC_TRAIN = (ARM_A10CB3TRNC, ARM_A10CB3TRS2NC, ARM_A10CRB3TRNC, ARM_A10CRB3TRS2NC)
+#: B3's optional runs (2026-11-15; Enric: vocabulary v1 with Coords dropped from the data, like the cell's
+#: four runs). The width check is A10cR's 1 + 9 + 1 block at width 384 (17.31 M non-embedding, the 1 + 3 + 1
+#: block's 17.70 M within 2.5%), and the 5-layer vanilla has exactly the 1 + 3 + 1 block's unique layers.
+#: Each trains without Coords and is scored through a Coords twin (the *tr arms here) that is never trained.
+ARM_A10CRW384TR, ARM_A10CRW384TRNC = "eo_terramesh/arm_a10crw384tr_random", "eo_terramesh/arm_a10crw384trnc_random"
+ARM_B10C5TR, ARM_B10C5TRNC = "eo_terramesh/arm_b10c5tr_vanilla", "eo_terramesh/arm_b10c5trnc_vanilla"
+B3_OPT_NC_TRAIN = (ARM_A10CRW384TRNC, ARM_B10C5TRNC)
+WIDTH_KEYS = {"model_config.hidden_size", "model_config.intermediate_size",
+              "model_config.num_attention_heads", "model_config.num_key_value_heads"}
+#: The width check must hold the 1 + 3 + 1 block's non-embedding parameters this closely (built: -2.2%).
+WIDTH_MATCH_TOL = 0.025
+WAVE1_DIFFS = {
+    ARM_A10CNC: [(ARM_A10C, {"multimodal.active_modalities"})],
+    ARM_B10CNC: [(ARM_B10C, {"multimodal.active_modalities"}), (ARM_A10CNC, ARM_DIFF_KEYS)],
+    ARM_B10CTR: [(ARM_B10C, {"multimodal.split"})],
+    ARM_B10C11TR: [(ARM_B10C11, {"multimodal.split"}), (ARM_B10CTR, {"model_config.num_hidden_layers"})],
+    ARM_A10CRTR: [(ARM_A10CR, {"multimodal.split"})],
+    ARM_A10CTR: [(ARM_A10C, {"multimodal.split"}), (ARM_A10CRTR, {"mor.rand_router"}),
+                 (ARM_B10CTR, ARM_DIFF_KEYS)],
+    ARM_A10CRB3: [(ARM_A10CR, {"model_config.num_hidden_layers"})],
+    ARM_A10CRB3TR: [(ARM_A10CRB3, {"multimodal.split"}), (ARM_A10CRTR, {"model_config.num_hidden_layers"})],
+    ARM_A10CRS2: [(ARM_A10CR, {"seed"})],
+    ARM_B10CTRX: [(ARM_B10CTR, X10_KEYS)],
+    ARM_B10C11TRX: [(ARM_B10C11TR, X10_KEYS), (ARM_B10CTRX, {"model_config.num_hidden_layers"})],
+    ARM_A10CB3TR: [(ARM_A10CTR, {"model_config.num_hidden_layers"}), (ARM_A10CRB3TR, {"mor.rand_router"})],
+    ARM_A10CB3TRS2: [(ARM_A10CB3TR, {"seed"})],
+    ARM_A10CRB3TRS2: [(ARM_A10CRB3TR, {"seed"}), (ARM_A10CB3TRS2, {"mor.rand_router"})],
+    ARM_A10CB3TRNC: [(ARM_A10CB3TR, {"multimodal.active_modalities"}),
+                     (ARM_A10CNC, {"multimodal.split", "model_config.num_hidden_layers"})],
+    ARM_A10CRB3TRNC: [(ARM_A10CRB3TR, {"multimodal.active_modalities"}), (ARM_A10CB3TRNC, {"mor.rand_router"})],
+    ARM_A10CB3TRS2NC: [(ARM_A10CB3TRNC, {"seed"}), (ARM_A10CB3TRS2, {"multimodal.active_modalities"})],
+    ARM_A10CRB3TRS2NC: [(ARM_A10CRB3TRNC, {"seed"}), (ARM_A10CRB3TRS2, {"multimodal.active_modalities"}),
+                        (ARM_A10CB3TRS2NC, {"mor.rand_router"})],
+    ARM_A10CRW384TR: [(ARM_A10CRTR, WIDTH_KEYS)],
+    ARM_A10CRW384TRNC: [(ARM_A10CRW384TR, {"multimodal.active_modalities"}),
+                        (ARM_A10CRB3TRNC, WIDTH_KEYS | {"model_config.num_hidden_layers"})],
+    ARM_B10C5TR: [(ARM_B10C11TR, {"model_config.num_hidden_layers"})],
+    ARM_B10C5TRNC: [(ARM_B10C5TR, {"multimodal.active_modalities"}),
+                    (ARM_B10C11TR, {"multimodal.active_modalities", "model_config.num_hidden_layers"}),
+                    (ARM_A10CRB3TRNC, ARM_DIFF_KEYS | {"mor.rand_router", "model_config.num_hidden_layers"})],
+}
+WAVE1_NO_COORDS = ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC"]
 
 #: The plan's A10/B10 schedule (Step 11.1), in optimizer steps.
 A10_TOTAL, A10_WARMUP_END, A10_DECAY_START = 3300, 165, 2970
@@ -1214,6 +1349,35 @@ def _lr_schedule(cfg, steps):
     return {int(s): base * lam(int(s)) for s in steps}
 
 
+def _resumed_lr(cfg_from, cfg_to, at: int, n: int = 1) -> float:
+    """The learning rate `n` steps after resuming `cfg_to`'s run from a scheduler state that
+    `cfg_from`'s schedule reached at step `at`. As HF resumes: build the new run's scheduler
+    (`get_scheduler` at its own `num_train_steps`), then load the checkpoint's `scheduler.pt`.
+    LambdaLR saves only a lambda's `__dict__`, which a `partial` keeps empty, so the NEW length's
+    lambda is the one that runs on (A0.2's extensions rely on this)."""
+    import torch
+    from transformers import get_scheduler
+
+    def build(cfg):
+        f = _flat(cfg)
+        opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=float(f["learning_rate"]))
+        kw = {k.split(".", 1)[1]: v for k, v in f.items() if k.startswith("lr_scheduler_kwargs.")}
+        return opt, get_scheduler(f["lr_scheduler_type"], opt, num_warmup_steps=int(f["num_warmup_steps"]),
+                                  num_training_steps=int(f["num_train_steps"]), scheduler_specific_kwargs=kw)
+
+    opt0, s0 = build(cfg_from)
+    for _ in range(at):
+        opt0.step()
+        s0.step()
+    state = s0.state_dict()
+    opt1, s1 = build(cfg_to)
+    s1.load_state_dict(state)
+    for _ in range(n):
+        opt1.step()
+        s1.step()
+    return float(s1.get_last_lr()[0])
+
+
 def _reproduces_logged_lr(cfg, log, max_lag: int = 20):
     """Does `cfg`'s schedule reproduce a run's logged learning rates?
 
@@ -1628,6 +1792,1123 @@ def w17_a10cr5() -> bool:
     c2 = _arm_diff(_compose(ARM_A10CR), _compose(ARM_A10CR5, ["seed=43"])) != A10CR5_DIFF_KEYS
     print(f"    control: a stray seed in A10cR5 is caught                = {c2}")
     return bool(d_ok and g_ok and c1 and c2)
+
+
+def _coords_free(ds, positions) -> tuple:
+    """(every sampled sequence holds 990 real tokens, none of them a Coords id) for a dataset."""
+    from eo.data.eo_vocab import MODALITY_TO_ID, get_modality
+    co = get_modality("Coords")
+    lo, hi = co.codebook_offset, co.codebook_offset + co.codebook_size
+    lengths, coords = set(), 0
+    for p in positions:
+        x = ds[int(p)]
+        ids = x["input_ids"][x["attention_mask"].bool()]
+        lengths.add(int(ids.numel()))
+        coords += int(((ids >= lo) & (ids < hi)).sum() + (ids == co.bo_id).sum() + (ids == co.eo_id).sum()
+                      + (x["modality_ids"] == MODALITY_TO_ID["Coords"]).sum())
+    return lengths, coords
+
+
+def _w31_frame_counts(depth, labels, mids, attn, n_mod, n_rec, frame="label"):
+    """Independent recount of the per-update depth shares: B0's label frame as capture_router defines it
+    (a body label at t+1 -> its modality; a real position with any other label -> delim; padding -> pad), or
+    the INPUT frame (the position's own modality) as the control."""
+    depth, labels, mids, attn = (np.asarray(x) for x in (depth, labels, mids, attn))
+    out = np.zeros((n_mod + 3, n_rec), dtype=np.int64)
+    for b in range(depth.shape[0]):
+        for t in range(depth.shape[1] - 1):
+            if frame == "label":
+                m = mids[b, t + 1] if (labels[b, t + 1] != -100 and mids[b, t + 1] > 0) else 0
+            else:
+                m = mids[b, t]
+            c = m if m > 0 else (n_mod + 1 if attn[b, t] else n_mod + 2)
+            out[c, depth[b, t]] += 1
+    return out
+
+
+def w31_depth_shares() -> bool:
+    """Per-update depth shares (wave 1, B1): the MoR layer counts its own routing decision per class of B0's
+    label frame, under no_grad, and changes nothing in the forward; pretrain.py writes one line per update.
+
+    Part 1, in process (CPU, fp32, an untrained A10c, two held-out rows of both corpora, training mode): the
+    logits, balancing loss and z-loss are bit-identical with and without counting; the counts equal a recount
+    from the layer's own token_expert_indices (a forward hook) in capture_router's label frame; nothing is
+    counted in eval mode. Controls: a router weight moved by 1e-3 changes the logits (so the identity can
+    fail); the input frame (each position's own modality) gives other counts.
+    Part 2, through pretrain.py (3 updates of 2 x 4 sequences on A10c's arm): depth_shares.jsonl holds a header
+    and steps 1, 2, 3, each counting exactly 2 x 4 x 1,047 positions (983 body, 12 delim, 52 pad per row).
+    On one visible card it runs at fp16 with eval_on_start, so the eval before step 1 must not be counted;
+    on CPU, fp32 without it. Controls: a copy with one eval batch added to a row, and a copy missing a step,
+    both fail the file check."""
+    import json
+    import shutil
+    import time
+    import torch
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import find_mor_layers
+    from lm_dataset.load_dataset import load_eval_dataset_from_config
+
+    # ---- Part 1 ----
+    torch.manual_seed(0)
+    model, _ = G.build_model(ARM_A10C, None, device="cpu")
+    model.train()
+    layer = find_mor_layers(model)[0]
+    n_rec, n_mod = int(layer.num_recursion), 7
+    ev = load_eval_dataset_from_config(_compose(ARM_A10C))
+    pos = [0, len(ev) - 1]                       # a Major TOM row and an ssl4eos12 row (rows are majortom-first)
+    batch = {k: torch.stack([ev[p][k] for p in pos]) for k in ev[0]}
+    mids = batch.pop("modality_ids")
+    n_items = int((batch["labels"][:, 1:] != -100).sum())
+    cls = torch.full_like(mids, -1)
+    lab, real = mids[:, 1:], batch["attention_mask"][:, :-1].bool()
+    cls[:, :-1] = torch.where(lab > 0, lab, torch.where(real, torch.full_like(lab, n_mod + 1), torch.full_like(lab, n_mod + 2)))
+
+    cap = {}
+    h = layer.register_forward_hook(lambda _m, _i, o: cap.__setitem__("d", o.token_expert_indices.clone()))
+
+    def fwd(count: bool):
+        layer.eo_position_class, layer.eo_n_classes, layer.eo_depth_counts = (cls if count else None), n_mod + 3, None
+        with torch.no_grad():
+            o = model(**batch, num_items_in_batch=n_items)
+        layer.eo_position_class = None
+        return o, layer.eo_depth_counts
+
+    o0, c0 = fwd(False)
+    o1, c1 = fwd(True)
+    h.remove()
+    same = (torch.equal(o0.logits, o1.logits) and torch.equal(o0.balancing_loss, o1.balancing_loss)
+            and torch.equal(o0.router_z_loss, o1.router_z_loss) and c0 is None)
+    print(f"    logits, balancing and z-loss bit-identical with and without counting = {same}")
+    depth = cap["d"].numpy()
+    ref = _w31_frame_counts(depth, batch["labels"], mids, batch["attention_mask"], n_mod, n_rec)
+    c_ok = c1 is not None and np.array_equal(c1.numpy(), ref) and int(ref.sum()) == 2 * 1047
+    body = int(ref[1:n_mod + 1].sum())
+    print(f"    counts = a recount from the layer's own depths, label frame ({int(ref.sum())} positions: "
+          f"{body} body, {int(ref[n_mod + 1].sum())} delim, {int(ref[n_mod + 2].sum())} pad) = {c_ok}")
+    model.eval()
+    _, c_eval = fwd(True)
+    e_ok = c_eval is None
+    print(f"    nothing counted in eval mode = {e_ok}")
+    model.train()
+    # CONTROL 1: the identity can fail -- a router weight moved by 1e-3 changes the logits.
+    with torch.no_grad():
+        w = next(p for n, p in layer.named_parameters() if "mor_router" in n)
+        w.view(-1)[0] += 1e-3
+    o2, _ = fwd(False)
+    c1_ok = not torch.equal(o0.logits, o2.logits)
+    print(f"    control: a router weight moved by 1e-3 changes the logits = {c1_ok}")
+    # CONTROL 2: the input frame counts differently.
+    inp = _w31_frame_counts(depth, batch["labels"], mids, batch["attention_mask"], n_mod, n_rec, frame="input")
+    c2_ok = not np.array_equal(inp, ref)
+    print(f"    control: the input frame gives other counts                = {c2_ok}")
+    del model
+    ok1 = same and c_ok and e_ok and c1_ok and c2_ok
+
+    # ---- Part 2 ----
+    # ⚠ Free this process's CUDA cache first: run after W3-W28 in one gate process, the cached blocks of their
+    # models (4.65 GiB) left the 12 GiB TITAN V too little for pretrain.py's child, which died of OOM (2026-11-11).
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    from util.env import load_dotenv
+    load_dotenv()
+    SAVE_DIR = os.environ.get("MOR_SAVE_DIR", "")
+    if not SAVE_DIR.startswith("/data/"):
+        print(f"    MOR_SAVE_DIR {SAVE_DIR!r} is not under /data: refusing to write checkpoints")
+        return False
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    on_gpu = vis.strip() != "" and "," not in vis
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false")
+    over = ["wandb=false", "num_train_steps=3", "stop_steps=3", "num_warmup_steps=0",
+            "lr_scheduler_kwargs.num_decay_steps=0", "save_steps=1000", "eval_steps=1000",
+            "total_batch_size=8", "per_device_train_batch_size=4", "logging_steps=1", "dataloader_num_workers=0",
+            f"eval_on_start={'true' if on_gpu else 'false'}"]
+    if not on_gpu:
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        over.append("precision=fp32")
+    print(f"    pretrain.py on {'GPU ' + vis + ' (fp16, eval_on_start)' if on_gpu else 'CPU (fp32, no eval)'}")
+    rel = f"gate_w31/w31_{time.strftime('%Y%m%d_%H%M%S')}"   # not all digits: Hydra would read name= as an int
+    root = Path(SAVE_DIR) / "pretrain" / rel
+    rc, log = _pretrain(ARM_A10C, rel, over + [f"hydra.run.dir={root}/hydra"], env)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pretrain.log").write_text(log)
+    f = root / "depth_shares.jsonl"
+    if rc != 0 or not f.is_file():
+        print(f"    pretrain.py rc {rc}, depth_shares.jsonl present {f.is_file()}: see {root}/pretrain.log")
+        return False
+    lines = [json.loads(x) for x in f.read_text().splitlines()]
+
+    def file_ok(lines):
+        if not lines or "header" not in lines[0]:
+            return False
+        hd, rows = lines[0]["header"], lines[1:]
+        k = len(hd["classes"])
+        want = 2 * 4 * 1047
+        return ([r["step"] for r in rows] == [1, 2, 3]
+                and all(np.asarray(r["counts"]).shape == (k, n_rec) for r in rows)
+                and all(int(np.asarray(r["counts"]).sum()) == want for r in rows)
+                and all(int(np.asarray(r["counts"])[k - 1].sum()) == 2 * 4 * 52 for r in rows)
+                and all(int(np.asarray(r["counts"])[k - 2].sum()) == 2 * 4 * 12 for r in rows))
+
+    f_ok = file_ok(lines)
+    print(f"    {len(lines) - 1} rows (steps {[r.get('step') for r in lines[1:]]}), each 8 x 1,047 positions "
+          f"(8 x 52 pad, 8 x 12 delim), classes {lines[0]['header']['classes']} = {f_ok}")
+    # CONTROLS 3-4: an eval batch counted into a row, or a missing step, fails the file check.
+    bad = json.loads(json.dumps(lines))
+    bad[1]["counts"][1][0] += 4 * 196
+    c3_ok = not file_ok(bad)
+    c4_ok = not file_ok(lines[:-1])
+    print(f"    control: one eval batch counted into a row fails  = {c3_ok}")
+    print(f"    control: a missing update fails                   = {c4_ok}")
+    shutil.rmtree(root, ignore_errors=True)
+    return bool(ok1 and f_ok and c3_ok and c4_ok)
+
+
+# ---- W34: the compute target (Paper B intervention 1; B1, 2026-11-15; eo/train/compute_target.py) ----------------
+CT_SMOKES = {"eo_terramesh/arm_a10cs2ct18_mor": ("eo_terramesh/arm_a10cs2_mor", 1.8),
+             "eo_terramesh/arm_a10cs2ct20_mor": ("eo_terramesh/arm_a10cs2_mor", 2.0),
+             "eo_terramesh/arm_a10cct18_mor": (ARM_A10C, 1.8),
+             "eo_terramesh/arm_a10cct20_mor": (ARM_A10C, 2.0),
+             # the factorial's arm B (and arm D's warm-start target), v1 like arm A (Enric, 2026-11-15)
+             "eo_terramesh/arm_a10cb3trncct18_mor": ("eo_terramesh/arm_a10cb3trnc_mor", 1.8),
+             "eo_terramesh/arm_a10cb3trs2ncct18_mor": ("eo_terramesh/arm_a10cb3trs2nc_mor", 1.8)}
+CT_DIFF_KEYS = {"mor.token.balancing", "mor.token.compute.target", "mor.token.compute.gain",
+                "mor.token.compute.proportional", "mor.token.compute.price_init"}
+
+
+def _ct_proportional(block, means, states) -> bool:
+    """Every controller step moved the integral by exactly gain x the gap, and set the price to proportional x
+    gap + integral (states[t] is the controller after means[t]; states[-1] the start)."""
+    import math
+    from eo.train import compute_target as CT
+    prev = states[-1]
+    for m, st in zip(means, states[:-1]):
+        e = m - block["target"]
+        if not (math.isclose(st["lam"] - prev["lam"], block["gain"] * e, rel_tol=1e-12, abs_tol=1e-15)
+                and math.isclose(CT.price(block, st), block["proportional"] * e + st["lam"], rel_tol=1e-12, abs_tol=1e-15)):
+            return False
+        prev = st
+    return True
+
+
+def w34s_compute_target() -> bool:
+    """W34's CPU part, no model: the overlays, the controller rule, and the saved state.
+
+    The four smoke overlays differ from their parents in exactly the balancing mode and the compute block, and
+    their read_block is what their headers say; the twins at 1.8 and 2.0 differ in the target alone. The rule moves
+    the controller in proportion to the gap. The state round-trips through compute_target.json, and a missing file,
+    another target, another step and a non-finite controller are refused. Controls: a stray seed in an overlay is
+    caught; a sign-update controller fails the proportionality check; a gap-free controller (price stuck at its
+    start) fails it too."""
+    import tempfile
+    from eo.train import compute_target as CT
+    ok = True
+    for arm, (parent, target) in CT_SMOKES.items():
+        a, p = _compose(arm), _compose(parent)
+        diff = _arm_diff(p, a)
+        blk = CT.read_block(a)
+        good = diff == CT_DIFF_KEYS and blk == {"target": target, "gain": 0.01, "proportional": 0.5, "price_init": 0.0}
+        print(f"    {arm.split('/')[1]} vs {parent.split('/')[1]}: differs in exactly the compute keys, target "
+              f"{blk['target'] if blk else None} = {good}")
+        if diff != CT_DIFF_KEYS:
+            print(f"      measured: {sorted(diff)}")
+        ok &= good
+    twins = _arm_diff(_compose("eo_terramesh/arm_a10cs2ct18_mor"), _compose("eo_terramesh/arm_a10cs2ct20_mor"))
+    t_ok = twins == {"mor.token.compute.target"}
+    print(f"    the 1.8 and 2.0 twins differ in the target alone = {t_ok}")
+    c1 = _arm_diff(_compose("eo_terramesh/arm_a10cs2_mor"),
+                   _compose("eo_terramesh/arm_a10cs2ct18_mor", ["seed=44"])) != CT_DIFF_KEYS
+    print(f"    control: a stray seed in an overlay is caught = {c1}")
+
+    blk = {"target": 1.8, "gain": 0.01, "proportional": 0.5, "price_init": 0.0}
+    means = [2.05, 1.97, 1.91, 1.84, 1.79, 1.80, 1.83, 1.62]
+    states, st = [], CT.initial_state(blk)
+    for m in means:
+        st = CT.step(blk, st, m)
+        states.append(st)
+    r_ok = _ct_proportional(blk, means, states + [CT.initial_state(blk)])
+    print(f"    the controller moves in proportion to the gap (8 steps, gaps -0.18 .. +0.25) = {r_ok}")
+    sign, s = [], dict(CT.initial_state(blk))
+    for m in means:
+        e = m - blk["target"]
+        s = {"lam": s["lam"] + blk["gain"] * (1.0 if e > 0 else -1.0), "e_last": e}
+        sign.append(s)
+    c2 = not _ct_proportional(blk, means, sign + [CT.initial_state(blk)])
+    stuck = [dict(CT.initial_state(blk), e_last=m - blk["target"]) for m in means]
+    c3 = not _ct_proportional(blk, means, stuck + [CT.initial_state(blk)])
+    print(f"    control: a sign update fails it = {c2}; a price stuck at its start fails it = {c3}")
+
+    d = Path(tempfile.mkdtemp())
+    (d / "trainer_state.json").write_text(json.dumps({"global_step": 1650}))
+    CT.write_state(d, blk, states[-1], 1650, origin="W34")
+    back = CT.read_state(d, blk)
+    s_ok = back == states[-1]
+    print(f"    the controller round-trips through {CT.FILE} = {s_ok}")
+
+    def refused(mutate, label):
+        e = Path(tempfile.mkdtemp())
+        (e / "trainer_state.json").write_text(json.dumps({"global_step": 1650}))
+        CT.write_state(e, blk, states[-1], 1650, origin="W34 control")
+        mutate(e)
+        try:
+            CT.read_state(e, blk)
+            r = False
+        except RuntimeError:
+            r = True
+        print(f"    control: {label} is refused = {r}")
+        return r
+
+    def set_field(k, v):
+        def f(e):
+            doc = json.loads((e / CT.FILE).read_text())
+            doc[k] = v
+            (e / CT.FILE).write_text(json.dumps(doc))
+        return f
+    c4 = refused(lambda e: (e / CT.FILE).unlink(), "a missing file")
+    c5 = refused(set_field("target", 2.0), "a file written under target 2.0")
+    c6 = refused(set_field("global_step", 1320), "a file for step 1320 in checkpoint 1650")
+    c7 = refused(set_field("lam", float("nan")), "a non-finite controller")
+    return bool(ok and t_ok and c1 and r_ok and c2 and c3 and s_ok and c4 and c5 and c6 and c7)
+
+
+def _w34_rows(f):
+    lines = [json.loads(x) for x in Path(f).read_text().splitlines()]
+    hd = next(x["header"] for x in lines if "header" in x)
+    rows = {}
+    for x in lines:
+        if "step" in x:
+            rows[int(x["step"])] = x
+    return hd, rows
+
+
+def _w34_body_soft(hd, row, include_delim=False):
+    """The update's soft body mean from the per-class sums (an accumulation independent of the priced one)."""
+    cls = hd["classes"]
+    keep = [i for i, c in enumerate(cls) if c not in ("none", "delim", "pad") or (include_delim and c != "none")]
+    counts = np.asarray(row["counts"], dtype=np.float64).sum(1)
+    soft = np.asarray(row["soft"], dtype=np.float64)
+    return float(soft[keep].sum() / counts[keep].sum())
+
+
+def w34_compute_target() -> bool:
+    """W34, with the model. Part 1 in process (CPU, fp32, an untrained A10c-s2-ct18, two held-out rows, training
+    mode): the priced soft depth equals a recount from the router's own probabilities (a forward hook) over the
+    body positions of B0's label frame, its count is theirs, and it carries a gradient to the router; the per-class
+    soft sums equal the recount per class; the logits are bit-identical under balancing "loss" and "compute", the
+    balancing loss is 0 under "compute" and positive under "loss", nothing is priced under "loss" and nothing read in
+    eval mode. Controls: padding and delimiters in the recount give another sum; a random router leaves no soft depth.
+
+    Part 2 through pretrain.py (A10c-s2-ct18, 3 updates of 2 x 4 sequences, a save at step 2; one visible card at
+    fp16, else CPU at fp32): every depth_shares row carries the controller (price, soft mean, next price); the first
+    price is price_init; each row's next is the rule applied to its soft mean, and the following row trains under it;
+    the priced soft mean equals the per-class sums' body mean; checkpoint-2 holds compute_target.json for step 2 with
+    that controller; a resume from a copy of checkpoint-2 trains its update 3 under the saved price. Controls: the
+    per-class mean with padding and delimiters in differs; the copy without compute_target.json is refused, and so is
+    a copy whose file names target 2.0."""
+    import math
+    import shutil
+    import time
+    import torch
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import find_mor_layers
+    from eo.train import compute_target as CT
+    from lm_dataset.load_dataset import load_eval_dataset_from_config
+
+    ARM = "eo_terramesh/arm_a10cs2ct18_mor"
+    # ---- Part 1 ----
+    torch.manual_seed(0)
+    model, cfg = G.build_model(ARM, None, device="cpu")
+    model.train()
+    layer = find_mor_layers(model)[0]
+    n_rec, n_mod = int(layer.num_recursion), 7
+    ev = load_eval_dataset_from_config(_compose(ARM))
+    pos = [0, len(ev) - 1]
+    batch = {k: torch.stack([ev[p][k] for p in pos]) for k in ev[0]}
+    mids = batch.pop("modality_ids")
+    n_items = int((batch["labels"][:, 1:] != -100).sum())
+    cls = torch.full_like(mids, -1)
+    lab, real = mids[:, 1:], batch["attention_mask"][:, :-1].bool()
+    cls[:, :-1] = torch.where(lab > 0, lab, torch.where(real, torch.full_like(lab, n_mod + 1), torch.full_like(lab, n_mod + 2)))
+    cap = {}
+    h = layer.mor_router.register_forward_hook(lambda _m, _i, o: cap.__setitem__("logits", o.detach().clone()))
+
+    def fwd(mode, grad=True):
+        layer.cfg.mor.token.balancing = mode
+        layer.eo_position_class, layer.eo_n_classes = cls, n_mod + 3
+        layer.eo_depth_counts = layer.eo_soft_by_class = layer.eo_soft_depth = None
+        with torch.set_grad_enabled(grad):
+            o = model(**batch, num_items_in_batch=n_items)
+        layer.eo_position_class = None
+        return o, layer.eo_soft_depth, layer.eo_soft_by_class
+
+    o_c, sd, sbc = fwd("compute")
+    p = torch.softmax(cap["logits"].float(), -1)
+    soft = (p * torch.arange(1, n_rec + 1, dtype=p.dtype)).sum(-1) / p.sum(-1)
+    body = (cls >= 1) & (cls <= n_mod)
+    ref_sum, ref_n = float(soft[body].sum()), int(body.sum())
+    got_sum, got_n = float(sd[0]), int(sd[1])
+    m_ok = math.isclose(got_sum, ref_sum, rel_tol=1e-6) and got_n == ref_n == 2 * 983
+    print(f"    priced soft depth = a recount on {ref_n} body positions (label frame): {got_sum:.4f} vs {ref_sum:.4f} = {m_ok}")
+    wide = (cls >= 0)
+    wide_mean = float(soft[wide].sum()) / int(wide.sum())
+    c1 = not math.isclose(wide_mean, got_sum / got_n, rel_tol=1e-6)
+    print(f"    control: padding and delimiters in, the mean is {wide_mean:.6f} against {got_sum / got_n:.6f}: "
+          f"outside the check's tolerance = {c1}")
+    per = np.array([float(soft[cls == c].sum()) for c in range(n_mod + 3)])
+    k_ok = np.allclose(sbc.numpy(), per, rtol=1e-6, atol=1e-6)
+    print(f"    per-class soft sums = the recount per class = {k_ok}")
+    model.zero_grad(set_to_none=True)
+    sd[0].backward()
+    g = [q.grad for n, q in layer.named_parameters() if "mor_router" in n]
+    g_ok = all(x is not None for x in g) and sum(float(x.abs().sum()) for x in g) > 0
+    print(f"    the priced sum carries a gradient to the router = {g_ok}")
+    model.zero_grad(set_to_none=True)
+    with torch.no_grad():
+        o_c2, _, _ = fwd("compute", grad=False)
+        o_l, sd_l, sbc_l = fwd("loss", grad=False)
+    f_ok = (torch.equal(o_c2.logits, o_l.logits) and float(o_c2.balancing_loss) == 0.0
+            and float(o_l.balancing_loss) > 0 and sd_l is None and sbc_l is not None)
+    print(f"    logits bit-identical under loss and compute; balancing loss 0 under compute ({float(o_c2.balancing_loss)}) "
+          f"and {float(o_l.balancing_loss):.4f} under loss; nothing priced under loss = {f_ok}")
+    model.eval()
+    _, sd_e, sbc_e = fwd("compute", grad=False)
+    e_ok = sd_e is None and sbc_e is None
+    print(f"    nothing read in eval mode = {e_ok}")
+    h.remove()
+    layer.cfg.mor.token.balancing = "compute"
+    del model
+    torch.manual_seed(0)
+    rmodel, _ = G.build_model(ARM_A10CR, None, device="cpu")
+    rmodel.train()
+    rl = find_mor_layers(rmodel)[0]
+    rl.eo_position_class, rl.eo_n_classes = cls, n_mod + 3
+    rl.eo_soft_by_class = rl.eo_soft_depth = None
+    with torch.no_grad():
+        rmodel(**batch, num_items_in_batch=n_items)
+    c2 = rl.eo_soft_by_class is None and rl.eo_soft_depth is None and bool(CT.config_problems(_compose(ARM_A10CR)))
+    print(f"    control: a random router leaves no soft depth, and config_problems refuses it = {c2}")
+    del rmodel
+    ok1 = m_ok and c1 and k_ok and g_ok and f_ok and e_ok and c2
+
+    # ---- Part 2 ----
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    from util.env import load_dotenv
+    load_dotenv()
+    SAVE_DIR = os.environ.get("MOR_SAVE_DIR", "")
+    if not SAVE_DIR.startswith("/data/"):
+        print(f"    MOR_SAVE_DIR {SAVE_DIR!r} is not under /data: refusing to write checkpoints")
+        return False
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    on_gpu = vis.strip() != "" and "," not in vis
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false")
+    over = ["wandb=false", "num_train_steps=3", "stop_steps=3", "num_warmup_steps=0",
+            "lr_scheduler_kwargs.num_decay_steps=0", "save_steps=2", "eval_steps=1000",
+            "total_batch_size=8", "per_device_train_batch_size=4", "logging_steps=1", "dataloader_num_workers=0",
+            "eval_on_start=false"]
+    if not on_gpu:
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        over.append("precision=fp32")
+    print(f"    pretrain.py on {'GPU ' + vis + ' (fp16)' if on_gpu else 'CPU (fp32)'}")
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    base = Path(SAVE_DIR) / "pretrain" / "gate_w34"
+
+    def run(rel, extra=()):
+        root = base / rel
+        rc, log = _pretrain(ARM, f"gate_w34/{rel}", over + [f"hydra.run.dir={root}/hydra", *extra], env)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"pretrain_{int(time.time())}.log").write_text(log)
+        return rc, root, log
+
+    rc, root, _ = run(f"w34_{stamp}")
+    f = root / "depth_shares.jsonl"
+    if rc != 0 or not f.is_file():
+        print(f"    pretrain.py rc {rc}, depth_shares.jsonl present {f.is_file()}: see {root}")
+        return False
+    hd, rows = _w34_rows(f)
+    blk = CT.read_block(_compose(ARM))
+    st, chain = CT.initial_state(blk), True
+    first = rows.get(1, {}).get("ct", {}).get("price") == blk["price_init"]
+    states = {}
+    for s in (1, 2, 3):
+        r = rows.get(s)
+        if r is None or "ct" not in r:
+            chain = False
+            break
+        chain &= r["ct"]["price"] == CT.price(blk, st)
+        st = CT.step(blk, st, r["ct"]["soft_mean"])
+        states[s] = st
+        chain &= r["ct"]["next"] == CT.price(blk, st)
+    print(f"    rows 1-3 carry the controller; the first price is price_init; each next is the rule's, and the next row "
+          f"trains under it = {bool(first and chain)}  (soft means {[round(rows[s]['ct']['soft_mean'], 4) for s in rows]}, "
+          f"prices {[round(rows[s]['ct']['price'], 5) for s in rows]})")
+    cons = all(math.isclose(_w34_body_soft(hd, rows[s]), rows[s]["ct"]["soft_mean"], rel_tol=2e-6) for s in rows)
+    # the control is judged by the check's own tolerance: an untrained router puts every position near 2.0 passes,
+    # so padding and delimiters move the mean by ~1e-4, far outside 2e-6 but under any fixed 1e-3
+    c3 = all(not math.isclose(_w34_body_soft(hd, rows[s], include_delim=True), rows[s]["ct"]["soft_mean"], rel_tol=2e-6)
+             for s in rows)
+    print(f"    the priced soft mean = the per-class sums' body mean, every row = {cons}; control: with padding and "
+          f"delimiters in it differs = {c3}")
+    ck2 = root / "checkpoint-2"
+    try:
+        saved = CT.read_state(ck2, blk)
+        s_ok = saved == states[2]
+    except RuntimeError as e:
+        print(f"    {e}")
+        s_ok = False
+    print(f"    checkpoint-2 holds {CT.FILE} for step 2 with the controller after row 2 = {s_ok}")
+
+    def replay(tag, mutate=None):
+        rel = f"w34_{stamp}_{tag}"
+        d = base / rel
+        d.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(ck2, d / "checkpoint-2")
+        if mutate:
+            mutate(d / "checkpoint-2")
+        return run(rel, ["resume_from_checkpoint=true"])
+
+    rc_r, root_r, _ = replay("resume")
+    r_ok = False
+    if rc_r == 0 and (root_r / "depth_shares.jsonl").is_file():
+        _, rr = _w34_rows(root_r / "depth_shares.jsonl")
+        r_ok = 3 in rr and rr[3]["ct"]["price"] == CT.price(blk, states[2]) == rows[3]["ct"]["price"]
+    print(f"    a resume from a copy of checkpoint-2 trains update 3 under the saved price = {r_ok}")
+    rc_n, _, log_n = replay("nofile", lambda c: (c / CT.FILE).unlink())
+    c4 = rc_n != 0 and CT.FILE in log_n
+    print(f"    control: the copy without {CT.FILE} is refused (rc {rc_n}) = {c4}")
+
+    def retarget(c):
+        doc = json.loads((c / CT.FILE).read_text())
+        doc["target"] = 2.0
+        (c / CT.FILE).write_text(json.dumps(doc))
+    rc_t, _, log_t = replay("target20", retarget)
+    c5 = rc_t != 0 and "other settings" in log_t
+    print(f"    control: a copy whose file names target 2.0 is refused (rc {rc_t}) = {c5}")
+    for p in base.glob(f"w34_{stamp}*"):
+        shutil.rmtree(p, ignore_errors=True)
+    return bool(ok1 and first and chain and cons and c3 and s_ok and r_ok and c4 and c5)
+
+
+# ---- W35: the warm start (Paper B intervention 4; B1, 2026-11-15; eo/train/warm_start.py) ------------------------
+W35_SOURCE = Path("/data/enric/runs/pretrain/phase3/mor10cr_20261012_095834/checkpoint-1980")   # A10cR, full state
+
+
+def _trainer_groups(model):
+    """MoRTrainer.create_optimizer's own groups for `model`, as names: run on a stub with the attributes it reads."""
+    from types import SimpleNamespace
+    from transformers import Trainer, TrainingArguments
+    from util.trainer_pt import MoRTrainer
+    args = TrainingArguments(output_dir="/tmp/w35_unused", weight_decay=0.01, learning_rate=1e-3, report_to=[])
+    stub = SimpleNamespace(model=model, model_wrapped=model, optimizer=None, args=args, optimizer_cls_and_kwargs=None)
+    stub.get_decay_parameter_names = lambda m: Trainer.get_decay_parameter_names(None, m)
+    stub.get_optimizer_cls_and_kwargs = Trainer.get_optimizer_cls_and_kwargs
+    opt = MoRTrainer.create_optimizer(stub)
+    name_of = {id(p): n for n, p in model.named_parameters()}
+    return [[name_of[id(p)] for p in g["params"]] for g in opt.param_groups]
+
+
+def _w35_force(model, depth, random_router, value=1.0):
+    """Every position at `depth` (1-based): the random router's draw rewritten (`value` at the depth, so its gate is
+    `value`), or the learned router's logits (softmax 1.0 at the depth in fp32, so its gate is 1.0)."""
+    import torch
+    from eo.routing.telemetry import find_mor_layers
+    layer = find_mor_layers(model)[0]
+    k = depth - 1
+    if random_router:
+        layer.rand_override = lambda w: torch.zeros_like(w).index_fill_(-1, torch.tensor([k], device=w.device), value)
+        return layer, None
+    inner = layer.mor_router
+
+    class Forced(torch.nn.Module):
+        def forward(self, x):
+            out = torch.zeros(*x.shape[:-1], layer.num_recursion, dtype=x.dtype, device=x.device)
+            out[..., k] = 30.0
+            return out
+    layer.mor_router = Forced()
+    return layer, inner
+
+
+def w35_warm_start() -> bool:
+    """Intervention 4's warm start (eo/train/warm_start.py): a random-router checkpoint continued under a learned router,
+    exactly (Enric, 2026-11-15: Adam, the schedule and the data carry on; the plain gate; v1).
+
+    Part 1 (CPU, fp32; source A10cR's checkpoint-1980, target A10c's config): the copy holds every source tensor bit for
+    bit plus a router equal to the target's seeded init; its optimizer state for every shared parameter is the source's,
+    looked up through MoRTrainer.create_optimizer's own groups (a stub), and the router has none; at forced depths 1-3
+    with the gate unweighted, the copy's logits are the source's bit for bit. Controls: with the weighted gate they
+    differ; a strict load of the raw source into the learned model raises; the raw source optimizer will not load into
+    the learned model's; the launcher refuses a learned-router source, a target that also changes the seed, an existing
+    destination and a source without optimizer.pt; with the compute target as target it writes the controller's start.
+    Part 2 through pretrain.py (one visible card at fp16, else CPU at fp32): the copy resumes at step 1980 with no
+    missing or unexpected key, trains two updates at the schedule's learning rate (3e-3 on A10c's plateau), and its
+    depth shares are a learned router's (soft sums). Control: the raw source copied as it is does not resume (rc != 0)."""
+    import math
+    import shutil
+    import time
+    import torch
+    from eo.generate import conditional as G
+    from eo.routing.telemetry import find_mor_layers
+    from eo.train import compute_target as CT
+    from eo.train import warm_start as WS
+    from lm_dataset.load_dataset import load_eval_dataset_from_config
+    from util.env import load_dotenv
+    load_dotenv()
+    SAVE_DIR = os.environ.get("MOR_SAVE_DIR", "")
+    if not SAVE_DIR.startswith("/data/"):
+        print(f"    MOR_SAVE_DIR {SAVE_DIR!r} is not under /data: refusing to write checkpoints")
+        return False
+    if not (W35_SOURCE / "optimizer.pt").is_file():
+        print(f"    {W35_SOURCE} has no optimizer.pt: the gate needs a full random-router checkpoint")
+        return False
+    SRC_CFG, TGT_CFG = ARM_A10CR, ARM_A10C
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    base = Path(SAVE_DIR) / "pretrain" / "gate_w35"
+    dest = base / f"w35_{stamp}"
+
+    # ---- Part 1 ----
+    rec = WS.make_copy(W35_SOURCE, SRC_CFG, TGT_CFG, dest)
+    ck = dest / W35_SOURCE.name
+    src_sd = torch.load(W35_SOURCE / "pytorch_model.bin", map_location="cpu", weights_only=True)
+    new_sd = torch.load(ck / "pytorch_model.bin", map_location="cpu", weights_only=True)
+    router = [k for k in new_sd if "mor_router" in k]
+    same = set(new_sd) - set(router) == set(src_sd) and all(torch.equal(new_sd[k], src_sd[k]) for k in src_sd)
+    tgt_fresh, _ = WS.build(TGT_CFG, rec["router_seed"])
+    fresh_sd = tgt_fresh.state_dict()
+    r_ok = bool(router) and all(torch.equal(new_sd[k], fresh_sd[k]) for k in router)
+    print(f"    copy: {len(src_sd)} source tensors bit for bit, {len(router)} router tensors = the target's seeded init "
+          f"= {same and r_ok}")
+    src_model, _ = WS.build(SRC_CFG, 0)
+    g_src, g_tgt = _trainer_groups(src_model), _trainer_groups(tgt_fresh)
+    g_ok = g_src == WS.param_groups(src_model) and g_tgt == WS.param_groups(tgt_fresh)
+    print(f"    the launcher's param groups = MoRTrainer.create_optimizer's, both models = {g_ok}")
+    so = torch.load(W35_SOURCE / "optimizer.pt", map_location="cpu", weights_only=True)
+    no = torch.load(ck / "optimizer.pt", map_location="cpu", weights_only=True)
+    s_idx = {n: i for g, names in zip(so["param_groups"], g_src) for i, n in zip(g["params"], names)}
+    n_idx = {n: i for g, names in zip(no["param_groups"], g_tgt) for i, n in zip(g["params"], names)}
+    o_ok = all(set(so["state"][s_idx[n]]) == set(no["state"][n_idx[n]])
+               and all(torch.equal(torch.as_tensor(so["state"][s_idx[n]][k]), torch.as_tensor(no["state"][n_idx[n]][k]))
+                       for k in so["state"][s_idx[n]])
+               for n in s_idx if s_idx[n] in so["state"])
+    o_ok &= all(n_idx[n] not in no["state"] for n in n_idx if "mor_router" in n)
+    o_ok &= all(a == b for a, b in zip([{k: v for k, v in g.items() if k != "params"} for g in so["param_groups"]],
+                                       [{k: v for k, v in g.items() if k != "params"} for g in no["param_groups"]]))
+    print(f"    optimizer: every shared parameter's Adam state is the source's (by name), the router has none, the "
+          f"group settings are the source's = {o_ok}")
+
+    ev = load_eval_dataset_from_config(_compose(TGT_CFG))
+    pos = [0, len(ev) - 1]
+    batch = {k: torch.stack([ev[p][k] for p in pos]) for k in ev[0]}
+    batch.pop("modality_ids")
+    batch.pop("labels")
+    warm, _ = WS.build(TGT_CFG, 0)
+    warm.load_state_dict(new_sd, strict=True)
+    src_model.load_state_dict(src_sd, strict=True)
+    warm.eval()
+    src_model.eval()
+
+    def logits(model, depth, random_router, gating, value=1.0):
+        layer, inner = _w35_force(model, depth, random_router, value)
+        old = layer.cfg.mor.token.gating
+        layer.cfg.mor.token.gating = gating
+        try:
+            with torch.no_grad():
+                return model(**batch).logits
+        finally:
+            layer.cfg.mor.token.gating = old
+            if random_router:
+                layer.rand_override = None
+            else:
+                layer.mor_router = inner
+
+    f_ok, c1 = True, True
+    for d in (1, 2, 3):
+        a, b = logits(warm, d, False, "none"), logits(src_model, d, True, "none")
+        f_ok &= torch.equal(a, b)
+        # the random router's gate drawn at 0.75 (its mean) against the learned one's 1.0: the gate enters the forward
+        aw, bw = logits(warm, d, False, "weighted"), logits(src_model, d, True, "weighted", value=0.75)
+        c1 &= not torch.equal(aw, bw)
+    print(f"    forced depths 1-3, gate unweighted: the copy's logits = the source's, bit for bit = {f_ok}")
+    print(f"    control: weighted, with the random gate at 0.75 and the learned at 1.0, they differ = {c1}")
+    try:
+        WS.build(TGT_CFG, 0)[0].load_state_dict(src_sd, strict=True)
+        c2 = False
+    except RuntimeError:
+        c2 = True
+    print(f"    control: a strict load of the raw source into the learned model raises = {c2}")
+    from torch.optim import AdamW
+    groups = [{"params": [dict(warm.named_parameters())[n] for n in names]} for names in g_tgt]
+    try:
+        AdamW(groups, lr=1e-3).load_state_dict(so)
+        c3 = False
+    except ValueError:
+        c3 = True
+    print(f"    control: the raw source optimizer will not load into the learned model's = {c3}")
+
+    def refused(label, fn):
+        try:
+            fn()
+            r = False
+        except (RuntimeError, ValueError):
+            r = True
+        print(f"    control: the launcher refuses {label} = {r}")
+        return r
+    learned_src = Path("/data/enric/runs/pretrain/phase3/mor10c_20261012_013533/checkpoint-1980")
+    c4 = refused("a learned-router source", lambda: WS.make_copy(learned_src, SRC_CFG, TGT_CFG, base / f"w35_{stamp}_c4"))
+    c5 = refused("a target that also changes the seed (A10c-s2)",
+                 lambda: WS.make_copy(W35_SOURCE, SRC_CFG, "eo_terramesh/arm_a10cs2_mor", base / f"w35_{stamp}_c5"))
+    c6 = refused("an existing destination", lambda: WS.make_copy(W35_SOURCE, SRC_CFG, TGT_CFG, dest))
+    nopt = base / f"w35_{stamp}_nopt_src" / W35_SOURCE.name
+    nopt.mkdir(parents=True)
+    for f in W35_SOURCE.iterdir():
+        if f.name != "optimizer.pt":
+            os.symlink(f, nopt / f.name)
+    c7 = refused("a source without optimizer.pt", lambda: WS.make_copy(nopt, SRC_CFG, TGT_CFG, base / f"w35_{stamp}_c7"))
+    rec_ct = WS.make_copy(W35_SOURCE, SRC_CFG, "eo_terramesh/arm_a10cct18_mor", base / f"w35_{stamp}_ct")
+    ct_state = CT.read_state(base / f"w35_{stamp}_ct" / W35_SOURCE.name, rec_ct["compute_target"])
+    ct_ok = ct_state == CT.initial_state(rec_ct["compute_target"]) and rec_ct["global_step"] == 1980
+    print(f"    with the compute target as target: compute_target.json holds the controller's start at step 1980 = {ct_ok}")
+    del warm, src_model, tgt_fresh
+    ok1 = same and r_ok and g_ok and o_ok and f_ok and c1 and c2 and c3 and c4 and c5 and c6 and c7 and ct_ok
+
+    # ---- Part 2 ----
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    on_gpu = vis.strip() != "" and "," not in vis
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false")
+    over = ["wandb=false", "stop_steps=1982", "eval_steps=100000", "save_steps=100000", "total_batch_size=8",
+            "per_device_train_batch_size=4", "logging_steps=1", "dataloader_num_workers=0", "eval_on_start=false",
+            "resume_from_checkpoint=true"]
+    if not on_gpu:
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        over.append("precision=fp32")
+    print(f"    pretrain.py on {'GPU ' + vis + ' (fp16)' if on_gpu else 'CPU (fp32)'}")
+
+    def run(rel, cfg_name):
+        root = base / rel
+        rc, log = _pretrain(cfg_name, f"gate_w35/{rel}", over + [f"hydra.run.dir={root}/hydra"], env)
+        (root / f"pretrain_{int(time.time())}.log").write_text(log)
+        return rc, root, log
+
+    # trainer_state.json restores eval/save cadence on resume: patch the copy's, as the replays do
+    tsf = ck / "trainer_state.json"
+    ts = json.loads(tsf.read_text())
+    ts["save_steps"], ts["eval_steps"], ts["logging_steps"] = 100000, 100000, 1    # HF restores all three from here
+    tsf.write_text(json.dumps(ts))
+    if not on_gpu:
+        # fp32 has no grad scaler, and HF's _load_scaler loads scaler.pt unconditionally (CLAUDE.md, the bf16 resume)
+        (ck / "scaler.pt").rename(ck / "scaler.pt.fp16_set_aside")
+    rc, root, log = run(dest.name, TGT_CFG)
+    keys_ok = "missing_keys" not in log.lower().replace(" ", "_") and "unexpected" not in log.lower()
+    f = root / "depth_shares.jsonl"
+    rows = [json.loads(x) for x in f.read_text().splitlines() if '"step"' in x] if f.is_file() else []
+    steps = [r["step"] for r in rows]
+    soft = all("soft" in r for r in rows) and bool(rows)
+    st_end = root / "trainer_state.json"
+    hist = json.loads(st_end.read_text())["log_history"] if st_end.is_file() else []
+    lrs = [h["learning_rate"] for h in hist if h.get("step") in (1981, 1982) and "learning_rate" in h]
+    lr_ok = len(lrs) == 2 and all(math.isclose(x, 0.003, rel_tol=1e-9) for x in lrs)
+    r_ok2 = rc == 0 and steps == [1981, 1982] and soft and keys_ok and lr_ok
+    print(f"    the copy resumes at 1980 (rc {rc}), no missing or unexpected key = {keys_ok}, updates {steps} with soft "
+          f"sums = {soft}, learning rate {lrs} = {r_ok2}")
+    raw = base / f"w35_{stamp}_raw"
+    raw.mkdir(parents=True)
+    shutil.copytree(W35_SOURCE, raw / W35_SOURCE.name)
+    tsr = raw / W35_SOURCE.name / "trainer_state.json"
+    t2 = json.loads(tsr.read_text())
+    t2["save_steps"], t2["eval_steps"] = 100000, 100000
+    tsr.write_text(json.dumps(t2))
+    if not on_gpu:
+        (raw / W35_SOURCE.name / "scaler.pt").rename(raw / W35_SOURCE.name / "scaler.pt.fp16_set_aside")
+    rc_raw, _, log_raw = run(raw.name, TGT_CFG)
+    # it must fail for the router's reason: the optimizer's groups do not fit the learned model
+    c8 = rc_raw != 0 and "doesn't match the size of optimizer's group" in log_raw
+    print(f"    control: the raw random-router copy does not resume as the learned arm (rc {rc_raw}; the optimizer's "
+          f"groups do not fit) = {c8}")
+    for p in base.glob(f"w35_{stamp}*"):
+        shutil.rmtree(p, ignore_errors=True)
+    return bool(ok1 and r_ok2 and c8)
+
+
+def _nc_seq_ok(x) -> tuple:
+    """(real length, every real id in the nc space, no Coords modality id, PAD 81,187 with label -100 behind it)."""
+    from eo.data import eo_vocab_nc as N
+    real = x["attention_mask"].bool()
+    ids = x["input_ids"][real]
+    specials = {i.bo_id for i in N.MODALITIES.values()} | {i.eo_id for i in N.MODALITIES.values()}
+    in_space = bool((ids < N.TOTAL_VOCAB_SIZE - 1).all()) and all(
+        int(v) in specials for v in ids[ids >= 81175])
+    no_coords = not bool((x["modality_ids"] == 7).any())
+    pad = x["input_ids"][~real]
+    pad_ok = bool((pad == N.PAD_ID).all()) and bool((x["labels"][~real] == -100).all())
+    return int(ids.numel()), in_space, no_coords, pad_ok
+
+
+def w32_init_comparison_arms() -> bool:
+    """The init comparison (Enric, 2026-11-14): B10c-tr-x10-NC (from scratch) and B10cL-tr-x10-NC (SmolLM-135M's
+    body, two stages) differ from their references in exactly the intended keys; the nc vocabulary reaches the
+    registry, the model and the data (81,188 ids, no Coords anywhere, image ids eo_vocab's); the 33,000-step
+    schedule from scratch; the dense early evals and saves; the nc conversion. Each with a control that fails."""
+    import torch
+    from omegaconf import OmegaConf
+    from transformers import TrainerControl, TrainerState
+    from lm_dataset.load_dataset import load_eval_dataset_from_config
+    from lm_dataset.modality_registry import assert_vocab_size, get_registry, vocab_layout
+    from eo.data import eo_vocab as E, eo_vocab_nc as N
+    from eo.train import clevr_init as CI
+    from eo.train.fixed_eval import FixedEvalCallback, parse_steps
+
+    ok = True
+    # 1. Config diffs, and stage 1's budget is B10cL's stage 1's.
+    for ref, child, keys in NC_INIT_DIFFS:
+        diff = _arm_diff(_compose(ref), _compose(child))
+        p_ok = diff == keys
+        print(f"    {child.split('/')[1]} vs {ref.split('/')[1]}: differs in exactly {sorted(keys)} = {p_ok}")
+        if not p_ok:
+            print(f"      measured: {sorted(diff)}")
+        ok &= p_ok
+    f1, fl1 = _flat(_compose(ARM_B10CLTRXNC1)), _flat(_compose(ARM_B10CL1))
+    b_ok = all(f1[k] == fl1[k] for k in BUDGET_DIFF_KEYS) and f1["pretrain_init.freeze_body"] is True
+    print(f"    stage 1's budget is B10cL stage 1's ({', '.join(f'{k.split(chr(46))[-1]} {f1[k]}' for k in sorted(BUDGET_DIFF_KEYS))}) = {b_ok}")
+    ok &= b_ok
+    c_stray = all(_arm_diff(_compose(ref), _compose(child, ["learning_rate=0.001"])) != keys
+                  for ref, child, keys in NC_INIT_DIFFS)
+    print(f"    control: a stray learning_rate in each of the {len(NC_INIT_DIFFS)} overlays is caught = {c_stray}")
+
+    # 2. The registry and the model.
+    cfg = _compose(ARM_B10CTRXNC)
+    r_ok = (vocab_layout(cfg) == "nc" and get_registry(cfg) is N and assert_vocab_size(cfg) == NC_ROWS
+            and "Coords" not in get_registry(cfg).ID_TO_MODALITY.values())
+    print(f"    registry: layout {vocab_layout(cfg)}, {get_registry(cfg).__name__}, vocab_size checked "
+          f"{assert_vocab_size(cfg)}, modality ids {sorted(get_registry(cfg).ID_TO_MODALITY.values())} = {r_ok}")
+    ok &= r_ok
+    from eo.generate import conditional as G
+    shapes = {}
+    for arm in (ARM_B10CTRXNC, ARM_B10CLTRXNC1):
+        m, _ = G.build_model(arm, None, device="cpu")
+        shapes[arm] = (int(m.config.vocab_size), int(m.config.num_hidden_layers), int(m.config.hidden_size),
+                       sum(p.numel() for p in m.parameters()),
+                       m.lm_head.weight.data_ptr() == m.model.embed_tokens.weight.data_ptr())
+        del m
+    m_ok = len(set(shapes.values())) == 1 and shapes[ARM_B10CTRXNC] == (NC_ROWS, 29, HIDDEN, 149_427_648, True)
+    print(f"    model: vocab, layers, hidden, parameters, tied = {shapes[ARM_B10CTRXNC]} for both arms = {m_ok}")
+    ok &= m_ok
+    try:
+        assert_vocab_size(_compose(ARM_B10CTRXNC, ["model_config.vocab_size=87556"])); c_vocab = False
+    except ValueError:
+        c_vocab = True
+    bad = []
+    for spec in (dict(dataset="ben_multimodal", multimodal=dict(vocab="nc")),
+                 dict(dataset="terramesh_temporal", multimodal=dict(vocab="nc")),
+                 dict(dataset="terramesh_multimodal", multimodal=dict(vocab="v2"))):
+        try:
+            vocab_layout(OmegaConf.create(spec)); bad.append(False)
+        except ValueError:
+            bad.append(True)
+    print(f"    control: vocab_size 87,556 with vocab nc is refused = {c_vocab}; nc for BEN, nc for the temporal "
+          f"stage and an unknown layout are refused = {all(bad)}")
+
+    # 3. The data, held out: nc ids, no Coords, and exactly B10c-NC's v1 sequences with BO/EO and PAD remapped.
+    ev = load_eval_dataset_from_config(cfg)
+    ev1 = load_eval_dataset_from_config(_compose(ARM_B10CNC))
+    remap = {**{E.MODALITIES[k].bo_id: N.MODALITIES[k].bo_id for k in N.MODALITIES},
+             **{E.MODALITIES[k].eo_id: N.MODALITIES[k].eo_id for k in N.MODALITIES}}
+    pos = sorted(set(np.linspace(0, len(ev) - 1, 31).astype(int).tolist()))
+    lens, all_ok, same = set(), True, 0
+    for p in pos:
+        x, y = ev[int(p)], ev1[int(p)]
+        n, sp, nc_, pd_ = _nc_seq_ok(x)
+        lens.add(n)
+        all_ok &= sp and nc_ and pd_ and tuple(x["input_ids"].shape) == (990,)
+        rx, ry = x["input_ids"][x["attention_mask"].bool()], y["input_ids"][y["attention_mask"].bool()]
+        mapped = torch.tensor([remap.get(int(v), int(v)) for v in ry])
+        same += int(torch.equal(mapped, rx) and torch.equal(x["modality_ids"][:n], y["modality_ids"][:n]))
+    d_ok = all_ok and same == len(pos) and len(ev) == 4416 and max(lens) == 990
+    print(f"    held out: {len(ev)} rows; {len(pos)} sampled sequences of {sorted(lens)} real tokens, every id in the "
+          f"nc space, no Coords, PAD {N.PAD_ID} masked; {same} of {len(pos)} equal B10c-NC's v1 sequences with "
+          f"BO/EO and PAD remapped = {d_ok}")
+    ok &= d_ok
+    y = ev1[int(pos[0])]
+    _, sp1, _, pd1 = _nc_seq_ok(y)
+    c_v1 = not (sp1 and pd1)
+    try:
+        load_eval_dataset_from_config(_compose(ARM_B10CTRXNC, [
+            "multimodal.active_modalities=[S2L2A,S1GRD,S1RTC,DEM,NDVI,LULC,Coords]", "max_length=995"]))
+        c_coords = False
+    except KeyError:
+        c_coords = True
+    print(f"    control: B10c-NC's v1 sequences fail the nc test = {c_v1}; Coords in an nc arm's data is refused "
+          f"= {c_coords}")
+
+    # 4. The schedule from scratch: warmup 165, flat 3e-3 to 29,700, linear to 0 at 33,000.
+    cx = _compose(ARM_B10CTRXNC)
+    peak = float(_flat(cx)["learning_rate"])
+    lr = _lr_schedule(cx, [82, 165, 3000, 29700, 29701, 31350, 33000])
+    s_ok = (lr[82] < peak and all(abs(lr[k] - peak) < 1e-12 for k in (165, 3000, 29700)) and lr[29701] < peak
+            and abs(lr[31350] - peak / 2) < 1e-9 * peak and lr[33000] < 1e-9 * peak + 1e-15)
+    lr_b = _lr_schedule(_compose(ARM_B10CTR), [3000])
+    c_sched = lr_b[3000] < peak - 1e-9
+    print(f"    schedule: warmup to {peak:g} at 165, flat to 29,700, {lr[31350]:.3g} at 31,350, {lr[33000]:.3g} at "
+          f"33,000 = {s_ok}; control: B10c-tr's schedule decays by 3,000 ({lr_b[3000]:.3g}) = {c_sched}")
+    ok &= s_ok
+
+    # 5. Dense early evals and saves; the callback fires at exactly the listed steps.
+    fx = _flat(cx)
+    evs, svs = parse_steps(fx["fixed_eval_steps"]), parse_steps(fx["fixed_save_steps"])
+    every_eval = sorted(set(evs) | {s for s in range(165, 991, 165)})
+    covered = set(svs) | {s for s in range(330, 33001, 330)}
+    e_ok = (int(fx["eval_steps"]) == 165 and int(fx["save_steps"]) == 330 and 33000 % 330 == 0
+            and all(s < 990 and s % 165 for s in evs) and all(s in covered for s in every_eval)
+            and len(evs) == 16 and len(svs) == 19)
+    cb = FixedEvalCallback(fx["fixed_eval_steps"])
+    fired = []
+    for s in range(1, 1200):
+        st, ctl = TrainerState(), TrainerControl()
+        st.global_step = s
+        if cb.on_step_end(None, st, ctl).should_evaluate:
+            fired.append(s)
+    cb_ok = fired == evs
+    print(f"    {len(evs)} extra evals before 990, none on the 165 cadence; every eval to 990 is also a save; "
+          f"save divides 33,000 = {e_ok}; the callback fires at exactly those {len(fired)} steps = {cb_ok}")
+    ok &= e_ok and cb_ok
+    try:
+        parse_steps("33,0,66"); c_parse = False
+    except ValueError:
+        c_parse = True
+    print(f"    control: a step 0 in fixed_eval_steps is refused = {c_parse}; step 165 does not fire it = "
+          f"{165 not in fired}")
+
+    # 6. The nc conversion: verified at 81,188, recorded as nc; refused at eo_vocab's size.
+    conv = Path(str(_compose(ARM_B10CLTRXNC1).pretrain_init.conversion))
+    if (conv / "conversion.json").is_file():
+        doc = CI.verify_conversion(conv, "smollm", NC_ROWS)
+        import json as _json
+        rec = _json.loads((conv / "conversion.json").read_text())
+        v_ok = rec.get("vocab_layout") == "nc" and int(rec["vocab_size"]) == NC_ROWS
+        try:
+            CI.verify_conversion(conv, "smollm", EMBED_ROWS); c_conv = False
+        except RuntimeError:
+            c_conv = True
+        print(f"    conversion {conv.parent.name}/{conv.name}: verified at {NC_ROWS} (sha {doc['weights_sha256'][:10]}), "
+              f"layout {rec.get('vocab_layout')} = {v_ok}; control: refused at {EMBED_ROWS} = {c_conv}")
+        ok &= v_ok and c_conv
+    else:
+        print(f"    conversion {conv} not found: the nc conversion (convert_smollm_init.py) is not on this machine")
+        ok = False
+    try:
+        CI.read_block(OmegaConf.to_container(_compose(ARM_B10CLTRXNC).pretrain_init)); c_s2 = False
+    except ValueError:
+        c_s2 = True
+    print(f"    control: stage 2 without from_stage1 is refused = {c_s2}")
+    return bool(ok and c_stray and c_vocab and all(bad) and c_v1 and c_coords and c_sched and c_parse
+                and 165 not in fired and c_s2)
+
+
+def w33_nc_stages() -> bool:
+    return _stages(INIT_FAMILIES["smollm_nc"])
+
+
+def w30_drop_modalities() -> bool:
+    """eval_checkpoint.py --drop-modalities (wave 1, A0.1): the check lives in eo/scripts/gate_drop_modalities.py,
+    runnable alone; its docstring lists every part and control."""
+    sys.path.insert(0, str(REPO / "eo/scripts"))
+    import gate_drop_modalities
+    return gate_drop_modalities.check()
+
+
+def w29_wave1_arms() -> bool:
+    """Wave 1 of the meeting of 2026-11-11: every new arm differs from each reference it is read
+    against in exactly the intended keys; the 1 + 3 + 1 arms build a tied 3-layer block applied up
+    to 3 times; the Coords-free arms' sequences are 990 tokens with no Coords id, in training and
+    held out; and the train arms read TERRAMESH_TRAIN_TOK_ROOT (skipped, and said, without one)."""
+    import os
+    from lm_dataset.load_dataset import load_dataset_from_config, load_eval_dataset_from_config
+
+    ok = True
+    for child, refs in WAVE1_DIFFS.items():
+        for ref, keys in refs:
+            diff = _arm_diff(_compose(ref), _compose(child))
+            pair_ok = diff == keys
+            print(f"    {child.split('/')[1]} vs {ref.split('/')[1]}: differs in exactly {sorted(keys)} = {pair_ok}")
+            if not pair_ok:
+                print(f"      measured: {sorted(diff)}")
+            ok &= pair_ok
+    for nc, parent in ((ARM_A10CNC, ARM_A10C), (ARM_B10CNC, ARM_B10C), (ARM_A10CB3TRNC, ARM_A10CB3TR),
+                       (ARM_A10CB3TRS2NC, ARM_A10CB3TRS2), (ARM_A10CRB3TRNC, ARM_A10CRB3TR),
+                       (ARM_A10CRB3TRS2NC, ARM_A10CRB3TRS2), (ARM_A10CRW384TRNC, ARM_A10CRW384TR),
+                       (ARM_B10C5TRNC, ARM_B10C5TR)):
+        act, pact = list(_compose(nc).multimodal.active_modalities), list(_compose(parent).multimodal.active_modalities)
+        a_ok = act == WAVE1_NO_COORDS == [m for m in pact if m != "Coords"]
+        print(f"    {nc.split('/')[1]}: active modalities are {parent.split('/')[1]}'s without Coords, in order = {a_ok}")
+        ok &= a_ok
+
+    ne_r, nr_r, bd_r, _ = _mor_geometry(ARM_A10CR)
+    geo = {}
+    for arm in (ARM_A10CRB3, ARM_A10CRB3TR):
+        geo[arm] = _mor_geometry(arm)
+        ne, nr, bd, tied = geo[arm]
+        g_ok = (nr, bd, tied) == (3, 3, True) and (nr_r, bd_r) == (3, 9) and ne < ne_r
+        print(f"    {arm.split('/')[1]}: {nr} x {bd} layers, all blocks tied {tied}, non-embedding "
+              f"{ne / 1e6:.2f}M (A10cR {ne_r / 1e6:.2f}M, {nr_r} x {bd_r}) = {g_ok}")
+        ok &= g_ok
+    same_geo = geo[ARM_A10CRB3] == geo[ARM_A10CRB3TR]
+    print(f"    the val and train 1 + 3 + 1 arms build the same model = {same_geo}")
+    ok &= same_geo
+    # B3's follow-ups: the learned 1 + 3 + 1 arms build the random one's tied 3 x 3 block (the router
+    # aside), every random one the very same model as A10cR-b3-tr, every learned one A10c-b3-tr's
+    # (Coords is data, not parameters: its vocabulary rows stay in the table).
+    geo_l = _mor_geometry(ARM_A10CB3TR)
+    for arm in (ARM_A10CB3TR, ARM_A10CB3TRS2, ARM_A10CRB3TRS2) + WAVE1_NC_TRAIN:
+        ne, nr, bd, tied = _mor_geometry(arm)
+        f_ok = (nr, bd, tied) == (3, 3, True) and ne < ne_r
+        if arm in (ARM_A10CRB3TRS2, ARM_A10CRB3TRNC, ARM_A10CRB3TRS2NC):
+            f_ok = f_ok and (ne, nr, bd, tied) == geo[ARM_A10CRB3TR]
+        elif arm != ARM_A10CB3TR:
+            f_ok = f_ok and (ne, nr, bd, tied) == geo_l
+        print(f"    {arm.split('/')[1]}: {nr} x {bd} layers, all blocks tied {tied}, non-embedding "
+              f"{ne / 1e6:.2f}M (A10cR-b3-tr {geo[ARM_A10CRB3TR][0] / 1e6:.2f}M) = {f_ok}")
+        ok &= f_ok
+    # B3's optional runs (2026-11-15): the width check builds A10cR's tied 3 x 9 block, at the 1 + 3 + 1
+    # block's non-embedding parameters within WIDTH_MATCH_TOL, and its Coords twin the very same model; the
+    # 5-layer vanilla and its twin hold exactly the 1 + 3 + 1 block's unique-layer parameters.
+    ne_b3 = geo[ARM_A10CRB3TR][0]
+    geo_w = _mor_geometry(ARM_A10CRW384TRNC)
+    ne_w, nr_w, bd_w, tied_w = geo_w
+    rel_w = ne_w / ne_b3 - 1
+    w_ok = ((nr_w, bd_w, tied_w) == (3, 9, True) and abs(rel_w) <= WIDTH_MATCH_TOL
+            and _mor_geometry(ARM_A10CRW384TR) == geo_w)
+    print(f"    {ARM_A10CRW384TRNC.split('/')[1]} and its twin: {nr_w} x {bd_w} layers, all blocks tied {tied_w}, "
+          f"non-embedding {ne_w / 1e6:.2f}M against the 1 + 3 + 1 block's {ne_b3 / 1e6:.2f}M ({rel_w:+.1%}, "
+          f"band {WIDTH_MATCH_TOL:.1%}) = {w_ok}")
+    ok &= w_ok
+    ne_v, ne_vt = _model_stats(ARM_B10C5TRNC)[0], _model_stats(ARM_B10C5TR)[0]
+    v_ok = ne_v == ne_vt == ne_b3
+    print(f"    {ARM_B10C5TRNC.split('/')[1]} and its twin: non-embedding {ne_v / 1e6:.2f}M, the 1 + 3 + 1 block's "
+          f"unique layers exactly = {v_ok}")
+    ok &= v_ok
+    # CONTROL: at A10cR-tr's width the same block holds 38.94 M, outside the band.
+    ne_wc = _mor_geometry(ARM_A10CRW384TRNC, ["model_config.hidden_size=576", "model_config.intermediate_size=1536",
+                                              "model_config.num_attention_heads=9",
+                                              "model_config.num_key_value_heads=3"])[0]
+    c_w = abs(ne_wc / ne_b3 - 1) > WIDTH_MATCH_TOL
+    print(f"    control: the width check at width 576 holds {ne_wc / 1e6:.2f}M ({ne_wc / ne_b3 - 1:+.0%}), "
+          f"caught = {c_w}")
+    ok &= c_w
+
+    # The Coords-free arms: the key reaches the data, held out and in training.
+    for nc, parent in ((ARM_A10CNC, ARM_A10C), (ARM_B10CNC, ARM_B10C)):
+        ev = load_eval_dataset_from_config(_compose(nc))
+        pos = sorted(set(np.linspace(0, len(ev) - 1, 29).astype(int).tolist() + [len(ev) - 2, len(ev) - 1]))
+        lens, n_coords = _coords_free(ev, pos)
+        tr = load_dataset_from_config(_compose(nc))
+        lens_t, n_coords_t = _coords_free(tr, np.linspace(0, len(tr) - 1, 16).astype(int))
+        d_ok = lens == {990} and n_coords == 0 and lens_t == {990} and n_coords_t == 0 and len(ev) == 4416
+        print(f"    {nc.split('/')[1]}: {len(pos)} held-out and 16 training sequences of {sorted(lens | lens_t)} "
+              f"real tokens, {n_coords + n_coords_t} Coords ids = {d_ok}")
+        ok &= d_ok
+    # The Coords-free train arms, held out (their training sequences need a train root: below).
+    for nc in WAVE1_NC_TRAIN + B3_OPT_NC_TRAIN:
+        ev = load_eval_dataset_from_config(_compose(nc))
+        lens, n_coords = _coords_free(ev, pos)
+        d_ok = lens == {990} and n_coords == 0 and len(ev) == 4416
+        print(f"    {nc.split('/')[1]}: {len(pos)} held-out sequences of {sorted(lens)} real tokens, "
+              f"{n_coords} Coords ids = {d_ok}")
+        ok &= d_ok
+    # B3's optional runs are scored through their Coords twins with Coords dropped, as the cell's runs were
+    # through arm_a10crb3_random: each twin's held-out sequences must be that arm's, token for token, so the
+    # readings pair per token. CONTROL: the cell's seed-43 twin (arm_a10crb3trs2_random) differs.
+    ev_cell = load_eval_dataset_from_config(_compose(ARM_A10CRB3))
+    for twin in (ARM_A10CRW384TR, ARM_B10C5TR):
+        ev_t = load_eval_dataset_from_config(_compose(twin))
+        same = sum(bool(np.array_equal(np.asarray(ev_t[i]["input_ids"]), np.asarray(ev_cell[i]["input_ids"])))
+                   for i in pos)
+        p_ok = same == len(pos) and len(ev_t) == len(ev_cell)
+        print(f"    {twin.split('/')[1]}: held-out sequences equal {ARM_A10CRB3.split('/')[1]}'s at "
+              f"{same} of {len(pos)} rows = {p_ok}")
+        ok &= p_ok
+    ev_s2 = load_eval_dataset_from_config(_compose(ARM_A10CRB3TRS2))
+    same_s2 = sum(bool(np.array_equal(np.asarray(ev_s2[i]["input_ids"]), np.asarray(ev_cell[i]["input_ids"])))
+                  for i in pos)
+    c_pair = same_s2 < len(pos)
+    print(f"    control: the seed-43 twin's sequences equal it at {same_s2} of {len(pos)} rows, caught = {c_pair}")
+    ok &= c_pair
+    # CONTROL 1: the parent's sequences fail the same test (995 tokens, Coords present), and so do the
+    # Coords follow-up's (A10c-b3-tr), held out.
+    pl, pc = _coords_free(load_eval_dataset_from_config(_compose(ARM_A10C)), pos)
+    pl3, pc3 = _coords_free(load_eval_dataset_from_config(_compose(ARM_A10CB3TR)), pos)
+    c1 = pl == {995} and pc > 0 and pl3 == {995} and pc3 > 0
+    print(f"    control: A10c's own sequences are {sorted(pl)} tokens with {pc} Coords ids, A10c-b3-tr's "
+          f"{sorted(pl3)} with {pc3}, caught = {c1}")
+
+    # The train arms: the split key reaches the data (as W16, with a train root when there is one).
+    root = os.environ.get("TERRAMESH_TRAIN_TOK_ROOT")
+    if root:
+        import pandas as pd
+        n_root = len(pd.read_parquet(Path(root) / "tok_index.parquet", columns=["row"]))
+        for arm in (ARM_B10CTR, ARM_B10C11TR, ARM_A10CRTR, ARM_A10CTR, ARM_A10CRB3TR,
+                    ARM_A10CB3TR, ARM_A10CB3TRS2, ARM_A10CRB3TRS2) + WAVE1_NC_TRAIN + B3_OPT_NC_TRAIN:
+            cp = _compose(arm, ["++multimodal.allow_partial_train_root=true"])
+            tr, ev = load_dataset_from_config(cp), load_eval_dataset_from_config(cp)
+            t_ok = (Path(tr.root_dir) == Path(root) and len(tr) == n_root
+                    and Path(ev.root_dir).name == "val_clean" and len(ev) == 4416
+                    and tuple(tr[0]["input_ids"].shape) == (int(cp.max_length),))
+            nc_note = ""
+            if arm in WAVE1_NC_TRAIN + B3_OPT_NC_TRAIN:
+                lens_t, n_coords_t = _coords_free(tr, np.linspace(0, len(tr) - 1, 16).astype(int))
+                t_ok = t_ok and lens_t == {990} and n_coords_t == 0
+                nc_note = f"; 16 training sequences of {sorted(lens_t)} real tokens, {n_coords_t} Coords ids"
+            print(f"    {arm.split('/')[1]}: trains on {tr.root_dir} ({len(tr)} rows), evaluates on "
+                  f"{Path(ev.root_dir).name}/ ({len(ev)} rows){nc_note} = {t_ok}")
+            ok &= t_ok
+        # CONTROL: the Coords follow-up's training sequences fail the Coords-free test.
+        lc, cc = _coords_free(load_dataset_from_config(_compose(ARM_A10CB3TR, ["++multimodal.allow_partial_train_root=true"])),
+                              np.linspace(0, n_root - 1, 16).astype(int))
+        c_tr = lc == {995} and cc > 0
+        print(f"    control: A10c-b3-tr's training sequences are {sorted(lc)} tokens with {cc} Coords ids, caught = {c_tr}")
+        ok &= c_tr
+        trv = load_dataset_from_config(_compose(ARM_B10CTR, ["multimodal.split=val"]))
+        c0 = Path(trv.root_dir).name == "val_clean" and len(trv) == 84672
+        print(f"    control: split val trains on val_clean's 84,672 rows instead   = {c0}")
+        ok &= c0
+    else:
+        print("    train data half SKIPPED: TERRAMESH_TRAIN_TOK_ROOT is unset (no train root on this machine)")
+
+    # A0.2's 10x extensions: the schedule holds the peak LR from the resume at 2970 to 29,700 and
+    # decays over the last 3,300 steps; resumed from the 3,300-step run's scheduler state, the next
+    # step is at the peak, not in the old decay. CONTROL: resumed into the 3,300-step schedule, it
+    # decays (as the run would without the overlay).
+    for x10, base_arm in ((ARM_B10CTRX, ARM_B10CTR), (ARM_B10C11TRX, ARM_B10C11TR)):
+        cx, cb = _compose(x10), _compose(base_arm)
+        peak = float(_flat(cx)["learning_rate"])
+        lr = _lr_schedule(cx, [2970, 2971, 29699, 29700, 29701, 31350, 33000])
+        f_ok = (all(abs(lr[k] - peak) < 1e-12 for k in (2970, 2971, 29699, 29700)) and lr[29701] < peak
+                and abs(lr[31350] - peak / 2) < 1e-9 * peak and lr[33000] < 1e-9 * peak + 1e-15)
+        r_on = _resumed_lr(cb, cx, at=2970, n=1)
+        r_ctl = _resumed_lr(cb, cb, at=2970, n=1)
+        x_ok = f_ok and abs(r_on - peak) < 1e-12 and r_ctl < peak - 1e-9
+        print(f"    {x10.split('/')[1]}: LR {peak:g} flat over 2970-29700 = {f_ok} (31350: {lr[31350]:.3g}, "
+              f"33000: {lr[33000]:.3g}); resumed from {base_arm.split('/')[1]}'s state at 2970, step 2971 "
+              f"reads {r_on:.6g}; control, resumed into the 3,300-step schedule: {r_ctl:.6g} < peak = {x_ok}")
+        ok &= x_ok
+        cad = (int(_flat(cx)["eval_steps"]), int(_flat(cx)["save_steps"]))
+        c_ok = cad == (330, 330) and 33000 % 330 == 0 and 29700 % 330 == 0
+        print(f"    {x10.split('/')[1]}: eval / save every {cad[0]} / {cad[1]} (save divides 33,000 and 29,700) = {c_ok}")
+        ok &= c_ok
+
+    # CONTROL 2: a stray key in any new overlay is caught.
+    c2 = all(_arm_diff(_compose(refs[0][0]), _compose(child, ["learning_rate=0.001"])) != refs[0][1]
+             for child, refs in WAVE1_DIFFS.items())
+    print(f"    control: a stray learning_rate in each of the {len(WAVE1_DIFFS)} overlays is caught = {c2}")
+    # CONTROL 3: Nr 5 at 11 layers would make a 1-layer block, and the geometry test catches it.
+    _, nr_c, bd_c, _ = _mor_geometry(ARM_A10CRB3, ["recursive.num_recursion=5"])
+    c3 = (nr_c, bd_c) != (3, 3)
+    print(f"    control: Nr 5 at 11 layers builds {nr_c} x {bd_c} layers, caught = {c3}")
+    return bool(ok and c1 and c2 and c3)
 
 
 def w18_forced_depth() -> bool:
@@ -2455,16 +3736,18 @@ def _stages(fam) -> bool:
 
     def run(name, arm, extra):
         out = f"{rel}/{name}"
-        rc, log = _pretrain(arm, out, common + [f"hydra.run.dir={root}/hydra/{name}"] + extra, env)
+        rc, log = _pretrain(arm, out, common + [f"hydra.run.dir={root}/hydra/{name}"] + fam_extra + extra, env)
         (root / f"{name}.log").parent.mkdir(parents=True, exist_ok=True)
         (root / f"{name}.log").write_text(log)
         return rc, log, Path(SAVE_DIR) / "pretrain" / out
 
     V, V1, variant = fam["v"], fam["v1"], fam["variant"]
+    rows = int(fam.get("rows", EMBED_ROWS))            # the nc family's table is 81,188 rows
+    fam_extra = list(fam.get("extra", []))
     rel += f"_{variant}"
     root = Path(SAVE_DIR) / "pretrain" / rel
     conv = Path(str(_compose(V1).pretrain_init.conversion))     # resolves ${oc.env:...}
-    conv_doc = CI.verify_conversion(conv, variant, EMBED_ROWS)
+    conv_doc = CI.verify_conversion(conv, variant, rows)
     s0 = CI._state(conv)
     body = [k for k in s0 if k not in CI.EMBED_KEYS]
 
@@ -2484,7 +3767,7 @@ def _stages(fam) -> bool:
     ho = CI.check_handoff(ck_a, conv, variant, conv_doc)
     shapes = opt_state(ck_a)
     losses = [h["loss"] for h in json.loads((ck_a / "trainer_state.json").read_text())["log_history"] if "loss" in h]
-    a_ok = (rec_a["trainable_params"] == EMBED_ROWS * HIDDEN and shapes == [(EMBED_ROWS, HIDDEN)]
+    a_ok = (rec_a["trainable_params"] == rows * HIDDEN and shapes == [(rows, HIDDEN)]
             and ho["body_tensors_identical"] == len(body) and ho["table_max_abs_change"] > 0
             and len(losses) == 2 and all(np.isfinite(losses)))
     print(f"    stage 1: {rec_a['trainable_params']:,} trainable; optimizer state {shapes}; losses {losses}")
@@ -2827,6 +4110,11 @@ def main() -> int:
         ("W15  Step 4 controls: one key each, as claimed [next steps, Step 4]", w15_step4_controls),
         ("W16  T360 changes only size, data and budget [train split]", w16_t360),
         ("W17  A10cR5 changes only the recursions     [depth sweep]", w17_a10cr5),
+        ("W29  wave 1 arms differ only as intended    [meeting 2026-11-11]", w29_wave1_arms),
+        ("W30  --drop-modalities removes whole chunks  [wave 1, A0.1]", w30_drop_modalities),
+        ("W34s the compute target: overlays, rule, saved price [B1]", w34s_compute_target),
+        ("W32  the init comparison: nc arms as intended [2026-11-14]", w32_init_comparison_arms),
+        ("W33  stage 1 freezes, handoff, stage 2      [init comparison, nc]", w33_nc_stages),
         ("W19  CLEVR-init arms differ only as intended [CLEVR init]", w19_clevr_init_arms),
         ("W20  stage 1 freezes, handoff, stage 2      [CLEVR init]", w20_clevr_stages),
         ("W22  LLM-init arms differ only as intended  [LLM init]", w22_smollm_init_arms),
@@ -2848,6 +4136,9 @@ def main() -> int:
         checks.append(("W26  the router-only pass is the router    [B0]", w26_router_capture))
         checks.append(("W27  a random router's target scope        [B0 Step 6]", w27_random_target_scope))
         checks.append(("W28  a depth table is what it claims       [B0 Step 5]", w28_depth_table))
+        checks.append(("W31  per-update depth shares, training unchanged [wave 1]", w31_depth_shares))
+        checks.append(("W34  the compute target: layer, pretrain.py, resume [B1]", w34_compute_target))
+        checks.append(("W35  the warm start: exact continuation, fresh router [B1]", w35_warm_start))
 
     results = []
     for title, fn in checks:

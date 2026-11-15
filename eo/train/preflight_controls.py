@@ -25,6 +25,13 @@ Multi-GPU (2026-10-20, `--gpus N`): the visible-device count, the scope (RCP,
 pretraining only), the batch and eval division, a resume at another GPU split or
 per-device batch, `resolve_n` on fake inventories, and `distributed.check_launch`
 (the DataParallel guard in pretrain.py), each with a case that must fire.
+
+Coords (2026-11-12, `check_coords`): every model trained from now on is without
+Coords (Enric, worklog §5). The base config still lists it, so the baselines run
+it with the six image modalities (NO_COORDS). On the shipped configs, a new run on
+a Coords arm, on the base config, on a null or empty list, with --force, or with
+an exemption that gives no reason must fire; the Coords-free overlays, a resume,
+an exemption with a reason and a BEN run must pass.
 """
 from __future__ import annotations
 
@@ -35,10 +42,15 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from eo.data.eo_vocab import IMAGE_MODALITIES
 from eo.train.preflight import PreflightContext, run_checks
 
 REPO = Path(__file__).resolve().parent.parent.parent
 CONFIG = REPO / "conf/pretrain_vision/eo_terramesh/terramesh_mor_token.yaml"
+
+#: A known-good NEW run lists the six image modalities. Since 2026-11-12 (Enric, worklog §5)
+#: check_coords refuses a new run on the base config's own list, which holds Coords.
+NO_COORDS: Dict[str, object] = {"multimodal.active_modalities": list(IMAGE_MODALITIES)}
 
 #: A known-good environment, independent of whatever the caller's shell says --
 #: otherwise a control could "fire" because the ambient environment was already
@@ -344,7 +356,7 @@ def main(argv=None) -> int:
     occupied.mkdir()
     (occupied / "checkpoint-1").touch()
 
-    baseline = _results(GOOD_ENV)
+    baseline = _results(GOOD_ENV, overrides=NO_COORDS)
     print("baseline (every check must pass):")
     bad = [k for k, v in baseline.items() if not v]
     print("  " + ("all pass" if not bad else f"BROKEN BASELINE -- failing: {bad}"))
@@ -448,7 +460,7 @@ def main(argv=None) -> int:
     rcp = tmp / "rcp"
     rcp_env = _env(MOR_EO_RCP=str(rcp), MOR_SAVE_DIR=str(rcp / "runs"), HF_HOME=str(rcp / "hf"),
                    WANDB_DIR=str(rcp / "runs/wandb"), WANDB_MODE="offline")
-    rcp_base = _results(rcp_env, gpu_alias="a100")
+    rcp_base = _results(rcp_env, gpu_alias="a100", overrides=NO_COORDS)
     if not all(rcp_base.values()):
         print(f"  BROKEN a100 BASELINE -- failing: {[k for k, v in rcp_base.items() if not v]}")
         return 1
@@ -467,7 +479,7 @@ def main(argv=None) -> int:
     izar = tmp / "izar"
     izar_env = _env(MOR_EO_IZAR=str(izar), MOR_SAVE_DIR=str(izar / "runs"), HF_HOME=str(izar / "hf"),
                     WANDB_DIR=str(izar / "runs/wandb"), WANDB_MODE="offline")
-    izar_base = _results(izar_env, gpu_alias="v100")
+    izar_base = _results(izar_env, gpu_alias="v100", overrides=NO_COORDS)
     if not all(izar_base.values()):
         print(f"  BROKEN v100 BASELINE -- failing: {[k for k, v in izar_base.items() if not v]}")
         return 1
@@ -857,6 +869,122 @@ def main(argv=None) -> int:
     else:
         print(f"\n(temporal: the shipped-arm positives skipped, no {real_base} on this machine)")
     ci_pos += t_pos
+
+    # --- Coords (2026-11-12). Enric: every model trained from now on is without Coords (worklog §5). The
+    # base config still lists it, so an overlay that forgets multimodal.active_modalities trains on Coords,
+    # exit 0, and so does a null or empty list (the dataset's default holds Coords). A resume keeps the
+    # modalities its run started with (the 10x extensions on RCP), an exemption gives its reason (worklog
+    # §4 item 62), and a BEN run reads S2L2A and S1GRD whatever list it inherits. The shipped configs
+    # throughout: the guard is about what the overlays compose to. ---
+    a10c, a10cnc = eo_cfg / "arm_a10c_mor.yaml", eo_cfg / "arm_a10cnc_mor.yaml"
+    exempt = lambda reason: {"+multimodal.coords_exempt": reason}
+    reason = "worklog item 62: a control"     # as a Hydra override: no comma, no parenthesis
+    resumed = dict(run_dir=ck["mor"], resuming=True, allow_existing=True)
+    cases += [(label, "coords", kw) for label, kw in [
+        ("coords: arm_a10c_mor, a new run",                dict(env=GOOD_ENV, config=a10c)),
+        ("coords: the base config as it is",               dict(env=GOOD_ENV)),
+        ("coords: arm_a10c_mor with --force (no --resume)", dict(env=GOOD_ENV, config=a10c, run_dir=occupied,
+                                                                allow_existing=True)),
+        ("coords: list null (the default holds Coords)",   dict(env=GOOD_ENV, config=_broken_config(
+            tmp, multimodal__active_modalities=None))),
+        ("coords: list empty (the default holds Coords)",  dict(env=GOOD_ENV, config=_broken_config(
+            tmp, multimodal__active_modalities=[]))),
+        ("coords: arm_a10cnc_mor with its list nulled",    dict(env=GOOD_ENV, config=a10cnc,
+                                                                overrides={"multimodal.active_modalities": None})),
+        ("coords: exemption, an empty reason",             dict(env=GOOD_ENV, config=a10c, overrides=exempt(""))),
+        ("coords: exemption, a blank reason",              dict(env=GOOD_ENV, config=_broken_config(
+            tmp, multimodal__coords_exempt="   "))),
+        ("coords: exemption true, no reason",              dict(env=GOOD_ENV, config=a10c, overrides=exempt(True))),
+        ("coords: exemption, empty reason, on a resume",   dict(env=GOOD_ENV, config=a10c, overrides=exempt(""),
+                                                                **resumed)),
+        ("coords: T360-T's arm, a new run",                tt()),
+    ]]
+    t_exempt = _results(**tt(**exempt(reason)))
+    ci_pos += [(label, "coords", res) for label, res in [
+        ("coords: arm_a10cnc_mor, a new run",              _results(env=GOOD_ENV, config=a10cnc)),
+        ("coords: arm_a10c_mor resumed",                   _results(env=GOOD_ENV, config=a10c, **resumed)),
+        ("coords: arm_a10c_mor exempt, with a reason",     _results(env=GOOD_ENV, config=a10c, overrides=exempt(reason))),
+        ("coords: T360-T's arm exempt, with a reason",     t_exempt),
+        ("coords: BEN b10c_lora (inherits the list)",      _results(env=GOOD_ENV, config=REPO / "conf/pretrain_vision/eo_ben/b10c_lora.yaml")),
+    ] + [
+        (f"coords: {arm} resumed (as on RCP)", _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml", run_dir=ck["vanilla"],
+                                                        resuming=True, allow_existing=True))
+        for arm in ("arm_b10ctr_x10_vanilla", "arm_b10c11tr_x10_vanilla")
+    ] + [
+        (f"coords: {arm}, a new run", _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml"))
+        for arm in ("arm_b10cnc_vanilla", "arm_a10cb3trnc_mor", "arm_a10cb3trs2nc_mor",
+                    "arm_a10crb3trnc_random", "arm_a10crb3trs2nc_random")
+    ]]
+    # An exemption is not data: temporal_data.json records five multimodal keys, so adding one to a run's
+    # config leaves its data record as it was, on a new run and on a resume.
+    ci_pos += [
+        ("temporal data: T360-T exempt, a new run",        "temporal data", t_exempt),
+        ("temporal data: exemption added on a resume",     "temporal data",
+         _results(**tt(run_dir=data_run("td_exempt"), resuming=True, **exempt(reason)))),
+    ]
+
+    # --- the compute target (Paper B intervention 1, B1, 2026-11-15; check_compute_target). A broken block, a
+    # random router, another router function or alpha, the max-depth warm-up, two GPUs; and on a resume, a checkpoint
+    # without compute_target.json (the price would restart silently), with one written under another target or for
+    # another step, and a balancing run resuming a compute-target checkpoint. ---
+    from eo.train import compute_target as CTm
+    ct_good = {"target": 1.8, "gain": 0.01, "proportional": 0.5, "price_init": 0.0}
+    ct_blk = CTm.read_block({"mor": {"token": {"balancing": "compute", "compute": ct_good}},
+                             "recursive": {"num_recursion": 3}})
+
+    def ct_cfg(**over):
+        kw = {"mor__token__balancing": "compute", "mor__token__compute": dict(ct_good),
+              "multimodal__active_modalities": list(IMAGE_MODALITIES)}
+        kw.update(over)
+        return _broken_config(tmp, **kw)
+
+    def ct_ckpt(name, write=True, step=20, file_step=None, **blk_over):
+        d = tmp / f"run_ct_{name}"
+        c = _fake_checkpoint(d, "mor", step=step)
+        (c / "trainer_state.json").write_text(json.dumps({"train_batch_size": 4, "global_step": step}))
+        if write:
+            CTm.write_state(c, {**ct_blk, **blk_over}, {"lam": 0.01, "e_last": -0.05},
+                            step if file_step is None else file_step, origin="preflight control")
+        return d
+
+    def ct_resume(run, config):
+        return dict(env=GOOD_ENV, run_dir=run, resuming=True, allow_existing=True, config=config)
+
+    ct_ok = ct_cfg()
+    cases += [(label, "compute target", kw) for label, kw in [
+        ("compute: no mor.token.compute block",        dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute=None))),
+        ("compute: gain missing",                      dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={
+            k: v for k, v in ct_good.items() if k != "gain"}))),
+        ("compute: a misspelt key (gian)",             dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={
+            **ct_good, "gian": 0.01}))),
+        ("compute: target 1.0 (the floor)",            dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_good, "target": 1.0}))),
+        ("compute: target 3.0 (the ceiling)",          dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_good, "target": 3.0}))),
+        ("compute: gain 0",                            dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_good, "gain": 0.0}))),
+        ("compute: on a random router",                dict(env=GOOD_ENV, config=ct_cfg(mor__rand_router=True))),
+        ("compute: a sigmoid router",                  dict(env=GOOD_ENV, config=ct_cfg(mor__token__router_func="sigmoid"))),
+        ("compute: alpha 0.5",                         dict(env=GOOD_ENV, config=ct_cfg(mor__token__alpha=0.5))),
+        ("compute: with bal_warmup_step",              dict(env=GOOD_ENV, config=ct_cfg(mor__token__bal_warmup_step=10))),
+        ("compute: --gpus 2",                          dict(env=_env(CUDA_VISIBLE_DEVICES="0,1"), config=ct_ok, n_gpus=2)),
+        ("compute: resume, no compute_target.json",    ct_resume(ct_ckpt("nofile", write=False), ct_ok)),
+        ("compute: resume, the file's target is 2.0",  ct_resume(ct_ckpt("other_target", target=2.0), ct_ok)),
+        ("compute: resume, the file is for step 10",   ct_resume(ct_ckpt("other_step", file_step=10), ct_ok)),
+        ("compute: balancing run on a ct checkpoint",  ct_resume(ct_ckpt("as_balancing"),
+                                                                 _broken_config(tmp, multimodal__active_modalities=list(IMAGE_MODALITIES)))),
+    ]]
+    ci_pos += [(label, "compute target", res) for label, res in [
+        ("compute: a good block, a new run",           _results(env=GOOD_ENV, config=ct_ok)),
+        ("compute: resumed with its own file",         _results(**ct_resume(ct_ckpt("good"), ct_ok))),
+        ("compute: n/a on a balancing run",            _results(env=GOOD_ENV, overrides=NO_COORDS)),
+    ] + [
+        (f"compute: {arm} as shipped (replays only)", _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml",
+                                                               run_dir=ct_ckpt(f"ship_{arm}", **{
+                                                                   "target": 2.0 if "ct20" in arm else 1.8}),
+                                                               resuming=True, allow_existing=True))
+        for arm in ("arm_a10cs2ct18_mor", "arm_a10cs2ct20_mor", "arm_a10cct18_mor", "arm_a10cct20_mor")
+    ] + [
+        (f"compute: {arm} as shipped, a new run (arm B)", _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml"))
+        for arm in ("arm_a10cb3trncct18_mor", "arm_a10cb3trs2ncct18_mor")
+    ]]
 
     print("\nnegative controls (each must FIRE):")
     fired = 0

@@ -260,7 +260,178 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
         # would have been read as a result. See lm_dataset/modality_registry.py.
         self.init_per_modality(cfg)      # shared with EOTrainer, see the mixin
         self.cfg = cfg
-        
+        self._eo_depth_setup()
+        self._ct_setup()
+
+    # ---- EO: per-update depth shares by modality (wave 1, 2026-11-11; Paper B plan, B1) ----------------------
+    # B0 found that a learned router's allocation at one checkpoint is one draw (a tied modality swings whole
+    # between two depths every 3-4 updates), so criteria 1-2 are read on time means. This writes, at EVERY update,
+    # how many positions of the training batch took each depth, per class, to <output_dir>/depth_shares.jsonl,
+    # with no extra forward pass. The classes are B0's label frame (eo/routing/telemetry.capture_router): position
+    # t counts under the modality of the token it predicts (t + 1) when that is a body token, under "delim" when t
+    # is a real token whose label is a BO/EO (or the padding after the last EO), under "pad" on padding; the last
+    # position predicts nothing and is not counted. The MoR layer counts its own top-1 decision under no_grad, so
+    # training is unchanged (gate W31). EO single-date token-choice runs only; CLEVR runs are untouched. A resume
+    # appends: a reader keeps the last line of each step.
+    _EO_DEPTH_FILE = "depth_shares.jsonl"
+
+    def _eo_depth_setup(self):
+        self._eo_depth = None
+        cfg = self.cfg
+        if not (cfg.get("dataset") == "terramesh_multimodal" and cfg.mor.get("enable", False)
+                and cfg.mor.get("type") == "token"):
+            return
+        layers = [m for m in self.model.modules() if getattr(m, "mor_type", None) == "token"]
+        ids = sorted(self.id_to_modality)
+        if len(layers) != 1 or not ids or ids != list(range(1, len(ids) + 1)):
+            raise ValueError(f"per-update depth shares need one token-choice MoR layer and modality ids 1..n: "
+                             f"found {len(layers)} layer(s) and ids {ids}")
+        n = len(ids)
+        self._eo_depth = {
+            "layer": layers[0],
+            "classes": ["none"] + [self.id_to_modality[i] for i in ids] + ["delim", "pad"],
+            "n_rec": int(cfg.recursive.num_recursion),
+            "acc": None,
+            "soft": None,       # B1: per-class sums of the router's soft expected depth (learned routers only)
+            "started": False,
+        }
+        self._eo_depth["delim"], self._eo_depth["pad"] = n + 1, n + 2
+
+    def _eo_position_class(self, modality_ids, attention_mask):
+        """(bs, L) class of each position in B0's label frame; -1 at the last position."""
+        d = self._eo_depth
+        lab = modality_ids[:, 1:]
+        real = attention_mask[:, :-1].bool()
+        cls = torch.full_like(modality_ids, -1)
+        cls[:, :-1] = torch.where(lab > 0, lab, torch.where(real, torch.full_like(lab, d["delim"]),
+                                                            torch.full_like(lab, d["pad"])))
+        return cls
+
+    def _eo_depth_flush(self):
+        """Write one line for the update that just ended (called once per update, from _maybe_log_save_evaluate,
+        and again at an epoch's end).
+
+        ⚠ B1 (2026-11-15): an epoch whose length is not a whole number of updates (val: 330.75) ends on a partial
+        accumulation chunk that takes no optimizer step; HF folds its gradients into the next epoch's first update
+        (CLAUDE.md, Resume). Its counts fold the same way: no line is written while the global step has not moved
+        since the last one, so they go into the next update's line. Seen in B1's first smoke, where the epoch-end call
+        wrote a second line for step 1654 (48 micro-batches) and a reader keeping the last line per step lost the real
+        update. The train split never ends an epoch within a run, so its files are unchanged."""
+        d = self._eo_depth
+        if d is None or d["acc"] is None:
+            return
+        if d.get("last_step") == int(self.state.global_step):
+            return
+        d["last_step"] = int(self.state.global_step)      # on every rank, before the gather, so all ranks agree
+        acc, d["acc"] = d["acc"], None
+        soft, d["soft"] = d["soft"], None
+        if self.args.world_size > 1:
+            acc = self._nested_gather(acc.unsqueeze(0)).sum(0)
+            if soft is not None:
+                soft = self._nested_gather(soft.unsqueeze(0)).sum(0)
+        if not self.is_world_process_zero():
+            return
+        import json as _json
+        ct = getattr(self, "_ct", None)
+        path = os.path.join(self.args.output_dir, self._EO_DEPTH_FILE)
+        os.makedirs(self.args.output_dir, exist_ok=True)
+        with open(path, "a") as f:
+            if not d["started"]:
+                hdr = {
+                    "classes": d["classes"], "num_recursion": d["n_rec"], "depth": "passes 1..num_recursion",
+                    "frame": "label_mod: position t counted under the class of the token it predicts (t+1); "
+                             "delim = a real token predicting BO/EO or padding; pad = padding; last position not counted",
+                    "start_global_step": int(self.state.global_step) - 1, "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                if soft is not None:
+                    hdr["soft"] = ("per class, the sum over its counted positions of the router's soft expected depth "
+                                   "sum_d d*p_d; divide by the class's counts for its mean (B1, 2026-11-15)")
+                if ct is not None:
+                    hdr["compute_target"] = dict(ct["block"], rule="eo/train/compute_target.py: ct.price = the price the "
+                                                 "update trained under, ct.soft_mean = its body positions' soft mean, "
+                                                 "ct.next = the price after it")
+                f.write(_json.dumps({"header": hdr}) + "\n")
+                d["started"] = True
+            row = {"step": int(self.state.global_step), "counts": acc.tolist()}
+            if soft is not None:
+                row["soft"] = [round(float(v), 4) for v in soft.tolist()]
+            if ct is not None and ct["last"] is not None:
+                row["ct"] = ct["last"]
+                ct["last"] = None
+            f.write(_json.dumps(row) + "\n")
+
+    # ---- EO: the compute target (Paper B intervention 1; B1, 2026-11-15) ----------------------------------------------
+    # mor.token.balancing "compute" (eo/train/compute_target.py): no balancing loss; each micro-batch's loss gains
+    # price * (its body positions' soft mean depth) / accumulation steps, so an update trains under price * m; after the
+    # optimizer step the controller moves in proportion to the update's gap m - target (compute_target.step). The soft
+    # depth is the MoR layer's eo_soft_depth, on the classes the depth shares hand it. The controller is written to
+    # <checkpoint>/compute_target.json at every save (_save_rng_state) and read back on a resume, which is refused
+    # without it (_ct_load). Gate W34 in eo/scripts/verify_phase3.py.
+    def _ct_setup(self):
+        from eo.train import compute_target as CT
+        self._ct = None
+        block = CT.read_block(self.cfg)
+        if block is None:
+            return
+        problems = CT.config_problems(self.cfg, n_gpus=self.args.world_size)
+        if getattr(self, "_eo_depth", None) is None:
+            problems.append("the per-position classes of the per-update depth shares (EO single-date token-choice runs)")
+        if problems:
+            raise ValueError("compute target: " + "; ".join(problems))
+        self._ct = {"block": block, "state": CT.initial_state(block), "sum": None, "cnt": None, "term": None,
+                    "last": None, "log": [0.0, 0]}
+
+    def _ct_term(self):
+        """This micro-batch's priced term: price * its body positions' soft mean / accumulation steps."""
+        from eo.train import compute_target as CT
+        ct = self._ct
+        term, ct["term"] = ct["term"], None
+        if term is None:
+            raise RuntimeError("compute target: no soft depth from this micro-batch's forward")
+        # The LM loss of a micro-batch is already its share of the update (num_items_in_batch) when the model takes
+        # loss kwargs, and training_step divides total_loss by the accumulation steps itself when it does not.
+        div = self.args.gradient_accumulation_steps if self.model_accepts_loss_kwargs else 1
+        return CT.price(ct["block"], ct["state"]) * term / div
+
+    def _ct_update(self, skipped: bool):
+        """After an optimizer step: the update's soft mean over all its micro-batches, and the controller's step.
+        A step the grad scaler skipped moves nothing, so the controller does not move either (no wind-up)."""
+        from eo.train import compute_target as CT
+        ct = self._ct
+        if ct["sum"] is None:
+            raise RuntimeError("compute target: an update ended with no soft depth accumulated")
+        m = float(ct["sum"] / ct["cnt"])
+        used = CT.price(ct["block"], ct["state"])
+        if not skipped:
+            ct["state"] = CT.step(ct["block"], ct["state"], m)
+        ct["last"] = {"price": used, "soft_mean": m, "next": CT.price(ct["block"], ct["state"]),
+                      "skipped": bool(skipped)}
+        ct["sum"] = ct["cnt"] = None
+        ct["log"][0] += m
+        ct["log"][1] += 1
+
+    def _ct_load(self, checkpoint):
+        """On a resume: the controller saved with the checkpoint, refused if absent or under other settings. A
+        checkpoint that carries one is a compute-target run's, and a run without the compute target may not resume it."""
+        if checkpoint is None:
+            return
+        from eo.train import compute_target as CT
+        ct = getattr(self, "_ct", None)
+        if ct is None:
+            if os.path.isfile(os.path.join(checkpoint, CT.FILE)):
+                raise RuntimeError(f"{checkpoint} carries {CT.FILE}: it is a compute-target run's checkpoint, and "
+                                   f"this run has no compute target")
+            return
+        ct["state"] = CT.read_state(checkpoint, ct["block"])
+        logger.info(f"compute target: controller restored from {checkpoint}: {ct['state']}, "
+                    f"next price {CT.price(ct['block'], ct['state']):.6g}")
+
+    def _save_rng_state(self, output_dir):
+        super()._save_rng_state(output_dir)
+        ct = getattr(self, "_ct", None)
+        if ct is not None and self.args.should_save:
+            from eo.train import compute_target as CT
+            CT.write_state(output_dir, ct["block"], ct["state"], self.state.global_step, origin="MoRTrainer save")
+
     def create_optimizer(self):
         """
         Setup the optimizer.
@@ -687,6 +858,7 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
         self._load_optimizer_and_scheduler(resume_from_checkpoint)
         self._load_scaler(resume_from_checkpoint)
         self._load_training_step(resume_from_checkpoint)
+        self._ct_load(resume_from_checkpoint)       # EO compute target (B1): its controller, or a refusal
         if self.cfg.mor.type == "expert":
             if self.cfg.mor.expert.sampling == "aux_router":
                 self._load_sam_optimizer_and_sam_scheduler(resume_from_checkpoint)
@@ -938,12 +1110,15 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                                 with torch.no_grad():
                                     avg_expert_ratio = torch.mean(self.bal_tr_ratio).expand(self.bal_tr_ratio.numel())
                                     eps_i = avg_expert_ratio - self.bal_tr_ratio
-                                        
+
                                     if self.cfg.recursive.sharing == "cycle":
                                         self.model.model.layers.router_bias.data += self.cfg.mor.token.u * torch.sign(eps_i)
                                     elif self.cfg.recursive.sharing == "middle_cycle":
                                         self.model.model.layers[1].router_bias.data += self.cfg.mor.token.u * torch.sign(eps_i)
-                                
+                            elif getattr(self, "_ct", None) is not None:
+                                # EO compute target (B1): the controller steps on this update's soft mean
+                                self._ct_update(self.accelerator.optimizer_step_was_skipped)
+
                             self.bal_tr_entropy += -torch.sum(self.bal_tr_ratio * torch.log(self.bal_tr_ratio + 1e-10))
                             self.bal_tr_ratio -= self.bal_tr_ratio
 
@@ -1105,6 +1280,9 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                 total_loss = loss + coeff * balancing_loss
             elif self.cfg.mor.token.balancing == "loss_free":
                 total_loss = loss
+            elif self.cfg.mor.token.balancing == "compute":
+                # EO compute target (B1, eo/train/compute_target.py): the price on the soft depth, no balancing loss
+                total_loss = loss + self._ct_term()
         else:
             raise ValueError(f"Invalid MOR type: {self.cfg.mor.type}")
             
@@ -1208,8 +1386,37 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                 loss_kwargs["num_items_in_batch"] = num_items_in_batch
             inputs = {**inputs, **loss_kwargs}
 
-        outputs = model(**inputs)
-        
+        # EO per-update depth shares: training forwards only (never an eval's), see _eo_depth_setup.
+        eo_depth = self._eo_depth if (getattr(self, "_eo_depth", None) is not None and not return_outputs
+                                      and model.training and modality_ids is not None) else None
+        if eo_depth is not None:
+            layer = eo_depth["layer"]
+            layer.eo_n_classes = len(eo_depth["classes"])
+            layer.eo_position_class = self._eo_position_class(modality_ids, inputs["attention_mask"])
+            layer.eo_depth_counts = layer.eo_soft_by_class = layer.eo_soft_depth = None
+            try:
+                outputs = model(**inputs)
+            finally:
+                layer.eo_position_class = None
+            if layer.eo_depth_counts is None:
+                raise RuntimeError("the MoR layer counted no depths on a training forward")
+            counts, layer.eo_depth_counts = layer.eo_depth_counts, None
+            eo_depth["acc"] = counts if eo_depth["acc"] is None else eo_depth["acc"] + counts
+            soft, layer.eo_soft_by_class = layer.eo_soft_by_class, None
+            if soft is not None:
+                eo_depth["soft"] = soft if eo_depth["soft"] is None else eo_depth["soft"] + soft
+            ct = getattr(self, "_ct", None)
+            if ct is not None:      # EO compute target (B1): this micro-batch's body soft depth, with its graph
+                sd, layer.eo_soft_depth = layer.eo_soft_depth, None
+                if sd is None:
+                    raise RuntimeError("compute target: the MoR layer left no soft depth on a training forward")
+                s, n = sd
+                ct["term"] = s / n.clamp(min=1.0)
+                ct["sum"] = s.detach().double() if ct["sum"] is None else ct["sum"] + s.detach().double()
+                ct["cnt"] = n.detach().double() if ct["cnt"] is None else ct["cnt"] + n.detach().double()
+        else:
+            outputs = model(**inputs)
+
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
         if self.args.past_index >= 0:
@@ -1280,6 +1487,7 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
             balancing_loss, balancing_ratio, router_z_loss, per_modality_loss)
 
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
+        self._eo_depth_flush()          # once per update: the depth shares of the update that just ended
         if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
             if is_torch_xla_available():
                 xm.mark_step()
@@ -1326,6 +1534,13 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                 logs["balancing_loss"] = round(bal_tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
                 logs["balancing_entropy"] = round(bal_tr_entropy_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
                 logs["router_z_loss"] = round(router_z_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+                ct = getattr(self, "_ct", None)
+                if ct is not None:      # EO compute target (B1): the price ahead, the window's mean soft body depth
+                    from eo.train import compute_target as CT
+                    logs["ct_price"] = round(CT.price(ct["block"], ct["state"]), 6)
+                    if ct["log"][1]:
+                        logs["ct_soft_depth"] = round(ct["log"][0] / ct["log"][1], 4)
+                    ct["log"] = [0.0, 0]
             
             # ⚠ The per-modality drain used to sit here. It now lives in
             # PerModalityLossMixin.log(), which self.log(logs, start_time)

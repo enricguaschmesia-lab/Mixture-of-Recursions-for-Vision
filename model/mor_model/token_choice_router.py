@@ -55,6 +55,21 @@ class MoRLlamaDecoderLayer(nn.Module):
         if self.cfg.mor.token.balancing == "loss_free":
             self.register_parameter("router_bias", torch.nn.Parameter(torch.zeros(self.num_recursion), requires_grad=False))
                 
+        # EO (wave 1, 2026-11-11): each position's modality class, set by the EO trainer for the duration of
+        # a TRAINING forward (util/trainer_pt.py, MoRTrainer._eo_depth_*), and the per-(class, depth) counts of
+        # this layer's routing decision on that batch. Plain attributes: no parameter, no buffer, nothing in
+        # the state dict, and nothing in the forward pass reads them (gate W31: logits bit for bit).
+        self.eo_position_class = None   # (bs, seq_len) long; -1 = not counted
+        self.eo_n_classes = 0
+        self.eo_depth_counts = None     # (eo_n_classes, num_recursion) long, after a training forward
+        # EO (B1, 2026-11-15): on the same forwards, a learned router also leaves the per-class sums of its SOFT
+        # expected depth sum_d d * p_d (no grad, for depth_shares.jsonl), and with mor.token.balancing "compute"
+        # (Paper B intervention 1, eo/train/compute_target.py) the sum over BODY positions WITH its graph and their
+        # count, which the trainer prices. Classes 1 .. eo_n_classes - 3 are the modalities, then delim, pad
+        # (MoRTrainer._eo_depth_setup). Plain attributes, as above: the forward pass reads none of them.
+        self.eo_soft_by_class = None    # (eo_n_classes,) float64, no grad
+        self.eo_soft_depth = None       # (sum over body positions, count), "compute" only
+
     def reset_parameters(self):
         for block in self.block_list:
             if isinstance(block, nn.ModuleList):
@@ -259,6 +274,30 @@ class MoRLlamaDecoderLayer(nn.Module):
         weights = torch.gather(_router_probs, dim=-1, index=top_expert_indices) # [bs, seq_len, 1]
         top_expert_indices = top_expert_indices.squeeze(-1)  # [bs, seq_len]
         
+        # EO per-update depth shares (see __init__): count the depth each position actually takes, by its class.
+        # A fixed-size scatter_add_, not bincount or a boolean mask, so the count never syncs the device.
+        if self.training and self.eo_position_class is not None:
+            with torch.no_grad():
+                cls = self.eo_position_class
+                flat = (cls.clamp(min=0) * self.num_recursion + top_expert_indices).reshape(-1)
+                self.eo_depth_counts = torch.zeros(
+                    self.eo_n_classes * self.num_recursion, dtype=torch.long, device=flat.device
+                ).scatter_add_(0, flat, (cls >= 0).long().reshape(-1)).view(self.eo_n_classes, self.num_recursion)
+            if not self.cfg.mor.rand_router:
+                # soft expected depth per position in passes 1..Nr, from the router's own probabilities (before any
+                # loss-free bias); the normaliser is 1 at alpha 1.0 and is kept so the number is a depth regardless.
+                # Only the compute target keeps its graph; for every other run it is a no-grad reading.
+                priced = self.cfg.mor.token.balancing == "compute"
+                with torch.set_grad_enabled(priced and torch.is_grad_enabled()):
+                    p = _router_probs.float()
+                    soft = (p * torch.arange(1, self.num_recursion + 1, device=p.device, dtype=p.dtype)).sum(-1) / p.sum(-1)
+                with torch.no_grad():
+                    self.eo_soft_by_class = torch.zeros(self.eo_n_classes, dtype=torch.float64, device=p.device
+                        ).scatter_add_(0, cls.clamp(min=0).reshape(-1), (soft.detach().double() * (cls >= 0)).reshape(-1))
+                if priced:
+                    body = ((cls >= 1) & (cls <= self.eo_n_classes - 3)).to(soft.dtype)
+                    self.eo_soft_depth = ((soft * body).sum(), body.sum())
+
         for index, block in enumerate(self.block_list): 
                         
             if 'kv_sharing' in self.cfg and self.cfg.kv_sharing.enable:
@@ -359,7 +398,8 @@ class MoRLlamaDecoderLayer(nn.Module):
                 f_i = self.num_recursion * balancing_ratio
                 balancing_loss = sum(P_i * f_i) / (kwargs["num_items_in_batch"] / bs / seq_len)
                 
-            elif self.cfg.mor.token.balancing == "loss_free":
+            elif self.cfg.mor.token.balancing in ("loss_free", "compute"):
+                # "compute" (EO, B1): no balancing loss; the price on the soft depth is added by the trainer
                 balancing_loss = None
                 balancing_ratio = torch.bincount(top_expert_indices.view(-1), minlength=self.num_recursion) / (bs * seq_len)
                 

@@ -34,6 +34,14 @@ raises; each one produces a run that trains happily and is worthless:
     whose settings the dataset would refuse once the pod has started, whose eval
     sets do not split over its GPUs, or whose resume would change its data
     (temporal_data.json)                                (eo/data/temporal_dataset.py)
+  * a new run on Coords        -- every model trained since 2026-11-12 is without
+                                  Coords (Enric; worklog §5), but the base config
+                                  still lists it, so an overlay that forgets
+                                  multimodal.active_modalities, or leaves it empty,
+                                  trains on Coords                  (check_coords)
+  * a compute-target run (Paper B intervention 1) with a broken block, on a
+    random router or two GPUs, or resumed without its saved price, which would
+    restart at its initial value               (eo/train/compute_target.py)
 
 They are cheap to check and expensive to discover on day three of a run, so the
 launcher checks all of them before `pretrain.py` is reached.
@@ -489,6 +497,102 @@ def check_config(ctx: PreflightContext) -> CheckResult:
     return CheckResult("config", True,
                        f"{path.name} (vocab {vocab}, precision {cfg.get('precision')}, "
                        f"max_length {cfg.get('max_length')})")
+
+
+#: Enric's rule of 2026-11-12 (worklog §5, "Coords, every model"): every model trained from then on is
+#: without Coords. Its vocabulary rows stay (eo_vocab's layout is a one-way door) and never occur.
+COORDS = "Coords"
+#: `multimodal.coords_exempt: "<reason>"`, in an arm's overlay: a case worklog §4 item 62 decided for Coords.
+COORDS_EXEMPT = "coords_exempt"
+
+
+def _data_modalities(cfg: dict) -> Tuple[Optional[List[str]], str]:
+    """(the modalities a run's data holds, read as its dataset builder reads them; where they come from).
+
+    None for a dataset that is not EO's (check_config reports it). A BEN fine-tune takes its inputs from
+    ben_vocab and never reads multimodal.active_modalities, which its overlay inherits from TerraMesh's
+    arms, Coords included. TerraMesh's datasets, the temporal stage's included, read an absent, null or
+    empty list as eo_vocab.DEFAULT_ACTIVE_MODALITIES, which holds Coords (TerraMeshTokenDataset).
+    """
+    ds = cfg.get("dataset")
+    if ds == "ben_multimodal":
+        from eo.data.ben_vocab import INPUT_MODALITIES
+        return list(INPUT_MODALITIES.values()), "ben_vocab.INPUT_MODALITIES"
+    if ds not in EO_DATASETS:
+        return None, f"dataset {ds!r} is not EO's (check_config reports it)"
+    listed = (cfg.get("multimodal") or {}).get("active_modalities")
+    if listed:
+        return list(listed), "multimodal.active_modalities"
+    from eo.data.eo_vocab import DEFAULT_ACTIVE_MODALITIES
+    return list(DEFAULT_ACTIVE_MODALITIES), (f"multimodal.active_modalities {listed!r}, so the dataset's "
+                                             f"default")
+
+
+def check_coords(ctx: PreflightContext) -> CheckResult:
+    """A NEW run trains without Coords (Enric, 2026-11-12; worklog §5, "Coords, every model").
+
+    Every model trained from that day on reads the six image modalities only: 990-token sequences, and
+    Coords' vocabulary rows, kept because eo_vocab's layout is a one-way door, never occur. Nothing else
+    enforces it. The base config still lists Coords, since changing that default would change the
+    composed config of every existing arm, the running ones on resume among them. So an overlay that
+    forgets multimodal.active_modalities trains on Coords, exit 0, and so does an absent, null or empty
+    list: the dataset then reads its default, which holds Coords.
+
+      * a new run whose data holds Coords: FAIL. --force is a new run too;
+      * --resume: PASS. A run keeps the modalities it started with, and runs started before the rule
+        keep Coords (the 10x extensions B10c-tr-x10 and B10c-11L-tr-x10: worklog §4 item 62 (1));
+      * `multimodal.coords_exempt: "<reason>"`: PASS, for a case worklog §4 item 62 decided. Put it in
+        the arm's overlay, so that the run's config records why. A reason given on the command line
+        must hold no comma or parenthesis (Hydra's override grammar) and no ": " (main() reads each
+        --override as YAML, which makes it a mapping). An exemption without a reason (empty, blank, or
+        not a string) FAILS, on a resume too;
+      * a BEN fine-tune: n/a. It reads S2L2A and S1GRD (ben_vocab.INPUT_MODALITIES), never the list.
+
+    ⚠ The resume rule cannot tell a continuation from a new stage launched as one: a checkpoint copied
+    into a new run directory and resumed (how the 10x extensions started), or T360-T's full run, which
+    A1 Step 10 plans as arm 2 resumed from checkpoint-1332. Such a launch passes here, so deciding it
+    stays with worklog §4 item 62.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("coords", True, "skipped (config missing; check_config reports it)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    mods, source = _data_modalities(cfg)
+    if mods is None:
+        return CheckResult("coords", True, f"n/a: {source}")
+    exempt = (cfg.get("multimodal") or {}).get(COORDS_EXEMPT)
+    if exempt is not None and not (isinstance(exempt, str) and exempt.strip()):
+        return CheckResult("coords", False,
+                           f"multimodal.{COORDS_EXEMPT} is {exempt!r}: an exemption without a reason",
+                           f"Name the decision behind it (worklog §4 item 62) in the arm's overlay: "
+                           f"multimodal.{COORDS_EXEMPT}: \"<reason>\".")
+    if COORDS not in mods:
+        if cfg.get("dataset") == "ben_multimodal":
+            return CheckResult("coords", True, f"n/a: a BEN run reads {', '.join(mods)} ({source}), "
+                                               f"never multimodal.active_modalities")
+        return CheckResult("coords", True, f"no Coords: {', '.join(mods)} ({source})")
+    if ctx.resuming:
+        return CheckResult("coords", True, f"Coords in {source}; resuming, so the run keeps the modalities "
+                                           f"it started with")
+    if exempt is not None:
+        return CheckResult("coords", True, f"Coords in {source}; exempt: {exempt.strip()}")
+    fix = None
+    if cfg.get("dataset") == "terramesh_temporal":
+        from eo.data.temporal_dataset import SEQUENCE_MODALITIES
+        if COORDS in SEQUENCE_MODALITIES:
+            fix = ("The temporal stage cannot simply drop it: every location sequence holds Coords "
+                   "(temporal_dataset.STATICS),\nand its builder refuses a list without it once the model "
+                   "is built. Dropping Coords there changes A1's design (worklog §4 item 62 (2)).")
+    if fix is None:
+        from eo.data.eo_vocab import IMAGE_MODALITIES
+        fix = (f"List the six image modalities in the arm's overlay, as the -NC overlays do "
+               f"(arm_a10cnc_mor):\n  multimodal: {{active_modalities: [{', '.join(IMAGE_MODALITIES)}]}}")
+    return CheckResult(
+        "coords", False, f"a new run on Coords: {source} is {mods}",
+        f"Every model trained since 2026-11-12 is without Coords "
+        f"(Enric; worklog §5, \"Coords, every model\").\n"
+        f"{fix}\n"
+        f"A case worklog §4 item 62 decided for Coords says so in its overlay: "
+        f"multimodal.{COORDS_EXEMPT}: \"<reason>\".")
 
 
 
@@ -982,6 +1086,50 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
     return CheckResult("pretrain init", True, detail)
 
 
+def check_compute_target(ctx: PreflightContext) -> CheckResult:
+    """Paper B intervention 1 (B1, 2026-11-15; eo/train/compute_target.py): `mor.token.balancing: compute`.
+
+    Each failure here trains happily or dies hours in: a block with a missing or misspelt key, a target outside
+    (1, Nr), a non-positive gain, a random router (nothing to price), another router function or alpha, the max-depth
+    warm-up, gradient checkpointing, more than one GPU (the price is not reduced across ranks), a run whose classes
+    the trainer cannot hand the layer; and on a resume, a checkpoint without compute_target.json (the price would
+    restart at its initial value: a silent transient) or with one written under other settings or for another step.
+    A balancing run resuming a compute-target checkpoint is refused too: it would drop the price silently.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("compute target", True, "skipped (no config)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    from eo.train import compute_target as CT
+    hint = ("mor.token.compute needs exactly target (1 < t < Nr), gain > 0, proportional >= 0, price_init, on a "
+            "learned softmax router at alpha 1.0 on one GPU. A replay's copied checkpoint needs compute_target.json, "
+            "written by its launcher (compute_target.write_state).")
+    try:
+        block = CT.read_block(cfg)
+    except ValueError as e:
+        return CheckResult("compute target", False, str(e).splitlines()[0], hint)
+    ck = _latest_checkpoint(ctx.run_dir) if ctx.resuming else None
+    if block is None:
+        if ck is not None and (ck / CT.FILE).is_file():
+            return CheckResult("compute target", False,
+                               f"{ck.name} carries {CT.FILE} (a compute-target run's), but this run has no compute "
+                               f"target", "Resume it with its own config, or replay it from a copy without the file.")
+        return CheckResult("compute target", True, "n/a (mor.token.balancing is not compute)")
+    problems = CT.config_problems(cfg, n_gpus=ctx.n_gpus)
+    if problems:
+        return CheckResult("compute target", False, "; ".join(problems), hint)
+    detail = (f"target {block['target']:g} passes on body positions, gain {block['gain']:g}, proportional "
+              f"{block['proportional']:g}, price_init {block['price_init']:g}")
+    if ctx.resuming:
+        if ck is None:
+            return CheckResult("compute target", False, f"resuming, but no checkpoint-* under {ctx.run_dir}")
+        try:
+            st = CT.read_state(ck, block)
+        except (RuntimeError, ValueError, OSError) as e:
+            return CheckResult("compute target", False, str(e).splitlines()[0], hint)
+        detail += f"; resumes at price {CT.price(block, st):.6g} ({ck.name})"
+    return CheckResult("compute target", True, detail)
+
+
 def _load_config(path: Path, overrides: Optional[Dict[str, object]] = None) -> dict:
     """The config the RUN will actually see, with CLI overrides applied.
 
@@ -1268,6 +1416,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_run_dir,
     check_disk,
     check_config,
+    check_coords,
     check_batch_division,
     check_eval_split,
     check_token_set,
@@ -1277,6 +1426,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_ben_data,
     check_init_from,
     check_pretrain_init,
+    check_compute_target,
     check_gpu_free_memory,
     check_resume_checkpoint,
     check_gpu_identity,      # last: the only one that touches CUDA
