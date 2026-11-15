@@ -279,6 +279,10 @@ def main(cfg: DictConfig):
 
     if fixed_save_steps is not None:
         callbacks.append(ScalingLawsSaveCallback(fixed_save_steps,))
+    if cfg.get("fixed_eval_steps") and eval_dataset is not None:
+        # Extra held-out evals at fixed steps, for learning curves dense where they move (eo/train/fixed_eval.py).
+        from eo.train.fixed_eval import FixedEvalCallback
+        callbacks.append(FixedEvalCallback(cfg.fixed_eval_steps))
     if hasattr(train_dataset, "epoch_callback"):
         # The temporal stage takes its epoch from global_step // steps_per_epoch: SetEpochCallback
         # rounds state.epoch, which names the next epoch on a resume past mid-epoch (A1 finding 18).

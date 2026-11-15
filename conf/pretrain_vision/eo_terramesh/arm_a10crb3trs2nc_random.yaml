@@ -1,0 +1,22 @@
+# @package _global_
+#
+# ARM A10cR-b3-tr-s2-NC — the random router on the 1 + 3 + 1 block, TRAIN split, without Coords, SEED 43.
+# The Coords-free cell's own seed gap (worklog §4 item 59, 2026-11-12; see arm_a10crb3trnc_random.yaml).
+#
+# ┌── THE DIFF FROM A10cR-b3-tr-NC (arm_a10crb3trnc_random), IN FULL ──────────┐
+# │                  A10cR-b3-tr-NC   A10cR-b3-tr-s2-NC (this)                  │
+# │   seed           42               43                                        │
+# │ ...from A10cR-b3-tr-s2 (arm_a10crb3trs2_random): the active modalities only;│
+# │ from A10c-b3-tr-s2-NC (arm_a10cb3trs2nc_mor): mor.rand_router only.         │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts all three.         │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   launch (RCP, course project):
+#     jobs/train.sh mor10crb3trs2nc eo_terramesh/arm_a10crb3trs2nc_random mor10crb3trs2nc_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+
+defaults:
+  - arm_a10crb3trnc_random
+  - _self_
+
+seed: 43

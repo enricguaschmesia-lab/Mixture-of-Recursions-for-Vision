@@ -1,0 +1,38 @@
+# @package _global_
+#
+# ARM B10c-tr-x10 — A0.2's 10x extension of B10c on the TRAIN split (wave 1 of the meeting of
+# 2026-11-11; Paper A, A0.2). B10c-tr failed A0.2's screen (E1 5.3654 against at most 5.136), and
+# the rule extends it from its pre-anneal checkpoint-2970 to ten times the compute.
+#
+# ┌── THE DIFF FROM B10c-tr (arm_b10ctr_vanilla), IN FULL ──────────────────────┐
+# │                                      B10c-tr      B10c-tr-x10 (this)        │
+# │   num_train_steps                    3300         33000                     │
+# │   stop_steps                         3300         33000                     │
+# │   lr_scheduler_kwargs.num_decay_steps 330         3300 (the last tenth)     │
+# │   eval_steps                         165          330                       │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it.                │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# 33,000 x 256 = 8,448,000 scenes of the 8,929,841-row train root, each seen once (95% of train,
+# one epoch): the resume skips the 2,970 steps already taken in epoch 0's order and reads on. The
+# stable phase runs to step 29,700 at 3e-3 and decays linearly over the last 3,300 steps, as the
+# recipe does over its last tenth. An eval and a checkpoint every 330 steps (the recipe saves every
+# 330 and evaluates every 165): 91 of each, so a preemption costs at most 330 steps. On a resume HF
+# keeps the checkpoint's cadence (trainer_state.json), so the resumed copy's state is patched to match.
+# (Launched at 825 / 1,650 on 2026-11-11, 21:55; set to 330 / 330 at 23:30 after two preemptions in
+# 90 min, when a save every 1,650 steps could lose 3.9 h each.) fp16 and one A100, as the run it continues.
+#
+#   launch (RCP, course project): a new run directory holding a full copy of the 3,300-step run's
+#   checkpoint-2970 (cadence patched to 330 / 330), then
+#     jobs/train.sh vanilla10ctrx eo_terramesh/arm_b10ctr_x10_vanilla vanilla10ctrx_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root      (train.sh resumes from the copy)
+
+defaults:
+  - arm_b10ctr_vanilla
+  - _self_
+
+num_train_steps: 33000
+stop_steps: 33000
+lr_scheduler_kwargs:
+  num_decay_steps: 3300
+eval_steps: 330

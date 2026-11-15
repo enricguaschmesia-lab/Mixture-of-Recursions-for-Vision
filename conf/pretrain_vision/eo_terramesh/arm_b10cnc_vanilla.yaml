@@ -1,0 +1,24 @@
+# @package _global_
+#
+# ARM B10c-NC — B10c without Coords.  Wave 1 of the meeting of 2026-11-11 (Paper A, A0.1).
+#
+# ┌── THE DIFF FROM B10c (arm_b10c_vanilla), IN FULL ───────────────────┐
+# │                               B10c              B10c-NC (this)      │
+# │   multimodal.active_modalities  6 image + Coords  the 6 image only  │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it, and    │
+# │ that the key reaches the data: 990-token sequences, no Coords id.   │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The vanilla twin of A10c-NC (arm_a10cnc_mor.yaml says why and how it is read). It exists
+# because BEN fine-tunes run on vanillas only (eo/finetune/init.py refuses MoR): after it,
+# BEN LoRA at b10c_lora's recipe (3 epochs, 10% of the labels, test_a) against B10c's S1+S2 of
+# 0.811. Rule: Paper A plan, A0.1.
+#
+#   launch (RCP, lts4):  jobs/train.sh vanilla10cnc eo_terramesh/arm_b10cnc_vanilla vanilla10cnc_<ts>
+
+defaults:
+  - arm_b10c_vanilla
+  - _self_
+
+multimodal:
+  active_modalities: ['S2L2A', 'S1GRD', 'S1RTC', 'DEM', 'NDVI', 'LULC']

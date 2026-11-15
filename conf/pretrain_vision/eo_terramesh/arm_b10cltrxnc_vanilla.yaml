@@ -1,0 +1,25 @@
+# @package _global_
+#
+# ARM B10cL-tr-x10-NC, STAGE 2 — B10c-tr-x10-NC's run, every parameter training, from stage 1's final checkpoint
+# (SmolLM-135M's body, 29 of its 30 layers, under the table stage 1 trained). Coords-free, train split
+# (2026-11-14). The LLM-initialised half of the init comparison; its random-init twin is B10c-tr-x10-NC.
+#
+# ┌── THE DIFF FROM B10c-tr-x10-NC (arm_b10ctrxnc_vanilla), IN FULL ────────────────────────────────────┐
+# │   pretrain_init.conversion      .../smollm_init/b10c_nc_v1/smollm_body                              │
+# │   pretrain_init.variant         smollm                                                              │
+# │   pretrain_init.freeze_body     false                                                               │
+# │   pretrain_init.from_stage1     ??? (stage 1's checkpoint-330: the handoff checks its freeze held)  │
+# │ Nothing else: the same 33,000-step schedule from warmup 0 with a fresh optimizer, the same data in  │
+# │ the same order (seed 42), the same evals and saves. W32 asserts it.                                 │
+# └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+#   launch (RCP, course):  submit_w1.sh b10cltrxnc pretrain_init.from_stage1=<stage 1 run>/checkpoint-330
+defaults:
+  - arm_b10ctrxnc_vanilla
+  - _self_
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/weights/smollm_init/b10c_nc_v1/smollm_body
+  variant: smollm
+  freeze_body: false
+  from_stage1: ???

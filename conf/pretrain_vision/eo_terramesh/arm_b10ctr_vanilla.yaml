@@ -1,0 +1,30 @@
+# @package _global_
+#
+# ARM B10c-tr — B10c on the TRAIN split.  Wave 1 of the meeting of 2026-11-11 (Paper A, A0.2;
+# Paper B, the vanilla reference of the 2 x 2's train cell).
+#
+# ┌── THE DIFF FROM B10c (arm_b10c_vanilla), IN FULL ───────────────────┐
+# │                            B10c          B10c-tr (this)             │
+# │   multimodal.split         val           train                      │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question (A0.2): does a model of B10c's size come close to T360 given more data? The recipe
+# is B10c's, unchanged (Enric, 2026-11-11: "3,300 steps, extend later"): 3,300 x 256 = 844,800
+# scenes of the 8,929,841-row train root, each seen once (9.5% of train), against the val runs'
+# 84,672 seen ten times. Same compute, ten times the unique data. fp16 as B10c (it never
+# overflowed at this shape on A100s); one GPU as B10c, so a resume keeps one GPU. Coords stays in
+# (Enric: "Keep Coords, run in parallel"). Held-out evaluation stays on val_clean's 4,416 rows.
+# Rule ("BEN decides, CE screens"): Paper A plan, A0.2. If it fails the screen, it is extended
+# from checkpoint-2970 to 33,000 steps (the decay over the last tenth).
+#
+#   launch (RCP, course project: the train tokens are on g49 only):
+#     jobs/train.sh vanilla10ctr eo_terramesh/arm_b10ctr_vanilla vanilla10ctr_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+
+defaults:
+  - arm_b10c_vanilla
+  - _self_
+
+multimodal:
+  split: train

@@ -1,0 +1,39 @@
+# @package _global_
+#
+# ARM B10cL-tr-x10-NC, STAGE 1 — the embedding warm-up under the FROZEN SmolLM-135M body, Coords-free, on the
+# train split (2026-11-14). B10cL's stage 1 (arm_b10cl_stage1, A0.3) moved onto B10c-tr-x10-NC: only the fresh
+# 81,188 x 576 table trains (46,764,288 parameters), 330 steps.
+#
+# ┌── THE DIFF FROM B10c-tr-x10-NC (arm_b10ctrxnc_vanilla), IN FULL ────────────────────────────────────┐
+# │   pretrain_init                 the SmolLM body converted at the nc vocabulary (b10c_nc_v1), frozen │
+# │   num_train_steps / stop_steps  33,000 -> 330 (K: one checkpoint interval, as B10cL's)              │
+# │   num_warmup_steps              165 -> 16 (5%)                                                      │
+# │   lr_scheduler_kwargs.num_decay_steps 3,300 -> 0 (constant LR; stage 2 restarts its own warmup)     │
+# │   save_steps                    330 -> 165                                                          │
+# │   eval_steps                    165 -> 33 (11 evals with the step-0 one: the stage-1 curve)         │
+# │   fixed_eval_steps / fixed_save_steps -> none                                                       │
+# │ It differs from B10c-tr-x10-NC exactly as arm_b10cl_stage1 differs from B10c. W32 asserts it.       │
+# └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+# WHY TWO STAGES: arm_b10cv_stage1.yaml (an in-run unfreeze would meet peak LR with empty Adam moments).
+# On the x-axis of the comparison, stage 1 counts at its own FLOPs (a table-only step), as A0.3 counted it.
+#
+#   launch (RCP, course):  submit_w1.sh b10cltrxnc_s1   (CODE=code_w1c)
+defaults:
+  - arm_b10ctrxnc_vanilla
+  - _self_
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/weights/smollm_init/b10c_nc_v1/smollm_body
+  variant: smollm
+  freeze_body: true
+  from_stage1: null
+num_train_steps: 330
+stop_steps: 330
+num_warmup_steps: 16
+lr_scheduler_kwargs:
+  num_decay_steps: 0
+save_steps: 165
+eval_steps: 33
+fixed_eval_steps: null
+fixed_save_steps: null

@@ -88,6 +88,7 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train", max_length=None):
             seed=cfg.get("seed", 42),
             shuffle_image_patches=mm_cfg.get("shuffle_image_patches", False),
             rows=None,
+            vocab=mm_cfg.get("vocab", None) or "v1",
         )
     root_dir = str(resolve_token_root(root_dir, token_set))
     print(f"TerraMesh token set: {token_set} -> {root_dir} ({want})")
@@ -120,6 +121,7 @@ def _build_terramesh(cfg, mm_cfg, root_dir, want="train", max_length=None):
         seed=cfg.get("seed", 42),
         shuffle_image_patches=mm_cfg.get("shuffle_image_patches", False),
         rows=rows,
+        vocab=mm_cfg.get("vocab", None) or "v1",
     )
 
 

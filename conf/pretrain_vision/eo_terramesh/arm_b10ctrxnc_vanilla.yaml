@@ -1,0 +1,48 @@
+# @package _global_
+#
+# ARM B10c-tr-x10-NC — B10c on the TRAIN split at ten times its compute, from scratch, without Coords anywhere:
+# not in the data, not in the embedding table, not in the codebook (Enric, 2026-11-14: "NO FURTHER MODEL WILL BE
+# TRAINED WITH COORDS OR INCLUDE COORD TOKENS"). The random-init half of the init comparison: its twin
+# B10cL-tr-x10-NC (arm_b10cltrxnc_stage1 + arm_b10cltrxnc_vanilla) differs only in starting from SmolLM-135M's body.
+#
+# ┌── THE DIFF FROM B10c-tr (arm_b10ctr_vanilla), IN FULL ─────────────────────────────────────────────┐
+# │                                      B10c-tr            B10c-tr-x10-NC (this)                       │
+# │   multimodal.active_modalities       6 image + Coords   the 6 image only                            │
+# │   multimodal.vocab                   v1 (eo_vocab)      nc (eo_vocab_nc: no Coords slot)            │
+# │   model_config.vocab_size            87,556             81,188                                      │
+# │   max_length                         1,048              990 (5 image chunks x 198, no padding)      │
+# │   precision                          fp16               bf16 (B10c-tr-x10 diverged in fp16 at       │
+# │                                                         ~27,150 on 2026-11-14; CLAUDE.md: A100s)    │
+# │   per_device_train_batch_size        4 (x 64 accum)     16 (x 16 accum): 256 a step, as before      │
+# │   num_train_steps / stop_steps       3,300              33,000 (8.4M scenes, each seen once)        │
+# │   lr_scheduler_kwargs.num_decay_steps 330               3,300 (the last tenth, as the recipe)       │
+# │   fixed_eval_steps                   none               16 extra evals before 990 (dense early)     │
+# │   fixed_save_steps                   none               19 extra saves before 990 (dense early)     │
+# │ Nothing else: warmup 165, LR 3e-3, eval every 165 (+ at step 0), save every 330, seed 42, 4 workers,│
+# │ per_device_eval_batch_size 4, so the held-out sequences are every run's (val's 4,416 rows).         │
+# │ W32 in eo/scripts/verify_phase3.py asserts it, and that the keys reach the data and the model.      │
+# └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+# The dense early points are where an init's effect shows (A0.3 on val: the speedup peaks in the first
+# ~1,000 steps). Evals: every 33 steps to 330, every 66 to 990, then every 165; saves: the same points, then
+# every 330 (each with its optimizer state on g49, so any of them resumes).
+#
+#   launch (RCP, course):  submit_w1.sh b10ctrxnc   (CODE=code_w1c)
+defaults:
+  - arm_b10ctr_vanilla
+  - _self_
+
+multimodal:
+  active_modalities: ['S2L2A', 'S1GRD', 'S1RTC', 'DEM', 'NDVI', 'LULC']
+  vocab: nc
+model_config:
+  vocab_size: 81188
+max_length: 990
+precision: bf16
+per_device_train_batch_size: 16
+num_train_steps: 33000
+stop_steps: 33000
+lr_scheduler_kwargs:
+  num_decay_steps: 3300
+fixed_eval_steps: "33,66,99,132,198,231,264,297,396,462,528,594,726,792,858,924"
+fixed_save_steps: "33,66,99,132,165,198,231,264,297,396,462,495,528,594,726,792,825,858,924"

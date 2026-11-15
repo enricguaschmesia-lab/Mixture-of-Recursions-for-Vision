@@ -1,0 +1,29 @@
+# @package _global_
+#
+# ARM A10c-b3-tr — the LEARNED router on the 1 + 3 + 1 block, on the TRAIN split. B3's first
+# follow-up in the first measurable cell of the 2 x 2 (Paper B, B3; 2026-11-11): A10cR-b3-tr, the
+# random router in this cell, read measurable (lower ends 2.47x and 2.90x the 0.006 seed gap), and
+# by B3 a measurable cell earns the learned router on two seeds and the random router's second seed.
+#
+# ┌── THE DIFF FROM A10c-tr (arm_a10ctr_mor), IN FULL ─────────────────────────┐
+# │                                  A10c-tr       A10c-b3-tr (this)           │
+# │   model_config.num_hidden_layers 33            11  (a 3-layer block, Nr 3) │
+# │ ...and from A10cR-b3-tr (arm_a10crb3tr_random): mor.rand_router only.       │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts both.              │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# A10c's recipe (token-choice router, balancing 0.1, alpha 1, z-loss), fp16 as A10c and A10cR-b3-tr
+# (the ratified exception for A10c-shaped MoR arms), one A100, 3,300 steps of 256 train scenes, each
+# seen once. Seed 42; its second seed is arm_a10cb3trs2_mor. Runs on code_w1b, which logs the
+# per-update depth shares (depth_shares.jsonl) that B0's time means read.
+#
+#   launch (RCP, course project: the train tokens are on g49 only):
+#     jobs/train.sh mor10cb3tr eo_terramesh/arm_a10cb3tr_mor mor10cb3tr_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+
+defaults:
+  - arm_a10ctr_mor
+  - _self_
+
+model_config:
+  num_hidden_layers: 11

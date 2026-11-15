@@ -93,6 +93,23 @@ def is_eo(cfg) -> bool:
     return registry_kind(cfg) in ("eo", "eo_ben", "eo_temporal")
 
 
+def vocab_layout(cfg) -> str:
+    """`multimodal.vocab`: "v1" (eo_vocab, the default) or "nc" (eo_vocab_nc, no Coords; 2026-11-14).
+
+    The Coords-free layout is a second id space over the same image codebooks (eo/data/eo_vocab_nc.py),
+    so it is chosen per run here, beside the dataset's registry, and only for TerraMesh pretraining:
+    BEN's and the temporal stage's ids are appended to v1, and no nc version of either exists.
+    """
+    mm = cfg.get("multimodal") if hasattr(cfg, "get") else None
+    name = (mm.get("vocab") if mm is not None and hasattr(mm, "get") else None) or "v1"
+    if name not in ("v1", "nc"):
+        raise ValueError(f"multimodal.vocab {name!r}: v1 (eo_vocab) or nc (eo_vocab_nc, no Coords)")
+    if name == "nc" and registry_kind(cfg) != "eo":
+        raise ValueError(f"multimodal.vocab nc exists for TerraMesh pretraining only, not for dataset(s) "
+                         f"{dataset_names(cfg)} (no nc BEN or temporal layout)")
+    return name
+
+
 def get_registry(cfg) -> ModuleType:
     """The vocabulary registry module this run's tokens were written against."""
     import importlib
@@ -103,6 +120,8 @@ def get_registry(cfg) -> ModuleType:
             f"No multimodal vocabulary registry applies to dataset(s) "
             f"{dataset_names(cfg)}. Known: {sorted(_REGISTRY_BY_DATASET)}."
         )
+    if kind == "eo" and vocab_layout(cfg) == "nc":
+        return importlib.import_module("eo.data.eo_vocab_nc")
     return importlib.import_module(_MODULE_BY_KIND[kind])
 
 

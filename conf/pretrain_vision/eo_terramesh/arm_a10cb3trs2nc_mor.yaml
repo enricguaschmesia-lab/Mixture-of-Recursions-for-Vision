@@ -1,0 +1,25 @@
+# @package _global_
+#
+# ARM A10c-b3-tr-s2-NC — the learned router on the 1 + 3 + 1 block, TRAIN split, without Coords, SEED 43.
+# The second learned seed of B3's follow-up in the first measurable cell, Coords-free (worklog §4 item 59,
+# 2026-11-12; see arm_a10cb3trnc_mor.yaml).
+#
+# ┌── THE DIFF FROM A10c-b3-tr-NC (arm_a10cb3trnc_mor), IN FULL ───────────────┐
+# │                  A10c-b3-tr-NC   A10c-b3-tr-s2-NC (this)                    │
+# │   seed           42              43                                         │
+# │ ...and from A10c-b3-tr-s2 (arm_a10cb3trs2_mor): the active modalities only. │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts both.              │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# Never read one seed's allocation as a finding (CLAUDE.md, model): read the two over time means,
+# against the random router's two seeds.
+#
+#   launch (RCP, course project):
+#     jobs/train.sh mor10cb3trs2nc eo_terramesh/arm_a10cb3trs2nc_mor mor10cb3trs2nc_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+
+defaults:
+  - arm_a10cb3trnc_mor
+  - _self_
+
+seed: 43

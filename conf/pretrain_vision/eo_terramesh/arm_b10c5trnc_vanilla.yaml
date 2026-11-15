@@ -1,0 +1,33 @@
+# @package _global_
+#
+# ARM B10c-5L-tr-NC — the 5-layer vanilla reference of the 1 + 3 + 1 train cell (Paper B plan, B3,
+# "Vanilla references, beside and optional"): B10c's recipe with 5 layers, TRAIN split, WITHOUT Coords,
+# seed 42. Five layers at width 576 are exactly the 1 + 3 + 1 block's unique layers (17.70 M
+# non-embedding), as B10c-11L is A10cR's. It says what the random router's recursion buys over the same
+# unique layers applied once (A10cR ≈ B10c-11L on val: does it hold for the small block?), and, against
+# B10c-11L-tr, what unique layers buy on train (E8's 5x rule, read for the record).
+#
+# Vocabulary v1 with Coords dropped from the data, like the Coords-free cell's four runs: Enric,
+# 2026-11-15, an exception to the 2026-11-14 rule (no model holds Coords tokens), as worklog §5 item 65 was.
+#
+# ┌── THE DIFF FROM B10c-5L-tr (arm_b10c5tr_vanilla), IN FULL ─────────────────┐
+# │                                  B10c-5L-tr        B10c-5L-tr-NC (this)     │
+# │   multimodal.active_modalities   6 image + Coords  the 6 image only         │
+# │ ...and from B10c-11L-tr (arm_b10c11tr_vanilla): that and the layer count.   │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts both, and that the │
+# │ key reaches the data.                                                       │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# Score it through its Coords twin with the Coords block removed, as the cell's runs were:
+#   eval_checkpoint.py --arm-config eo_terramesh/arm_b10c5tr_vanilla --drop-modalities Coords
+#
+#   launch (RCP, course project: the train tokens are on g49 only):
+#     jobs/train.sh vanilla10c5trnc eo_terramesh/arm_b10c5trnc_vanilla vanilla10c5trnc_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+
+defaults:
+  - arm_b10c5tr_vanilla
+  - _self_
+
+multimodal:
+  active_modalities: ['S2L2A', 'S1GRD', 'S1RTC', 'DEM', 'NDVI', 'LULC']

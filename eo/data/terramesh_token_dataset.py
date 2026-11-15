@@ -48,6 +48,7 @@ from eo.data.eo_vocab import (
     get_modality,
 )
 from lm_dataset.sequence_assembly import assemble_sequence
+from eo.data.eo_vocab_nc import layout as _vocab_layout
 
 DEFAULT_ROOT = os.environ.get("TERRAMESH_TOK_ROOT", "/data/enric/data/TerraMesh/val")
 
@@ -120,6 +121,11 @@ class TerraMeshTokenDataset(Dataset):
     D3.1). A scene's emitted sequence does not depend on which subset reached
     it; see _get_rng."""
 
+    @property
+    def _V(self):
+        """The run's vocabulary registry: eo_vocab (v1) or eo_vocab_nc (nc)."""
+        return _vocab_layout(self.vocab)
+
     def __init__(
         self,
         root_dir: str = DEFAULT_ROOT,
@@ -130,10 +136,16 @@ class TerraMeshTokenDataset(Dataset):
         seed: int = 42,
         shuffle_image_patches: bool = False,
         rows: Optional[Sequence[int]] = None,
+        vocab: str = "v1",
     ):
         super().__init__()
         if modality_order not in ("fixed", "random"):
             raise ValueError(f"modality_order must be 'fixed' or 'random', got {modality_order}")
+        # The id space the sequences are written in: "v1" (eo_vocab, every run before 2026-11-14) or "nc"
+        # (eo_vocab_nc: no Coords slot, so BO/EO and PAD move; image ids are v1's). `multimodal.vocab`.
+        # Kept as a NAME, resolved by the `_V` property, so the dataset still pickles (a module does not).
+        self.vocab = vocab or "v1"
+        _vocab_layout(self.vocab)
 
         # split is carried for symmetry with the CLEVR dataset and for when a
         # train split appears (worklog open item 5). Only 'val' exists today,
@@ -145,7 +157,7 @@ class TerraMeshTokenDataset(Dataset):
         # so the dataset silently produced image-only sequences (990 tokens
         # instead of 995) even though Meeting 2 put Coords in the training set.
         self.active_modalities = (list(active_modalities) if active_modalities
-                                  else list(DEFAULT_ACTIVE_MODALITIES))
+                                  else list(self._V.DEFAULT_ACTIVE_MODALITIES))
         self.modality_order = modality_order
         self.seed = seed
         self.shuffle_image_patches = shuffle_image_patches
@@ -153,14 +165,14 @@ class TerraMeshTokenDataset(Dataset):
         if not self.active_modalities:
             raise ValueError("active_modalities must be non-empty.")
         for m in self.active_modalities:
-            get_modality(m)  # validates against the EO registry
+            self._V.get_modality(m)  # validates against the run's EO registry (nc refuses Coords)
 
         # Does the DATA fit the vocabulary? eo_vocab's import-time invariants
         # prove the layout is self-consistent, but not that the artifact's ids
         # fit inside their slots -- and an id one past the end lands on a BO/EO
         # marker, so it corrupts silently instead of raising. O(1): reads the
         # max recorded by the run that wrote the tokens, not the arrays.
-        assert_artifact_fits(self.root_dir, self.active_modalities)
+        self._V.assert_artifact_fits(self.root_dir, self.active_modalities)
 
         # Does the data match the CONTRACT? Separate concern from the slot check
         # above, and kept a separate function for that reason -- one name doing
@@ -223,7 +235,7 @@ class TerraMeshTokenDataset(Dataset):
         # cannot need more room than the full set, but it can need less, and
         # max_length is validated against what this dataset will actually emit.
         widths = np.array(
-            [get_modality(m).tokens_per_sample + 2 for m in self.active_modalities], dtype=np.int64
+            [self._V.get_modality(m).tokens_per_sample + 2 for m in self.active_modalities], dtype=np.int64
         )
         presence = np.stack([self._present[m] for m in self.active_modalities], axis=1)
         self._seq_lens = (presence.astype(np.int64) * widths[None, :]).sum(axis=1)
@@ -255,7 +267,7 @@ class TerraMeshTokenDataset(Dataset):
                 for m in self.active_modalities
             }
             for m, arr in self._tokens.items():
-                expect = get_modality(m).tokens_per_sample
+                expect = self._V.get_modality(m).tokens_per_sample
                 if arr.shape != (self.n_rows, expect):
                     raise RuntimeError(
                         f"'{m}' tokens.npy is {arr.shape}, expected {(self.n_rows, expect)}"
@@ -297,7 +309,7 @@ class TerraMeshTokenDataset(Dataset):
         return np.random.default_rng(seed=(self.seed, worker_id, row))
 
     def _load_chunk(self, modality: str, row: int) -> torch.Tensor:
-        info = get_modality(modality)
+        info = self._V.get_modality(modality)
         raw = self._token_arrays()[modality][row]
         # uint16 -> int64 BEFORE the offset: 87,555 > 65,535, so adding the
         # offset in uint16 would wrap silently.
@@ -332,10 +344,10 @@ class TerraMeshTokenDataset(Dataset):
 
         return assemble_sequence(
             chunks=chunks,
-            chunk_modality_ids=[MODALITY_TO_ID[m] for m in ordered],
-            chunk_shufflable=[m in IMAGE_MODALITIES for m in ordered],
+            chunk_modality_ids=[self._V.MODALITY_TO_ID[m] for m in ordered],
+            chunk_shufflable=[m in self._V.IMAGE_MODALITIES for m in ordered],
             max_length=self.max_length,
-            pad_id=PAD_ID,
+            pad_id=self._V.PAD_ID,
             rng=rng,
             shuffle_image_patches=self.shuffle_image_patches,
         )

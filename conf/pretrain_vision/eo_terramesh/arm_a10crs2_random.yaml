@@ -1,0 +1,23 @@
+# @package _global_
+#
+# ARM A10cR seed 2 — A10cR with another seed.  Wave 1 of the meeting of 2026-11-11 (Paper B,
+# B1: the 1 + 9 + 1 val cell's own random-router seed gap, and criterion 4's freeze).
+#
+# ┌── THE DIFF FROM A10cR (arm_a10cr_random), IN FULL ──────────────────┐
+# │                            A10cR        A10cR-s2 (this)             │
+# │   seed                     42           43                          │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# ⚠ As for A10c-s2 (arm_a10cs2_mor.yaml): `seed` also sets the modality order of the held-out
+# SEQUENCES, so this run's logged eval scores the same rows in other orders than A10cR's.
+# Evaluate its checkpoints with `eval_checkpoint.py --arm-config eo_terramesh/arm_a10cr_random`
+# (seed 42's sequences), so the comparison with A10cR is the training seed alone.
+#
+#   launch (RCP, lts4):  jobs/train.sh mor10crs2 eo_terramesh/arm_a10crs2_random mor10crs2_<ts>
+
+defaults:
+  - arm_a10cr_random
+  - _self_
+
+seed: 43

@@ -1,0 +1,23 @@
+# @package _global_
+#
+# ARM A10cR-b3-tr — the 1 + 3 + 1 random-router MoR on the TRAIN split.  Wave 1 of the meeting of
+# 2026-11-11 (Paper B: the 2 x 2's 1 + 3 + 1 train cell, its random-router run: the case most
+# likely to make depth matter).
+#
+# ┌── THE DIFF FROM A10cR-b3 (arm_a10crb3_random), IN FULL ─────────────┐
+# │                            A10cR-b3      A10cR-b3-tr (this)         │
+# │   multimodal.split         val           train                      │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it, and    │
+# │ that it differs from A10cR-tr in exactly the layer count.           │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+#   launch (RCP, course project):
+#     jobs/train.sh mor10crb3tr eo_terramesh/arm_a10crb3tr_random mor10crb3tr_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+
+defaults:
+  - arm_a10crb3_random
+  - _self_
+
+multimodal:
+  split: train

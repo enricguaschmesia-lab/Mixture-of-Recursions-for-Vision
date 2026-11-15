@@ -1,0 +1,33 @@
+# @package _global_
+#
+# ARM B10c-11L-tr-x10 — A0.2's 10x extension of B10c-11L on the TRAIN split (wave 1 of the
+# meeting of 2026-11-11; Paper A, A0.2). B10c-11L-tr failed A0.2's screen (E1 5.4157 against at
+# most 5.136), and the rule extends it from its pre-anneal checkpoint-2970 to ten times the compute.
+#
+# ┌── THE DIFF FROM B10c-11L-tr (arm_b10c11tr_vanilla), IN FULL ────────────────┐
+# │                                      B10c-11L-tr  B10c-11L-tr-x10 (this)    │
+# │   num_train_steps                    3300         33000                     │
+# │   stop_steps                         3300         33000                     │
+# │   lr_scheduler_kwargs.num_decay_steps 330         3300 (the last tenth)     │
+# │   eval_steps                         165          330                       │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it, and that it    │
+# │ differs from B10c-tr-x10 in exactly the layer count.                        │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# B10c-tr-x10's extension at B10c-11L's size: schedule, data and launch as
+# arm_b10ctr_x10_vanilla.yaml.
+#
+#   launch (RCP, course project): a new run directory holding a full copy of the 3,300-step run's
+#   checkpoint-2970 (cadence patched to 330 / 330), then
+#     jobs/train.sh vanilla10c11trx eo_terramesh/arm_b10c11tr_x10_vanilla vanilla10c11trx_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root      (train.sh resumes from the copy)
+
+defaults:
+  - arm_b10c11tr_vanilla
+  - _self_
+
+num_train_steps: 33000
+stop_steps: 33000
+lr_scheduler_kwargs:
+  num_decay_steps: 3300
+eval_steps: 330

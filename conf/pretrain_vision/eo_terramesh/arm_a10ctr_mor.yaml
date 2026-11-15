@@ -1,0 +1,26 @@
+# @package _global_
+#
+# ARM A10c-tr — A10c (learned router) on the TRAIN split.  Wave 1 of the meeting of 2026-11-11
+# (Paper B: the train-split control's learned half, in the 2 x 2's 1 + 9 + 1 train cell).
+#
+# ┌── THE DIFF FROM A10c (arm_a10c_mor), IN FULL ───────────────────────┐
+# │                            A10c          A10c-tr (this)             │
+# │   multimodal.split         val           train                      │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it.        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question (B3): does data seen once keep the learned router's early held-out edge over the
+# random one, which repetition may have erased on val? It launches only with the per-update depth
+# shares logged (util/trainer_pt.py, depth_shares.jsonl in the run directory), so criteria 1-2
+# can be read on time means. fp16 (item 56).
+#
+#   launch (RCP, course project):
+#     jobs/train.sh mor10ctr eo_terramesh/arm_a10ctr_mor mor10ctr_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+
+defaults:
+  - arm_a10c_mor
+  - _self_
+
+multimodal:
+  split: train

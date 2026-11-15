@@ -1,0 +1,25 @@
+# @package _global_
+#
+# ARM B10c-11L-tr — B10c-11L on the TRAIN split.  Wave 1 of the meeting of 2026-11-11 (Paper A,
+# A0.2; Paper B, the 2 x 2's train-cell vanilla reference).
+#
+# ┌── THE DIFF FROM B10c-11L (arm_b10c11_vanilla), IN FULL ─────────────┐
+# │                            B10c-11L      B10c-11L-tr (this)         │
+# │   multimodal.split         val           train                      │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it, and    │
+# │ that it differs from B10c-tr in exactly the layer count.            │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# B10c-tr's question at B10c-11L's size (11 layers, A10c's unique-layer parameters). Recipe,
+# data and launch as arm_b10ctr_vanilla.yaml.
+#
+#   launch (RCP, course project):
+#     jobs/train.sh vanilla10c11tr eo_terramesh/arm_b10c11tr_vanilla vanilla10c11tr_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+
+defaults:
+  - arm_b10c11_vanilla
+  - _self_
+
+multimodal:
+  split: train

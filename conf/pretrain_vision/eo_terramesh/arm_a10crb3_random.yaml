@@ -1,0 +1,26 @@
+# @package _global_
+#
+# ARM A10cR-b3 — the 1 + 3 + 1 random-router MoR on val.  Wave 1 of the meeting of 2026-11-11
+# (Paper B: the 2 x 2's 1 + 3 + 1 val cell, E8's cell, its random-router run).
+#
+# ┌── THE DIFF FROM A10cR (arm_a10cr_random), IN FULL ──────────────────┐
+# │                                   A10cR       A10cR-b3 (this)       │
+# │   model_config.num_hidden_layers  29          11                    │
+# │ middle_cycle sets base_depth = (11 - 2) // 3 = 3: one unshared      │
+# │ layer, a 3-layer block applied 1-3 times, one unshared layer, so    │
+# │ 5, 8 or 11 layer applications. Nothing else. W29 in                 │
+# │ eo/scripts/verify_phase3.py asserts it, with the geometry.          │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question (B3): is depth worth more where the shared block is small? Every token draws its
+# depth uniformly from {1, 2, 3}, so all three depths are trained depths; B0 Step 6's
+# measurement then reads the equal-compute span against the cell's seed gap (B3's rule).
+#
+#   launch (RCP, lts4):  jobs/train.sh mor10crb3 eo_terramesh/arm_a10crb3_random mor10crb3_<ts>
+
+defaults:
+  - arm_a10cr_random
+  - _self_
+
+model_config:
+  num_hidden_layers: 11

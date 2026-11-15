@@ -95,6 +95,17 @@ token set and worker count stay --arm-config's (T360's single-date arm): the tem
 is a dict of micro-batch sets, and its batches of 16 key other modality orders. So the reading pairs
 token for token with T360's stored one at the same --arm-config, batch size and worker count.
 
+--drop-modalities M[,M...] (the meeting of 2026-11-11: keep Coords or not) removes those modalities
+from every sequence of every pass. Main pass: each held-out sequence exactly as the loader draws it,
+with each dropped modality's whole chunk [BO, body, EO] removed (TF.DropModalities, checked token by
+token), the rest in its original order closing up, padding after; so every row keeps its image
+modalities' order, and a model trained without Coords, scored through its Coords-trained twin's
+--arm-config, pairs with that twin per row. Target-last and grid: TargetLast(drop=), a dropped target
+is skipped, and a grid cell with a dropped source or target is a hole with reason "dropped". Positions
+shift, so pair two readings per row and modality (sums and counts), never token by token; the logged
+eval is not this pass's. One drop set per --arm-tag directory: metrics.json records it, and a directory
+holding another is refused. Not with --assign (its depths are given for the undropped positions).
+
 Runs in `.venv`. Nothing here imports terratorch.
 """
 from __future__ import annotations
@@ -136,6 +147,23 @@ def grid_keys(all_others: bool):
     return [f"{s}->{t}" for t in GRID_TARGETS for s in srcs if s != t]
 
 
+def parse_drop(spec: str) -> list:
+    """--drop-modalities "A,B" -> the named modalities in registry order (unknown names refused)."""
+    names = {m.strip() for m in (spec or "").split(",") if m.strip()}
+    bad = sorted(names - set(MODALITY_TO_ID))
+    if bad:
+        raise SystemExit(f"--drop-modalities {bad}: not a modality ({list(MODALITY_TO_ID)})")
+    return [m for m in MODALITY_TO_ID if m in names]
+
+
+def drop_refusal(doc: dict, drop: list):
+    """The refusal message when a results file holds another drop set (absent = none), else None."""
+    have = list((doc or {}).get("drop_modalities") or [])
+    if doc and have != list(drop):
+        return f"holds drop_modalities={have!r} results; this run drops {list(drop)!r}. Use another --arm-tag."
+    return None
+
+
 def check_forced(depth_counts: np.ndarray, force_depth, where: str) -> None:
     """A forced pass must capture depth D at every counted position (columns 1..Nr).
     Empty counts pass (a "none" cell has no source tokens); the main pass's
@@ -154,19 +182,27 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
     Writes `grid.json` (per cell: rows, n, CE as the mean of per-row means and
     token-weighted, top-1, MoR depth mix) and `grid_rows.npz` (per-row arrays,
     for pairing the arms row by row). A cell whose source no row of the column
-    carries (S1GRD <-> S1RTC) is recorded as a hole.
+    carries (S1GRD <-> S1RTC) is recorded as a hole, and so is a cell whose source
+    or target --drop-modalities removes (reason "dropped").
     """
     gpath, npath = out / "grid.json", out / "grid_rows.npz"
     grid = json.loads(gpath.read_text()) if gpath.exists() else {"cells": {}}
+    drop = parse_drop(args.drop_modalities)
+    refusal = drop_refusal({"drop_modalities": grid.get("drop_modalities")} if grid["cells"] else {}, drop)
+    if refusal:
+        raise SystemExit(f"{gpath} {refusal}")
     arrays = dict(np.load(npath)) if npath.exists() else {}
     for T in GRID_TARGETS:
         col = [k for k in grid_keys(args.grid_all_others) if k.endswith(f"->{T}")
                and k not in grid["cells"]]
         if not col:
             continue
-        R = TF.stratified_target_rows(ds, eval_rows, corpus, T, args.target_last_rows)
+        R = [] if T in drop else TF.stratified_target_rows(ds, eval_rows, corpus, T, args.target_last_rows)
         for key in col:
             S = key.split("->")[0]
+            if S in drop or T in drop:
+                grid["cells"][key] = {"source": S, "target": T, "hole": True, "n_rows": 0, "reason": "dropped"}
+                continue
             if S == "all":
                 rows, sources, collate = R, None, None
             elif S == "none":
@@ -188,7 +224,7 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
             # lands on which token): trim_collate cuts each batch to its longest row. 16 runs a cell
             # 2.1-2.6x faster (2026-10-27, TITAN V); the "all" row keeps 4, as its P3 reference.
             bs = 4 if S == "all" else args.grid_batch_size
-            dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T, sources=sources),
+            dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T, sources=sources, drop=drop),
                                              batch_size=bs, num_workers=args.num_workers,
                                              collate_fn=collate)
             res = TF.run_pass(model, dl, override=ov, keep_tokens=False, per_row_target=T,
@@ -224,7 +260,8 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
                   f"top1 {cell['top1']:.4f}  {cell['seconds']}s"
                   + (f"  P3 |d| {cell['p3_abs_diff']:.2e}" if "p3_abs_diff" in cell else ""))
         grid.update({"gpu": doc.get("gpu"), "checkpoint": doc.get("checkpoint"),
-                     "arm_tag": doc.get("arm_tag"), "target_rows": args.target_last_rows})
+                     "arm_tag": doc.get("arm_tag"), "target_rows": args.target_last_rows,
+                     "drop_modalities": drop})
         write_json(gpath, grid)
         tmp = npath.with_name(npath.name + ".tmp.npz")
         np.savez(tmp, **arrays)
@@ -315,7 +352,14 @@ def main() -> int:
     ap.add_argument("--own-draw", action="store_true",
                     help="random router: every position at its own draw from the hook's generator (the paired "
                          "baseline of --force-scope target); not with --force-depth")
+    ap.add_argument("--drop-modalities", default="",
+                    help="comma list, e.g. Coords: removed from every sequence of every pass (main: the whole "
+                         "chunk out of each held-out sequence, the rest in its order; target-last and grid: "
+                         "out of the context, skipped as a target or source)")
     args = ap.parse_args()
+    drop = parse_drop(args.drop_modalities)
+    if drop and args.assign is not None:
+        raise SystemExit("--assign gives depths for the undropped positions: not with --drop-modalities")
     if args.own_draw and args.force_depth is not None:
         raise SystemExit("--own-draw is the unforced baseline: not with --force-depth")
     if args.gate_seed != 0 and args.force_depth is None and not args.own_draw and args.table is None:
@@ -375,6 +419,8 @@ def main() -> int:
         if doc and (doc.get("table") or {}).get("sha") != (table or {}).get("sha"):
             raise SystemExit(f"{out} holds table={(doc.get('table') or {}).get('name')!r} results; "
                              f"this run's table is {(table or {}).get('name')!r}. Use another --arm-tag.")
+        if drop_refusal(doc, drop):
+            raise SystemExit(f"{out} {drop_refusal(doc, drop)}")
         todo = [m for m in modes if m not in doc.get("modes", {})]
         need_tl = "target_last" not in doc and not args.skip_target_last
         # ⚠ A checkpoint with every mode and target_last done must still run a
@@ -443,11 +489,11 @@ def main() -> int:
         if doc and doc.get("token_set", "original") != token_set:
             raise SystemExit(f"{out} holds token_set={doc.get('token_set', 'original')!r} results; "
                              f"this config reads {token_set!r}. Use another --arm-tag.")
-        ds, loader = TF.eval_loader(cfg, num_workers=args.num_workers)
+        ds, loader = TF.eval_loader(cfg, num_workers=args.num_workers, drop=drop)
         doc.update({"arm_tag": args.arm_tag, "arm_config": args.arm_config, "checkpoint": ck,
                     "token_set": token_set, "token_root": str(ds.root_dir),
                     "step": step, "gpu": gpu, "n_eval_rows": len(ds),
-                    "has_router": ov is not None,
+                    "has_router": ov is not None, "drop_modalities": drop,
                     "force_depth": args.force_depth, "precision": args.precision,
                     "model_config": args.model_config, "loaded": loaded, "vocab": int(model.config.vocab_size),
                     "logged_eval": logged_eval(run_dir, step) if ck not in ("untrained", "extended_base") else None})
@@ -516,8 +562,10 @@ def main() -> int:
             eval_rows = load_eval_rows(root_dir=ROOT)
             tl, tl_rows = {}, {}
             for T in TARGETS:
+                if T in drop:
+                    continue
                 rows = TF.stratified_target_rows(ds, eval_rows, corpus, T, args.target_last_rows)
-                dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T), batch_size=4,
+                dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T, drop=drop), batch_size=4,
                                                  num_workers=args.num_workers)
                 if rf is not None:
                     rf.reseed(args.gate_seed)

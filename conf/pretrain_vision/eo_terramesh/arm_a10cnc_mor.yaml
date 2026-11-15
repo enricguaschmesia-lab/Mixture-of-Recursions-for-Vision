@@ -1,0 +1,28 @@
+# @package _global_
+#
+# ARM A10c-NC — A10c without Coords.  Wave 1 of the meeting of 2026-11-11 (Paper A, A0.1;
+# read by Paper B as one more seed's allocation, description only).
+#
+# ┌── THE DIFF FROM A10c (arm_a10c_mor), IN FULL ───────────────────────┐
+# │                               A10c              A10c-NC (this)      │
+# │   multimodal.active_modalities  6 image + Coords  the 6 image only  │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it, and    │
+# │ that the key reaches the data: 990-token sequences, no Coords id.   │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# The question (meeting of 11 Nov): does A10c change when trained exactly as before but without
+# Coords? A sequence is 5 x (196 + BO + EO) = 990 tokens instead of 995; max_length stays 1048.
+# Coords' vocabulary rows stay in the table (the vocabulary is a one-way door) and simply never
+# occur. The modality order is still random per sequence, now over 5 chunks, so its draws differ
+# from A10c's: the paired reading scores this model on A10c's held-out sequences with the Coords
+# block removed (eval_checkpoint.py --arm-config eo_terramesh/arm_a10c_mor --drop-modalities
+# Coords), which keeps every row's image order. Rule ("remove unless it hurts"): Paper A plan, A0.1.
+#
+#   launch (RCP, lts4):  jobs/train.sh mor10cnc eo_terramesh/arm_a10cnc_mor mor10cnc_<ts>
+
+defaults:
+  - arm_a10c_mor
+  - _self_
+
+multimodal:
+  active_modalities: ['S2L2A', 'S1GRD', 'S1RTC', 'DEM', 'NDVI', 'LULC']

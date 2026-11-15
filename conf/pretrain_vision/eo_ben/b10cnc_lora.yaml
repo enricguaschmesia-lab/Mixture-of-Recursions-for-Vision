@@ -1,0 +1,18 @@
+# @package _global_
+#
+# BEN LoRA on B10c-NC (B10c trained without Coords; wave 1 of the meeting of 2026-11-11, Paper A, A0.1).
+#
+# ┌── THE DIFF FROM b10c_lora, IN FULL ─────────────────────────────────┐
+# │ Nothing. The recipe is b10c_lora's (LoRA r16, LR 1e-3, 3 epochs,    │
+# │ 10% of the labels); only the extended base passed with --init-from  │
+# │ differs (B10c-NC's checkpoint-3300). The tag exists so this run's   │
+# │ reports never land in b10c_lora's directory.                        │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# A0.1's rule (Paper A plan): Coords goes from later models only if this run's BEN S1+S2 is no lower than
+# b10c_lora's 0.811 by more than 0.005 (and image-token CE holds). Read on test_a, K = 16, with the wrong-input
+# control and forgetting at fp16, as b10c_lora was.
+
+defaults:
+  - b10c_lora
+  - _self_

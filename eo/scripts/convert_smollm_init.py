@@ -52,7 +52,6 @@ sys.path.insert(0, str(REPO))
 
 import torch  # noqa: E402
 
-from eo.data import eo_vocab as EV  # noqa: E402
 from eo.finetune import extend as X  # noqa: E402
 from eo.finetune.init import strict_load  # noqa: E402
 from eo.scripts.convert_clevr_init import build, fired, rope_control  # noqa: E402
@@ -102,8 +101,11 @@ def main():
         sys.exit(f"{a.arm_config} is not a vanilla arm: the body only fits 29 unshared layers")
     X.assert_tied(target)
     vocab = int(target.config.vocab_size)
-    if vocab != EV.TOTAL_VOCAB_SIZE:
-        sys.exit(f"built at vocab {vocab}, eo_vocab says {EV.TOTAL_VOCAB_SIZE}")
+    # The arm's own registry: eo_vocab, or eo_vocab_nc for a Coords-free arm (multimodal.vocab: nc, 2026-11-14).
+    from lm_dataset.modality_registry import get_registry, vocab_layout
+    reg, layout = get_registry(cfg), vocab_layout(cfg)
+    if vocab != int(reg.TOTAL_VOCAB_SIZE):
+        sys.exit(f"built at vocab {vocab}, the arm's registry {reg.__name__} says {reg.TOTAL_VOCAB_SIZE}")
     arch = S.check_architecture(src["config"], target.config)
     if not arch["passed"]:
         sys.exit(f"SmolLM's architecture differs from {a.arm_config}: {arch['differ']}")
@@ -255,6 +257,7 @@ def main():
             "arm_config": a.arm_config,
             "token_set": (cfg.get("multimodal") or {}).get("token_set", "original"),
             "vocab_size": vocab,
+            "vocab_layout": layout,
             "dropped_layer": a.drop_layer,
             "layer_map": S.layer_map(a.drop_layer),
             "carried_over": f"body (29 of 30 layers, layer {a.drop_layer} dropped, + final norm), " + (

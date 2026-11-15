@@ -25,6 +25,12 @@ placed first has no cross-modal context).
 as context in registry order, then the target. It is what Step 6/7 sample
 from, so it is the low-noise companion of the D3.11 generation metrics.
 
+DROPPING A MODALITY (2026-11-11, keep Coords or not). `DropModalities` serves the
+main pass's sequences with whole chunks removed, after the base has drawn each
+row's order, so the other modalities keep their order and close up (`drop_chunks`
+checks each removed chunk token by token); `TargetLast(drop=)` leaves them out of
+the context. Gate: eo/scripts/gate_drop_modalities.py.
+
 ⚠ DEPTH ALIGNMENT. The logits at position t predict token t+1, and they are
 computed from the hidden state of token t -- so the depth that bought a
 prediction is depth[t], not depth[t+1]. Per-token arrays here are stored in
@@ -101,14 +107,113 @@ def check_mode(mode: str) -> None:
 
 # ------------------------------------------------------------------ data
 
-def eval_loader(cfg, num_workers: int = 4, batch_size: int = 4):
-    """The held-out loader, built exactly as HF's evaluate() builds it."""
+def eval_loader(cfg, num_workers: int = 4, batch_size: int = 4, drop: Sequence[str] = ()):
+    """The held-out loader, built exactly as HF's evaluate() builds it.
+
+    `drop` (2026-11-11) serves every sequence with those modalities' chunks removed
+    (DropModalities); the first return value is always the unwrapped dataset. Without
+    it the loader is over that dataset itself, as before.
+    """
     from lm_dataset.load_dataset import load_eval_dataset_from_config
     ds = load_eval_dataset_from_config(cfg)
     if ds is None:
         raise ValueError("this config names no multimodal.eval_split")
     return ds, torch.utils.data.DataLoader(
-        ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        DropModalities(ds, drop) if drop else ds,
+        batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+
+SEQ_KEYS = ("input_ids", "attention_mask", "labels", "position_ids", "modality_ids")
+
+
+def drop_chunks(item: Dict[str, torch.Tensor], drop: Sequence[str]) -> Dict[str, torch.Tensor]:
+    """One assembled sequence with each `drop` modality's whole chunk removed.
+
+    The chunk [BO_m, body..., EO_m] is found by its BO and EO ids and checked token by
+    token, else ValueError: one BO and one EO of m, in that order, around a non-empty
+    body; every body id in m's codebook slot with modality id m; BO and EO at modality
+    id 0; no id of m's slot and no modality id m anywhere else. A modality the row does
+    not carry has no chunk, and nothing moves. The remaining chunks keep their order,
+    shifted left; the tail is padding again (PAD_ID, attention 0, label -100, modality
+    0) and position_ids is arange. Needs the unshuffled layout (real tokens a prefix,
+    labels equal to input_ids on them, position_ids arange): refused otherwise. With an
+    empty `drop` it returns the sequence unchanged, rebuilt by the same steps.
+    """
+    from eo.data.eo_vocab import get_modality
+    if tuple(item) != SEQ_KEYS:
+        raise ValueError(f"drop_chunks: keys {tuple(item)}, expected {SEQ_KEYS}")
+    ids, att, lab, pos, mods = (item[k] for k in SEQ_KEYS)
+    L = ids.shape[0]
+    n = int(att.sum())
+    ar = torch.arange(L, dtype=pos.dtype)
+    if not (bool((att[:n] == 1).all()) and bool((att[n:] == 0).all())):
+        raise ValueError("drop_chunks: the real tokens are not a prefix")
+    if not torch.equal(pos, ar):
+        raise ValueError("drop_chunks: position_ids is not arange (patch-shuffled layout)")
+    if not (torch.equal(lab[:n], ids[:n]) and bool((lab[n:] == -100).all())):
+        raise ValueError("drop_chunks: labels differ from input_ids on the real tokens")
+    x, mm = ids[:n], mods[:n]
+    keep = torch.ones(n, dtype=torch.bool)
+    for m in drop:
+        info, mid = get_modality(m), MODALITY_TO_ID[m]
+        in_slot = (x >= info.codebook_offset) & (x < info.codebook_offset + info.codebook_size)
+        bo = torch.nonzero(x == info.bo_id).flatten()
+        eo = torch.nonzero(x == info.eo_id).flatten()
+        if bo.numel() == 0 and eo.numel() == 0:
+            if bool(in_slot.any()) or bool((mm == mid).any()):
+                raise ValueError(f"drop_chunks: {m} ids or modality ids without its BO/EO")
+            continue
+        if bo.numel() != 1 or eo.numel() != 1 or int(eo[0]) - int(bo[0]) < 2:
+            raise ValueError(f"drop_chunks: {m} has BO at {bo.tolist()}, EO at {eo.tolist()}")
+        s, e = int(bo[0]), int(eo[0])
+        block = torch.zeros(n, dtype=torch.bool)
+        block[s:e + 1] = True
+        body = block.clone()
+        body[s] = body[e] = False
+        if not (bool(in_slot[body].all()) and bool((mm[body] == mid).all())
+                and int(mm[s]) == 0 and int(mm[e]) == 0
+                and not bool(in_slot[~block].any()) and not bool((mm[~block] == mid).any())):
+            raise ValueError(f"drop_chunks: {m}'s chunk at {s}..{e} is not [BO, body..., EO]")
+        keep &= ~block
+    k = int(keep.sum())
+    out_ids = torch.full((L,), PAD_ID, dtype=ids.dtype)
+    out_ids[:k] = x[keep]
+    out_att = torch.zeros(L, dtype=att.dtype)
+    out_att[:k] = 1
+    out_lab = torch.full((L,), -100, dtype=lab.dtype)
+    out_lab[:k] = lab[:n][keep]
+    out_mods = torch.zeros(L, dtype=mods.dtype)
+    out_mods[:k] = mm[keep]
+    return {"input_ids": out_ids, "attention_mask": out_att, "labels": out_lab,
+            "position_ids": ar, "modality_ids": out_mods}
+
+
+class DropModalities(torch.utils.data.Dataset):
+    """`base`'s sequences with whole modality chunks removed (drop_chunks), at inference.
+
+    The meeting of 2026-11-11 (keep Coords or not): eval_checkpoint.py --drop-modalities.
+    Each item is base[pos] exactly as the held-out loader draws it, then the chunks
+    removed, so the base's RNG draws -- keyed on (seed, worker_id, row) -- are unchanged
+    and every row keeps its modality order: a model trained without Coords is then scored
+    on the same image orders as its Coords-trained twin, paired per row. Refuses a
+    patch-shuffled base. Nothing else is forwarded (the base's presence masks still
+    list the dropped modalities): read rows and presence from the base.
+    """
+
+    def __init__(self, base, drop: Sequence[str]):
+        bad = [m for m in drop if m not in MODALITY_TO_ID]
+        if bad:
+            raise ValueError(f"drop {bad}: not a modality ({list(MODALITY_TO_ID)})")
+        if getattr(base, "shuffle_image_patches", False):
+            raise ValueError("DropModalities: the base shuffles image patches; dropping needs "
+                             "position_ids = arange")
+        self.base, self.drop = base, tuple(drop)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, pos):
+        return drop_chunks(self.base[pos], self.drop)
 
 
 class TargetLast(torch.utils.data.Dataset):
@@ -120,16 +225,25 @@ class TargetLast(torch.utils.data.Dataset):
       [S..]  only those, each only if the row carries it, still in registry order;
       []     the target alone: the grid's unconditional row. In distribution,
              because training puts a random modality first in every sequence.
+    `drop` (2026-11-11, eval_checkpoint.py --drop-modalities) is taken out of the
+    row's present modalities first, so None means every present non-target,
+    non-dropped modality. A dropped target, or a dropped modality named in
+    `sources`, is refused.
     """
 
     def __init__(self, base, rows: Sequence[int], target: str,
-                 sources: Optional[Sequence[str]] = None):
+                 sources: Optional[Sequence[str]] = None, drop: Sequence[str] = ()):
         self.base, self.rows, self.target = base, [int(r) for r in rows], target
         if sources is not None:
             bad = [s for s in sources if s not in MODALITY_TO_ID or s == target]
             if bad:
                 raise ValueError(f"sources {bad}: not a modality, or the target itself")
         self.sources = None if sources is None else set(sources)
+        bad = [m for m in drop if m not in MODALITY_TO_ID or m == target
+               or (self.sources is not None and m in self.sources)]
+        if bad:
+            raise ValueError(f"drop {bad}: not a modality, the target, or a named source")
+        self.drop = frozenset(drop)
 
     def __len__(self):
         return len(self.rows)
@@ -138,7 +252,7 @@ class TargetLast(torch.utils.data.Dataset):
         from eo.data.eo_vocab import IMAGE_MODALITIES
         from lm_dataset.sequence_assembly import assemble_sequence
         row = self.rows[i]
-        present = self.base.present_modalities(row)
+        present = [m for m in self.base.present_modalities(row) if m not in self.drop]
         order = [m for m in MODALITIES if m in present and m != self.target
                  and (self.sources is None or m in self.sources)] + [self.target]
         return assemble_sequence(

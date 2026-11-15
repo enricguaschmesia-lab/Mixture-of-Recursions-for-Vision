@@ -1,0 +1,20 @@
+# @package _global_
+#
+# B10c-5L-tr — A SCORING CONFIG, NEVER TRAINED (2026-11-15). The Coords twin of B10c-5L-tr-NC
+# (arm_b10c5trnc_vanilla): it builds that run's model and gives the held-out sequences WITH Coords, which
+# eval_checkpoint.py --drop-modalities Coords then removes, so every row keeps its image order and pairs
+# token for token with the Coords-free 1 + 3 + 1 train cell. Since 2026-11-12 no model trains on Coords
+# (worklog §5), and preflight's check 23 refuses a new run on it: do not launch this arm.
+#
+# ┌── THE DIFF FROM B10c-11L-tr (arm_b10c11tr_vanilla), IN FULL ───────────────┐
+# │                                   B10c-11L-tr    B10c-5L-tr (this)         │
+# │   model_config.num_hidden_layers  11             5                         │
+# │ Nothing else. W29 in eo/scripts/verify_phase3.py asserts it.               │
+# └────────────────────────────────────────────────────────────────────────────┘
+
+defaults:
+  - arm_b10c11tr_vanilla
+  - _self_
+
+model_config:
+  num_hidden_layers: 5
