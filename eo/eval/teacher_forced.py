@@ -96,6 +96,34 @@ import torch.nn.functional as F
 from eo.data.eo_vocab import ID_TO_MODALITY, MODALITIES, MODALITY_TO_ID, PAD_ID
 from eo.routing.telemetry import find_mor_layers, has_learned_router
 
+
+def layout_of(ds):
+    """The EO vocabulary layout a dataset serves (eo_vocab, or eo_vocab_nc under
+    multimodal.vocab: nc, 2026-11-14): its `_V`, else v1 (a dataset without one
+    predates the second layout)."""
+    from eo.data import eo_vocab
+    return getattr(ds, "_V", eo_vocab)
+
+
+def layout_for_model(model):
+    """The layout a model's logits index: nc at exactly 81,188 rows, else v1. A v1
+    model may be wider (the temporal stage appends rows after v1's), so any other
+    width keeps v1, as before 2026-11-15."""
+    from eo.data import eo_vocab, eo_vocab_nc
+    n = int(model.config.vocab_size)
+    return eo_vocab_nc if n == eo_vocab_nc.TOTAL_VOCAB_SIZE else eo_vocab
+
+
+def check_layout(model, ds) -> None:
+    """Refuse a model scored on another layout's sequences. ⚠ Without it an nc sequence
+    in a v1 model does not raise: its BO/EO ids are Coords codebook rows there."""
+    V, M = layout_of(ds), layout_for_model(model)
+    n = int(model.config.vocab_size)
+    if V is not M or n < V.TOTAL_VOCAB_SIZE:
+        raise ValueError(f"the data serves the {V.__name__.rsplit('.', 1)[-1]} layout "
+                         f"({V.TOTAL_VOCAB_SIZE} ids) and the model has {n} rows "
+                         f"({M.__name__.rsplit('.', 1)[-1]}): not scored")
+
 MODES =("router", "force1", "force2", "force3", "perm_modality", "perm_all", "skip", "table", "assign")
 
 
@@ -126,7 +154,7 @@ def eval_loader(cfg, num_workers: int = 4, batch_size: int = 4, drop: Sequence[s
 SEQ_KEYS = ("input_ids", "attention_mask", "labels", "position_ids", "modality_ids")
 
 
-def drop_chunks(item: Dict[str, torch.Tensor], drop: Sequence[str]) -> Dict[str, torch.Tensor]:
+def drop_chunks(item: Dict[str, torch.Tensor], drop: Sequence[str], V=None) -> Dict[str, torch.Tensor]:
     """One assembled sequence with each `drop` modality's whole chunk removed.
 
     The chunk [BO_m, body..., EO_m] is found by its BO and EO ids and checked token by
@@ -137,9 +165,11 @@ def drop_chunks(item: Dict[str, torch.Tensor], drop: Sequence[str]) -> Dict[str,
     shifted left; the tail is padding again (PAD_ID, attention 0, label -100, modality
     0) and position_ids is arange. Needs the unshuffled layout (real tokens a prefix,
     labels equal to input_ids on them, position_ids arange): refused otherwise. With an
-    empty `drop` it returns the sequence unchanged, rebuilt by the same steps.
+    empty `drop` it returns the sequence unchanged, rebuilt by the same steps. `V` is the
+    layout the sequence was built in (eo_vocab when None; DropModalities passes its base's).
     """
-    from eo.data.eo_vocab import get_modality
+    if V is None:
+        from eo.data import eo_vocab as V
     if tuple(item) != SEQ_KEYS:
         raise ValueError(f"drop_chunks: keys {tuple(item)}, expected {SEQ_KEYS}")
     ids, att, lab, pos, mods = (item[k] for k in SEQ_KEYS)
@@ -155,7 +185,7 @@ def drop_chunks(item: Dict[str, torch.Tensor], drop: Sequence[str]) -> Dict[str,
     x, mm = ids[:n], mods[:n]
     keep = torch.ones(n, dtype=torch.bool)
     for m in drop:
-        info, mid = get_modality(m), MODALITY_TO_ID[m]
+        info, mid = V.get_modality(m), V.MODALITY_TO_ID[m]
         in_slot = (x >= info.codebook_offset) & (x < info.codebook_offset + info.codebook_size)
         bo = torch.nonzero(x == info.bo_id).flatten()
         eo = torch.nonzero(x == info.eo_id).flatten()
@@ -176,7 +206,7 @@ def drop_chunks(item: Dict[str, torch.Tensor], drop: Sequence[str]) -> Dict[str,
             raise ValueError(f"drop_chunks: {m}'s chunk at {s}..{e} is not [BO, body..., EO]")
         keep &= ~block
     k = int(keep.sum())
-    out_ids = torch.full((L,), PAD_ID, dtype=ids.dtype)
+    out_ids = torch.full((L,), V.PAD_ID, dtype=ids.dtype)
     out_ids[:k] = x[keep]
     out_att = torch.zeros(L, dtype=att.dtype)
     out_att[:k] = 1
@@ -201,9 +231,10 @@ class DropModalities(torch.utils.data.Dataset):
     """
 
     def __init__(self, base, drop: Sequence[str]):
-        bad = [m for m in drop if m not in MODALITY_TO_ID]
+        self.V = layout_of(base)
+        bad = [m for m in drop if m not in self.V.MODALITY_TO_ID]
         if bad:
-            raise ValueError(f"drop {bad}: not a modality ({list(MODALITY_TO_ID)})")
+            raise ValueError(f"drop {bad}: not a modality of the base's layout ({list(self.V.MODALITY_TO_ID)})")
         if getattr(base, "shuffle_image_patches", False):
             raise ValueError("DropModalities: the base shuffles image patches; dropping needs "
                              "position_ids = arange")
@@ -213,7 +244,7 @@ class DropModalities(torch.utils.data.Dataset):
         return len(self.base)
 
     def __getitem__(self, pos):
-        return drop_chunks(self.base[pos], self.drop)
+        return drop_chunks(self.base[pos], self.drop, self.V)
 
 
 class TargetLast(torch.utils.data.Dataset):
@@ -234,12 +265,15 @@ class TargetLast(torch.utils.data.Dataset):
     def __init__(self, base, rows: Sequence[int], target: str,
                  sources: Optional[Sequence[str]] = None, drop: Sequence[str] = ()):
         self.base, self.rows, self.target = base, [int(r) for r in rows], target
+        V = layout_of(base)
+        if target not in V.MODALITY_TO_ID:
+            raise ValueError(f"target {target}: not a modality of the base's layout ({list(V.MODALITY_TO_ID)})")
         if sources is not None:
-            bad = [s for s in sources if s not in MODALITY_TO_ID or s == target]
+            bad = [s for s in sources if s not in V.MODALITY_TO_ID or s == target]
             if bad:
                 raise ValueError(f"sources {bad}: not a modality, or the target itself")
         self.sources = None if sources is None else set(sources)
-        bad = [m for m in drop if m not in MODALITY_TO_ID or m == target
+        bad = [m for m in drop if m not in V.MODALITY_TO_ID or m == target
                or (self.sources is not None and m in self.sources)]
         if bad:
             raise ValueError(f"drop {bad}: not a modality, the target, or a named source")
@@ -249,17 +283,17 @@ class TargetLast(torch.utils.data.Dataset):
         return len(self.rows)
 
     def __getitem__(self, i):
-        from eo.data.eo_vocab import IMAGE_MODALITIES
         from lm_dataset.sequence_assembly import assemble_sequence
+        V = layout_of(self.base)
         row = self.rows[i]
         present = [m for m in self.base.present_modalities(row) if m not in self.drop]
-        order = [m for m in MODALITIES if m in present and m != self.target
+        order = [m for m in V.MODALITIES if m in present and m != self.target
                  and (self.sources is None or m in self.sources)] + [self.target]
         return assemble_sequence(
             chunks=[self.base._load_chunk(m, row) for m in order],
-            chunk_modality_ids=[MODALITY_TO_ID[m] for m in order],
-            chunk_shufflable=[m in IMAGE_MODALITIES for m in order],
-            max_length=self.base.max_length, pad_id=PAD_ID,
+            chunk_modality_ids=[V.MODALITY_TO_ID[m] for m in order],
+            chunk_shufflable=[m in V.IMAGE_MODALITIES for m in order],
+            max_length=self.base.max_length, pad_id=V.PAD_ID,
             rng=np.random.default_rng(0), shuffle_image_patches=False)
 
 
@@ -666,10 +700,12 @@ def _extend_blocks(model, layer, depth: Optional[int], n_blocks: Optional[int]):
 
 # ------------------------------------------------------------------ the pass
 
-def _slot_bounds():
-    return {mid: (MODALITIES[n].codebook_offset,
-                  MODALITIES[n].codebook_offset + MODALITIES[n].codebook_size)
-            for mid, n in ID_TO_MODALITY.items()}
+def _slot_bounds(V=None):
+    if V is None:
+        from eo.data import eo_vocab as V
+    return {mid: (V.MODALITIES[n].codebook_offset,
+                  V.MODALITIES[n].codebook_offset + V.MODALITIES[n].codebook_size)
+            for mid, n in V.ID_TO_MODALITY.items()}
 
 
 @torch.no_grad()
@@ -712,13 +748,14 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
 
     if mor:
         handle = mor[0].register_forward_hook(hook)
-    bounds = _slot_bounds()
-    names = dict(ID_TO_MODALITY)
+    V = layout_for_model(model)                # nc (81,188 rows: no Coords) or v1
+    bounds = _slot_bounds(V)
+    names = dict(V.ID_TO_MODALITY)
     acc = {n: dict(n=0, ce=0.0, top1=0, top5=0, slot=0.0, bm_sum=0.0, bm_n=0) for n in names.values()}
     toks = {k: [] for k in ("ce", "correct", "rank_ok5", "label_mod", "input_mod", "depth", "gate", "label",
                             "gate_applied")}
     rows = {k: [] for k in ("n", "ce_sum", "top1", "d_pred", "d_tgt", "d_src")}
-    tid = MODALITY_TO_ID[per_row_target] if per_row_target is not None else None
+    tid = V.MODALITY_TO_ID[per_row_target] if per_row_target is not None else None
     try:
         for batch in loader:
             batch = dict(batch)                    # never mutate the caller's batch

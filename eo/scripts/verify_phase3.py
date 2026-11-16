@@ -2721,6 +2721,14 @@ def w30_drop_modalities() -> bool:
     return gate_drop_modalities.check()
 
 
+def w36_nc_eval() -> bool:
+    """The evaluation path on the nc layout (2026-11-15): the check lives in eo/scripts/gate_nc_eval.py,
+    runnable alone; its docstring lists every part and control."""
+    sys.path.insert(0, str(REPO / "eo/scripts"))
+    import gate_nc_eval
+    return gate_nc_eval.check()
+
+
 def w29_wave1_arms() -> bool:
     """Wave 1 of the meeting of 2026-11-11: every new arm differs from each reference it is read
     against in exactly the intended keys; the 1 + 3 + 1 arms build a tied 3-layer block applied up
@@ -4115,6 +4123,7 @@ def main() -> int:
         ("W34s the compute target: overlays, rule, saved price [B1]", w34s_compute_target),
         ("W32  the init comparison: nc arms as intended [2026-11-14]", w32_init_comparison_arms),
         ("W33  stage 1 freezes, handoff, stage 2      [init comparison, nc]", w33_nc_stages),
+        ("W36  the eval path scores nc, refuses a mismatch [init comparison]", w36_nc_eval),
         ("W19  CLEVR-init arms differ only as intended [CLEVR init]", w19_clevr_init_arms),
         ("W20  stage 1 freezes, handoff, stage 2      [CLEVR init]", w20_clevr_stages),
         ("W22  LLM-init arms differ only as intended  [LLM init]", w22_smollm_init_arms),

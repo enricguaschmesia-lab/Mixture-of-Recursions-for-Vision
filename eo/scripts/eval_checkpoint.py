@@ -106,6 +106,12 @@ shift, so pair two readings per row and modality (sums and counts), never token 
 eval is not this pass's. One drop set per --arm-tag directory: metrics.json records it, and a directory
 holding another is refused. Not with --assign (its depths are given for the undropped positions).
 
+VOCABULARY LAYOUT (2026-11-15). A Coords-free run (multimodal.vocab: nc, eo_vocab_nc: 81,188 ids, no Coords
+codebook or BO/EO pair) is scored with its own --arm-config: the data serve the nc layout, run_pass reads
+the model's layout from its vocab_size, Coords is skipped as a target, and its grid cells are holes with
+reason "layout", so the grid keeps v1's keys. A model scored on another layout's data is refused (an nc
+sequence in a v1 model would otherwise score without raising). metrics.json records "vocab_layout".
+
 Runs in `.venv`. Nothing here imports terratorch.
 """
 from __future__ import annotations
@@ -192,6 +198,7 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
     if refusal:
         raise SystemExit(f"{gpath} {refusal}")
     arrays = dict(np.load(npath)) if npath.exists() else {}
+    V = TF.layout_of(ds)
     for T in GRID_TARGETS:
         col = [k for k in grid_keys(args.grid_all_others) if k.endswith(f"->{T}")
                and k not in grid["cells"]]
@@ -202,6 +209,9 @@ def run_grid(model, ov, ds, eval_rows, corpus, out: Path, doc, args, rf=None,
             S = key.split("->")[0]
             if S in drop or T in drop:
                 grid["cells"][key] = {"source": S, "target": T, "hole": True, "n_rows": 0, "reason": "dropped"}
+                continue
+            if S not in V.MODALITY_TO_ID and S not in ("all", "none"):
+                grid["cells"][key] = {"source": S, "target": T, "hole": True, "n_rows": 0, "reason": "layout"}
                 continue
             if S == "all":
                 rows, sources, collate = R, None, None
@@ -294,8 +304,11 @@ def load_table(spec: str) -> dict:
 
 def logged_eval(run_dir: Path, step: int):
     """eval_loss + eval_loss_<mod> at `step`. ⚠ They live in SEPARATE log_history
-    entries at the same step (handover section 6 item 4) -- join on step."""
+    entries at the same step (handover section 6 item 4) -- join on step. A run still training has no
+    top-level trainer_state.json yet: then checkpoint-<step>'s own (2026-11-15), which holds that eval."""
     f = run_dir / "trainer_state.json"
+    if not f.exists():
+        f = run_dir / f"checkpoint-{step}" / "trainer_state.json"
     if not f.exists():
         return None
     out = {}
@@ -490,12 +503,24 @@ def main() -> int:
             raise SystemExit(f"{out} holds token_set={doc.get('token_set', 'original')!r} results; "
                              f"this config reads {token_set!r}. Use another --arm-tag.")
         ds, loader = TF.eval_loader(cfg, num_workers=args.num_workers, drop=drop)
+        # The vocabulary layout (2026-11-15): the data's (multimodal.vocab) must be the model's, or an nc
+        # sequence would score in a v1 model without raising. A layout without a modality (nc: Coords)
+        # skips it as a target and leaves its grid cells as holes (reason "layout").
+        try:
+            TF.check_layout(model, ds)
+        except ValueError as e:
+            raise SystemExit(f"{ck}: {e}")
+        V = TF.layout_of(ds)
+        bad = [m for m in drop if m not in V.MODALITY_TO_ID]
+        if bad:
+            raise SystemExit(f"--drop-modalities {bad}: not in the run's vocabulary layout {list(V.MODALITY_TO_ID)}")
         doc.update({"arm_tag": args.arm_tag, "arm_config": args.arm_config, "checkpoint": ck,
                     "token_set": token_set, "token_root": str(ds.root_dir),
                     "step": step, "gpu": gpu, "n_eval_rows": len(ds),
                     "has_router": ov is not None, "drop_modalities": drop,
                     "force_depth": args.force_depth, "precision": args.precision,
                     "model_config": args.model_config, "loaded": loaded, "vocab": int(model.config.vocab_size),
+                    "vocab_layout": V.__name__.rsplit(".", 1)[-1],
                     "logged_eval": logged_eval(run_dir, step) if ck not in ("untrained", "extended_base") else None})
         if rf is not None:
             doc["trained_recursions"] = rf.n_trained
@@ -562,7 +587,7 @@ def main() -> int:
             eval_rows = load_eval_rows(root_dir=ROOT)
             tl, tl_rows = {}, {}
             for T in TARGETS:
-                if T in drop:
+                if T in drop or T not in V.MODALITY_TO_ID:
                     continue
                 rows = TF.stratified_target_rows(ds, eval_rows, corpus, T, args.target_last_rows)
                 dl = torch.utils.data.DataLoader(TF.TargetLast(ds, rows, T, drop=drop), batch_size=4,
