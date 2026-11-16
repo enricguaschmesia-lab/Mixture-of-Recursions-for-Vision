@@ -106,12 +106,13 @@ def layout_of(ds):
 
 
 def layout_for_model(model):
-    """The layout a model's logits index: nc at exactly 81,188 rows, else v1. A v1
-    model may be wider (the temporal stage appends rows after v1's), so any other
-    width keeps v1, as before 2026-11-15."""
-    from eo.data import eo_vocab, eo_vocab_nc
+    """The layout a model's logits index: nc at exactly 81,188 rows, or at the nc temporal
+    stage's 81,296 (its date rows appended after nc's, eo/data/temporal_vocab_nc.py,
+    2026-11-17), else v1. A v1 model may be wider (the temporal stage appends rows after
+    v1's), so any other width keeps v1, as before 2026-11-15."""
+    from eo.data import eo_vocab, eo_vocab_nc, temporal_vocab_nc
     n = int(model.config.vocab_size)
-    return eo_vocab_nc if n == eo_vocab_nc.TOTAL_VOCAB_SIZE else eo_vocab
+    return eo_vocab_nc if n in (eo_vocab_nc.TOTAL_VOCAB_SIZE, temporal_vocab_nc.TOTAL_VOCAB_SIZE) else eo_vocab
 
 
 def check_layout(model, ds) -> None:

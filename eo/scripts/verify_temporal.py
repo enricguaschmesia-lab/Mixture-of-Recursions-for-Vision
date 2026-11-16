@@ -187,6 +187,51 @@ layouts eo/eval/temporal_layouts_v1.json, 2026-11-09). Y20 reads the real T360-T
       a timed batch of decodes at each precision. SKIPPED while the artifact is missing
                                      | decoded one position off (both models); on default positions
                                        behind date blocks
+
+Step 13 (the stage on the Coords-free base, with the modality draw, 2026-11-17): the nc layout
+(eo/data/temporal_vocab_nc.py), the draw (temporal_dataset.py's `kits`, `statics_drop`, `eval_kits`), the
+arm arm_b10cltrxnct_vanilla and its extended base. Dev locations and Major TOM rows outside the held-out
+split only, as Step 4's checks; about a minute on CPU.
+
+  Y24 T360-T's stream is unchanged by the draw: 105 digests pinned from fork 145ff75, before the draw
+      existed (verify_temporal_pins.json: sequences at 2-4 dates over 4 epochs, micro-batches of both
+      streams, eval and scene sequences), the token shares and the record, recomputed equal; the pilot's
+      three runs' temporal_data.json still equal what their arms define, so each still resumes
+                                     | a draw taken from the per-location stream moves the sequences; the
+                                       draw on shows in the record; statics_drop 0.2 is refused on a
+                                       resume of arm 1's record
+  Y25 temporal_vocab_nc: the 87 date ids after BEN's 21 reserved ids after eo_vocab_nc's 81,188; every
+      lower id nc's, PAD 81,187, modality ids v1's, no Coords; val's (year, day) pairs round-trip; the
+      registry resolves temporal + nc to it, and vocab_size 81,296
+                                     | date rows right after nc's PAD; a date id on PAD; a repeated id;
+                                       87,664 under nc; nc for BEN; a BEN-sized checkpoint; dates out of
+                                       range
+  Y26 nc sequences parse back: at four dates over every kit, with and without the statics, every block is
+      its declared row's at nc's ids (read here from tokens.npy and dates.npy), the kit's modalities only,
+      LULC once under `all` and never otherwise, DEM once iff kept, never Coords, no id in BEN's reserved
+      block or past 81,296, lattice positions, image blocks 198n apart; 2,788 tokens at four dates
+                                     | a v1 base under the same draw; LULC kept in a one-modality kit;
+                                       sequential positions
+  Y27 The draw over whole epochs: kit and statics frequencies within z 4.5; the temporal micro-batches walk
+      the location permutation without gap or overlap; each micro-batch one kit and one statics choice,
+      at kit_size, 0.8-1.0 of the `all` micro-batch's tokens, padding under 2%; a second instance read in
+      another order serves the same; Major TOM's token share within 0.02 of 0.5; the eval kits hold their
+      modalities and no statics      | statics_drop ignored; micro-batches of the stage's size whatever the
+                                       kit; a walk that restarts every epoch
+  Y28 arm_b10cltrxnct_vanilla differs from arm_b10ctrxnc_vanilla in exactly its intended keys (the temporal
+      block: T360-T's decisions, four dates from step 0, the draw), inherits the base's data and recipe,
+      max_length 2,788, the pilot's stop on a save, an eval, and dividing the full run; its data record holds
+      vocab nc and the kits; its dry build (split val) gives the five eval sets, the closed five keys, ids
+      below 81,296                   | a stray seed; v1's vocabulary; Coords under nc; max_length 2,787; a
+                                       kit naming one modality twice or one kit under two names; kits
+                                       summing to 0.9; a resume with statics_drop 0.1 or the v1 layout
+                                       (refused) or only the schedule changed (accepted)
+  Y29 The nc extended base (extend_checkpoint.py --layout temporal_nc): its extension.json records the
+      current nc layout, a passed fp32 identity over ids 0..81,187 and both controls fired; its table is
+      81,296 rows, the first 81,188 and every other tensor the source checkpoint's bit for bit, lm_head
+      tied; clevr_init.verify_init accepts it at 81,296. SKIPPED while the base is missing
+                                     | refused at 87,664 and 81,188, and with the v1 record, layout
+                                       `temporal` or a failed identity
 """
 from __future__ import annotations
 
@@ -657,14 +702,15 @@ def y3_audit():
 
 
 # ---------------------------------------------------------------- Y4
-def expected_modality_ids(ids: np.ndarray, length: int) -> np.ndarray:
+def expected_modality_ids(ids: np.ndarray, length: int, nc: bool = False) -> np.ndarray:
+    """Modality ids from the BO and EO ids alone; `nc` parses nc's ids (Y28), whose modality ids are v1's."""
     out = np.zeros(length, dtype=np.int64)
-    for m, s, e in parse(ids):
+    for m, s, e in (_nc_parse(ids) if nc else parse(ids)):
         out[s + 1: e - 1] = TV.MODALITY_TO_ID[m]
     return out
 
 
-def five_key_problems(mb) -> list:
+def five_key_problems(mb, nc: bool = False) -> list:
     if tuple(sorted(mb)) != tuple(sorted(KEYS)):
         return [f"keys {sorted(mb)}"]
     out = []
@@ -680,7 +726,7 @@ def five_key_problems(mb) -> list:
             out.append(f"row {b}: the mask is not a prefix")
         if not np.array_equal(lab[:real], ids[:real]) or (lab[real:] != -100).any():
             out.append(f"row {b}: labels do not follow the mask")
-        if not np.array_equal(mb["modality_ids"][b].numpy(), expected_modality_ids(ids[:real], L)):
+        if not np.array_equal(mb["modality_ids"][b].numpy(), expected_modality_ids(ids[:real], L, nc)):
             out.append(f"row {b}: modality_ids do not label every body and Date")
     return out
 
@@ -2990,9 +3036,558 @@ def train_root_checks(root: Path) -> None:
            + (f"; {probs[:3]}" if probs else ""))
 
 
+# ================================================================ Step 13: the Coords-free stage and the modality draw
+# (2026-11-17). The stage moves to a Coords-free base (multimodal.vocab: nc, eo/data/temporal_vocab_nc.py), and every
+# temporal micro-batch draws a modality kit and whether it keeps the statics (eo/data/temporal_dataset.py, THE
+# MODALITY DRAW). Y24 holds T360-T's stream to its pinned digests; Y25-Y27 check the layout, the sequences and the
+# draw on val_clean's dev locations; Y28 the arm; Y29 the extended base.
+PINS = REPO / "eo/scripts/verify_temporal_pins.json"
+IMAGE6 = ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC"]
+NC_KITS = (("all", 0.5), ("S2L2A", 1 / 6), ("S1GRD", 1 / 6), ("S2L2A+S1GRD", 1 / 6))
+NC_SINGLE = 994                        # nc's longest scene (990) with its date block
+TEMPORAL_RUNS = Path("/data/enric/runs/pretrain/temporal")
+ARM_NCT = "arm_b10cltrxnct_vanilla"          # the Coords-free stage's arm (Y28)
+ARM_NCT_PARENT = "arm_b10ctrxnc_vanilla"     # the base's shape, data and recipe, which it overlays
+EXT_NC = TEMPORAL_RUNS / "base" / "b10cltrxnc_ext_temporal_nc_ckpt33000"     # its extended base (Y29)
+T360T_RUNS = {"arm_t360t_vanilla": "t360t_p1_lr1e3_20261110_105433",
+              "arm_t360t_lr3e4_vanilla": "t360t_p2_lr3e4_20261110_202123",
+              "arm_t360t_noramp_vanilla": "t360t_p3_noramp_20261111_051537"}
+
+
+def stream_digests(temporal_cls=None) -> dict:
+    """The pin's recipe (verify_temporal_pins.json): T360-T's default stream on the dev locations, digested."""
+    f = fx()
+    T = f.T
+    out = {"sequences": {}, "microbatches": {}, "eval": {}, "single": {}}
+    ds = make(temporal_cls=temporal_cls)
+    tl = ds.temporal
+    locs = [int(x) for x in f.dev[:: max(1, len(f.dev) // 12)][:12]]
+    for e in (0, 1, 2, 5):
+        for n in (2, 3, 4):
+            for loc in locs[:6]:
+                out["sequences"][f"{loc}/{e}/{n}"] = T.trace_digest({k: v[None] for k, v in tl.sequence(loc, e, n).items()})
+    for e in (0, 1, 2, 3):
+        ds.set_draw_epoch(e)
+        asg = ds.assignment(e)
+        idx = [int(i) for i in np.flatnonzero(asg >= 0)[:3]] + [int(i) for i in np.flatnonzero(asg < 0)[:2]]
+        for i in idx:
+            stream, ids, _ = ds.members(i, e)
+            out["microbatches"][f"{e}/{i}"] = [T.trace_digest(ds[i]), stream, [int(x) for x in ids]]
+    ev = T.TemporalEval(tl, 8, 4, T.EVAL_SEED)
+    for m in (0, 1, 67):
+        out["eval"][str(m)] = T.trace_digest(ev[m])
+    for r in [int(x) for x in f.majortom[:5]]:
+        for e in (0, 3):
+            out["single"][f"{r}/{e}"] = T.trace_digest({k: v[None] for k, v in ds.single.sequence(r, e).items()})
+    out["token_share"] = {str(e): ds.token_share(e) for e in (0, 1, 2)}
+    out["record"] = T.TemporalConfig().record()
+    return json.loads(json.dumps(out))
+
+
+def y24():
+    from omegaconf import OmegaConf
+
+    from eo.train.preflight import _load_config
+    T = fx().T
+    pins = json.loads(PINS.read_text())
+    got = stream_digests()
+    moved = {k: [kk for kk in pins[k] if got[k].get(kk) != pins[k][kk]] for k in ("sequences", "microbatches", "eval", "single")}
+    share = all(got["token_share"][e][k] == v for e, d in pins["token_share"].items() for k, v in d.items())
+    ok = not any(moved.values()) and got["record"] == pins["record"] and share
+
+    class Careless(T.TemporalLocations):
+        """A modality draw taken from the per-location stream: one value drawn before the layout's own."""
+        def _rng(self, seed, epoch, loc):
+            g = super()._rng(seed, epoch, loc)
+            g.random()
+            return g
+    ctrl = stream_digests(temporal_cls=Careless)
+    fired = {"a draw taken from the per-location stream": any(ctrl["sequences"][k] != v for k, v in pins["sequences"].items()),
+             "the draw on (statics_drop 0.1) shows in the record": T.TemporalConfig(statics_drop=0.1).record() != pins["record"]}
+    record("Y24 T360-T's stream", ok,
+           f"{sum(len(pins[k]) for k in moved)} pinned digests (sequences at 2-4 dates and 4 epochs, micro-batches of both "
+           f"streams, eval and scene sequences), the token shares and the record recomputed with the modality draw's "
+           f"default: all equal to fork 145ff75's" + (f"; moved {[(k, len(v)) for k, v in moved.items() if v]}" if not ok else ""),
+           all(fired.values()), ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in fired.items()))
+
+    problems, checked = [], []
+    for arm, run in T360T_RUNS.items():
+        p = TEMPORAL_RUNS / run / T.DATA_RECORD
+        if not p.is_file():
+            continue
+        s = T.data_settings(OmegaConf.create(_load_config(REPO / "conf/pretrain_vision/eo_terramesh" / f"{arm}.yaml", {})))
+        ch = T.data_record_changes(json.loads(p.read_text()), s)
+        checked.append(run)
+        problems += [f"{arm}: {c}" for c in ch[:3]]
+    if not checked:
+        skip("Y24 T360-T's records", f"no T360-T run directory under {TEMPORAL_RUNS}")
+        return
+    rec = json.loads((TEMPORAL_RUNS / checked[0] / T.DATA_RECORD).read_text())
+    on = T.data_settings(OmegaConf.create(_load_config(
+        REPO / "conf/pretrain_vision/eo_terramesh" / f"{next(iter(T360T_RUNS))}.yaml",
+        {"+temporal.statics_drop": 0.2})))
+    record("Y24 T360-T's records", not problems,
+           f"the pilot's {len(checked)} runs' temporal_data.json equal what their arms define now: a resume of any "
+           f"of them is accepted" + (f"; {problems[:3]}" if problems else ""),
+           bool(T.data_record_changes(rec, on)), "the same arm with statics_drop 0.2 is refused as a change")
+
+
+def _nc_parse(ids) -> list:
+    """The blocks of a real nc token stream, from nc's BO and EO ids alone: [(modality, start, end)]."""
+    from eo.data import eo_vocab_nc as NC
+    from eo.data import temporal_vocab_nc as N
+    bo = {NC.get_modality(m).bo_id: m for m in IMAGE6}
+    out, p, n = [], 0, len(ids)
+    while p < n:
+        m = "Date" if int(ids[p]) == N.BO_DATE else bo.get(int(ids[p]))
+        if m is None:
+            raise ValueError(f"no nc block starts at {p} (token {int(ids[p])})")
+        if m == "Date":
+            end = next((q + 1 for q in range(p + 2, min(n, p + 4)) if int(ids[q]) == N.EO_DATE), None)
+            if end is None:
+                raise ValueError(f"a date block at {p} has no EO_Date")
+        else:
+            end = p + 198
+            if end > n or int(ids[end - 1]) != NC.get_modality(m).eo_id:
+                raise ValueError(f"a {m} block at {p} does not end in its EO")
+        out.append((m, p, end))
+        p = end
+    return out
+
+
+def _nc_block(reader: "Reader", m: str, row: int) -> np.ndarray:
+    """A block straight from tokens.npy at nc's ids: offsets are v1's, BO and EO nc's (eo_vocab_nc)."""
+    from eo.data import eo_vocab_nc as NC
+    READ_ROWS.add(int(row))
+    info = NC.get_modality(m)
+    body = np.asarray(reader.tokens[m][int(row)], dtype=np.int64) + info.codebook_offset
+    return np.concatenate([[info.bo_id], body, [info.eo_id]])
+
+
+def nc_make(cfg=None, per_step: int = 16, seed: int = 42, temporal_cls=None, mixed_cls=None, vocab: str = "nc"):
+    """The training set of the Coords-free stage on the dev locations (as build_train builds it), the modality
+    draw on by default; classes swappable for the controls. vocab="v1" builds the same over a v1 base."""
+    from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
+    f = fx()
+    T = f.T
+    key = f"base_{vocab}"
+    if key not in _FX:
+        mods = IMAGE6 if vocab == "nc" else list(MODS)
+        _FX[key] = TerraMeshTokenDataset(root_dir=str(VAL), split="val", active_modalities=mods,
+                                         max_length=NC_SINGLE if vocab == "nc" else 1048, modality_order="random",
+                                         seed=42, rows=None, vocab=vocab)
+    cfg = cfg or T.TemporalConfig(stages=(T.Stage(4, 6, None),), single_max_length=_FX[key].max_length,
+                                  kits=NC_KITS, statics_drop=0.2, steps_per_epoch=40)
+    temporal = (temporal_cls or T.TemporalLocations)(_FX[key], f.index, f.dev, cfg, seed)
+    single = T.SingleScenes(_FX[key], f.index, f.majortom, cfg, seed)
+    return (mixed_cls or T.MixedMicrobatches)(temporal, single, cfg, per_step, seed)
+
+
+def y25():
+    from omegaconf import OmegaConf
+
+    from eo.data import eo_vocab_nc as NC
+    from eo.data import temporal_vocab_nc as N
+    from lm_dataset.modality_registry import assert_vocab_size, get_registry, vocab_layout
+    probs = N.layout_problems(N.YEAR_IDS, N.DAY_IDS, N.BO_DATE, N.EO_DATE, N.TOTAL_VOCAB_SIZE)
+    nc_ids = sorted({i for m in NC.MODALITIES.values() for i in range(m.codebook_offset, m.codebook_offset + m.codebook_size)}
+                    | {m.bo_id for m in NC.MODALITIES.values()} | {m.eo_id for m in NC.MODALITIES.values()} | {NC.PAD_ID})
+    ok = (not probs and nc_ids == list(range(N.BEN_BASE)) and N.PAD_ID == NC.PAD_ID
+          and N.UNTRAINED_IDS[:N.N_BEN] == tuple(range(N.BEN_BASE, N.BASE)) and "Coords" not in N.MODALITY_TO_ID
+          and all(N.MODALITY_TO_ID[m] == TV.MODALITY_TO_ID[m] for m in N.MODALITY_TO_ID)
+          and N.layout_record() != TV.layout_record() and N.for_vocab_size(81296) is N and N.for_vocab_size(87664) is TV)
+    dates = np.load(VAL / "temporal" / "dates.npy")
+    pairs = {(int(y), int(d)) for y, d in dates}
+    trips = all(N.decode_date_block(N.date_block(y, d, w)) == ((y if w else None), d) for y, d in pairs for w in (True, False))
+    cov = N.coverage_problems(dates[:, 0])
+
+    def cfg(**kw):
+        base = {"dataset": "terramesh_temporal", "multimodal": {"vocab": "nc"}, "model_config": {"vocab_size": 81296}}
+        for k, v in kw.items():
+            base[k] = v
+        return OmegaConf.create(base)
+    reg = get_registry(cfg()) is N and assert_vocab_size(cfg()) == 81296 and \
+        get_registry(cfg(multimodal={})) is TV
+    ok = ok and trips and not cov and reg
+    shifted = [y - N.N_BEN for y in N.YEAR_IDS]
+    fired = {"date rows right after nc's PAD (no reserved BEN ids)":
+             bool(N.layout_problems(shifted, [d - N.N_BEN for d in N.DAY_IDS], N.BO_DATE - N.N_BEN,
+                                    N.EO_DATE - N.N_BEN, N.TOTAL_VOCAB_SIZE - N.N_BEN)),
+             "a date id on PAD": bool(N.layout_problems([N.PAD_ID] + N.YEAR_IDS[1:], N.DAY_IDS, N.BO_DATE, N.EO_DATE,
+                                                         N.TOTAL_VOCAB_SIZE)),
+             "a repeated id": bool(N.layout_problems(N.YEAR_IDS, N.DAY_IDS[:-1] + N.DAY_IDS[-2:-1], N.BO_DATE, N.EO_DATE,
+                                                     N.TOTAL_VOCAB_SIZE)),
+             "an nc temporal run at v1's 87,664 ids": refused(assert_vocab_size, cfg(model_config={"vocab_size": 87664})),
+             "nc for a BEN fine-tune": refused(vocab_layout, cfg(dataset="ben_multimodal")),
+             "a BEN-sized checkpoint as temporal": refused(N.for_vocab_size, 87577),
+             "a date block out of range": refused(N.date_block, 12, 0) and refused(N.date_block, 0, 73)}
+    record("Y25 nc layout", ok,
+           f"{N.N_NEW} date ids {N.BASE}..{N.TOTAL_VOCAB_SIZE - 1} after BEN's {N.N_BEN} reserved ids at "
+           f"{N.BEN_BASE}..{N.BASE - 1}; every id below {N.BEN_BASE} is eo_vocab_nc's, PAD {N.PAD_ID}; modality ids "
+           f"v1's, no Coords; {len(pairs)} (year, day) pairs of val's dates.npy round-trip with and without the year; "
+           f"the registry gives temporal_vocab_nc at 81,296 and temporal_vocab without vocab nc"
+           + (f"; {probs[:2]} {cov[:2]}" if not ok else ""),
+           all(fired.values()), ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in fired.items()))
+
+
+def _nc_expected(tl, reader, loc: int, epoch: int, n: int, kit: str, keep: bool):
+    """The gate's own reading of an nc sequence: the dataset's draw, filtered here (not by kit_blocks), every
+    block read from tokens.npy and dates.npy at nc's ids. Returns (blocks, ids)."""
+    from eo.data import temporal_vocab_nc as N
+    T = fx().T
+    d = tl.draw(loc, epoch, n)
+    group = {"all": set(GROUP), "S2L2A": {"S2L2A"}, "S1GRD": {"S1GRD"}, "S2L2A+S1GRD": {"S2L2A", "S1GRD"}}[kit]
+    keepset = group | {"Date"} | ({"LULC"} if kit == "all" else set()) | ({"DEM"} if keep else set())
+    blocks = [b for b in d.blocks if b.modality in keepset]
+    rows = tl.rows(loc)
+    ids = []
+    for b in blocks:
+        row = int(rows[b.t])
+        if b.modality == T.DATE:
+            y, dd = reader.date(row)
+            ids.append(np.asarray(N.date_block(y, dd, b.with_year)))
+        else:
+            ids.append(_nc_block(reader, b.modality, row))
+    return blocks, np.concatenate(ids)
+
+
+def _nc_problems(s, blocks, want, kit: str, keep: bool) -> list:
+    """An nc sequence against the gate's reading: tokens, layout, kit, statics, ids, labels and the lattice."""
+    from eo.data import temporal_vocab_nc as N
+    m = s["attention_mask"].bool()
+    ids, pos = s["input_ids"][m].numpy(), s["position_ids"][m].numpy()
+    out = []
+    if not np.array_equal(ids, want):
+        return ["tokens differ from the declared rows"]
+    if not np.array_equal(s["labels"][m].numpy(), ids) or (s["labels"][~m] != -100).any():
+        out.append("labels do not follow the mask")
+    if ids.max() >= N.TOTAL_VOCAB_SIZE or ((ids >= N.BEN_BASE) & (ids < N.BASE)).any():
+        out.append("an id past the layout or in BEN's reserved block")
+    try:
+        parsed = _nc_parse(ids)
+    except ValueError as e:
+        return out + [str(e)]
+    mods = [b[0] for b in parsed]
+    group = {"all": set(GROUP), "S2L2A": {"S2L2A"}, "S1GRD": {"S1GRD"}, "S2L2A+S1GRD": {"S2L2A", "S1GRD"}}[kit]
+    if set(mods) - group - {"Date", "DEM", "LULC"}:
+        out.append(f"modalities outside the kit {kit}: {sorted(set(mods) - group - {'Date', 'DEM', 'LULC'})}")
+    if mods.count("LULC") != (1 if kit == "all" else 0):
+        out.append(f"LULC {mods.count('LULC')} times under kit {kit}")
+    if mods.count("DEM") != (1 if keep else 0):
+        out.append(f"DEM {mods.count('DEM')} times with statics {'kept' if keep else 'dropped'}")
+    if "Coords" in mods:
+        out.append("Coords in an nc sequence")
+    cur, want_pos = 0, np.empty(len(ids), dtype=np.int64)
+    for mm, a, b in parsed:
+        want_pos[a:b] = np.arange(cur, cur + b - a)
+        if mm != "Date":
+            cur += b - a
+    if not np.array_equal(pos, want_pos):
+        out.append("position_ids are not the lattice")
+    imgs = [(mm, a) for mm, a, b in parsed if mm != "Date"]
+    if any((pos[a2] - pos[a1]) % 198 for k, (_, a1) in enumerate(imgs) for (_, a2) in imgs[k + 1:]):
+        out.append("two image blocks not 198n apart")
+    return out
+
+
+def y26():
+    f = fx()
+    T = f.T
+    ds = nc_make()
+    tl = ds.temporal
+    locs = [int(x) for x in f.dev[:: max(1, len(f.dev) // 40)][:40]]
+    kits = [k for k, _ in NC_KITS]
+    problems, seen = [], 0
+    for e in (0, 1, 3):
+        for j, loc in enumerate(locs):
+            kit, keep = kits[(j + e) % len(kits)], bool((j // len(kits) + e) % 2)
+            s = tl.sequence(loc, e, 4, kit=kit, statics=keep)
+            blocks, want = _nc_expected(tl, f.reader, loc, e, 4, kit, keep)
+            problems += [f"{loc}/{e}/{kit}/{keep}: {p}" for p in _nc_problems(s, blocks, want, kit, keep)]
+            seen += 1
+    full = tl.sequence(locs[0], 0, 4)
+    length_ok = (tl.length(4) == 2788 and int(full["input_ids"].shape[0]) == 2788 and tl.statics == ("DEM",)
+                 and tl.length(4, "S2L2A", False) == 808 and tl.length(4, "S2L2A+S1GRD", True) == 1798)
+
+    # Controls: the same check on three broken sequence builders.
+    class KeepsLULC(T.TemporalLocations):
+        @staticmethod
+        def kit_blocks(blocks, statics, kit="all", keep_statics=True):
+            return [b for b in T.TemporalLocations.kit_blocks(blocks, statics, "all", keep_statics)
+                    if b.modality in set(T.kit_modalities(kit)) | {"Date", "LULC"} | (set(statics) if keep_statics else set())]
+
+    class Sequential(T.TemporalLocations):
+        def sequence(self, *a, **kw):
+            s = super().sequence(*a, **kw)
+            s["position_ids"] = torch.arange(s["position_ids"].shape[0])
+            return s
+
+    def caught(tl_c, kit, keep, e=0) -> bool:
+        s = tl_c.sequence(locs[1], e, 4, kit=kit, statics=keep)
+        blocks, want = _nc_expected(tl, f.reader, locs[1], e, 4, kit, keep)
+        return bool(_nc_problems(s, blocks, want, kit, keep))
+    v1 = nc_make(vocab="v1").temporal
+    fired = {"a v1 base under the same draw": caught(v1, "S2L2A", True),
+             "LULC kept in a one-modality kit": caught(nc_make(temporal_cls=KeepsLULC).temporal, "S2L2A", True),
+             "sequential positions": caught(nc_make(temporal_cls=Sequential).temporal, "all", True)}
+    record("Y26 nc sequences", not problems and length_ok,
+           f"{seen} sequences at four dates over all four kits, with and without the statics: every block its declared "
+           f"row's at nc's ids (read here from tokens.npy and dates.npy), the kit's modalities only, LULC once under "
+           f"`all` and never otherwise, DEM once iff the statics are kept, never Coords, no id in BEN's reserved block "
+           f"or past 81,296, labels on the mask, lattice positions with image blocks 198n apart; 2,788 tokens at four "
+           f"dates" + (f"; {problems[:3]}" if problems else ""),
+           all(fired.values()), ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in fired.items()))
+
+
+def _kit_problems(ds, epochs, n_sample: int = 40) -> tuple:
+    """The modality draw over whole epochs: kit and statics frequencies, the walk's coverage, and sampled
+    micro-batches' homogeneity, sizes and padding. Returns (problems, stats)."""
+    T = fx().T
+    c = ds.cfg
+    probs = {k: float(p) for k, p in c.kits}
+    kits, keeps, walk = [], [], []
+    for e in epochs:
+        tab = ds.kit_table(e)
+        kits += [c.kits[int(k)][0] for k in tab.kit]
+        keeps += [bool(s) for s in tab.keep]
+        asg = ds.assignment(e)
+        order = np.argsort(np.where(asg >= 0, asg, np.iinfo(np.int64).max))[: ds.n_temporal]
+        for i in order:
+            walk += [int(x) for x in ds.members(int(i), e)[1]]
+    out = prop_problems("kit", _tally(kits), probs, len(kits))
+    out += prop_problems("statics kept", _tally(keeps), {True: 1 - c.statics_drop, False: c.statics_drop}, len(keeps))
+    total = sum(ds.kit_table(e).total for e in epochs)
+    if walk != [int(x) for x in ds.loc_walk[np.arange(ds.temporal_cursor(epochs[0]), ds.temporal_cursor(epochs[0]) + total)
+                                            % len(ds.loc_walk)]]:
+        out.append("the temporal micro-batches do not walk the location permutation without gap or overlap")
+    _, stage = ds.stage_of(epochs[0])
+    budget = int(stage.locations) * ds.temporal.length(stage.dates)
+    fills, pads, n_mb = [], [], 0
+    for e in epochs:
+        ds.set_draw_epoch(e)
+        idx = np.flatnonzero(ds.assignment(e) >= 0)[:: max(1, ds.n_temporal // n_sample)][:n_sample]
+        for i in idx:
+            kit, keep = ds.spec(int(i))
+            mb = ds[int(i)]
+            n_mb += 1
+            mask = mb["attention_mask"].bool()
+            fills.append(int(mb["input_ids"].numel()) / budget)
+            pads.append(1 - int(mask.sum()) / int(mask.numel()))
+            for r in range(mb["input_ids"].shape[0]):
+                mods = [b[0] for b in _nc_parse(mb["input_ids"][r][mask[r]].numpy())] if ds.temporal.V.NAME == "nc" else []
+                group = set(T.kit_modalities(kit))
+                if set(mods) - group - {"Date", "DEM", "LULC"} or mods.count("LULC") != (1 if kit == "all" else 0) \
+                        or mods.count("DEM") != (1 if keep else 0):
+                    out.append(f"epoch {e} micro-batch {int(i)} ({kit}, statics {keep}) holds {sorted(set(mods))}")
+                    break
+            if mb["input_ids"].shape[0] != ds.kit_size(stage, kit, keep):
+                out.append(f"micro-batch {int(i)} holds {mb['input_ids'].shape[0]} locations, not {ds.kit_size(stage, kit, keep)}")
+    if max(fills) > 1.0 or min(fills) < 0.8:
+        out.append(f"a micro-batch's tokens outside [0.8, 1.0] of the `all` micro-batch's: {min(fills):.2f}-{max(fills):.2f}")
+    if max(pads) > 0.02:
+        out.append(f"padding up to {max(pads):.3f} of a micro-batch")
+    return out, {"draws": len(kits), "micro-batches": n_mb, "fill": (min(fills), max(fills)), "pad": max(pads),
+                 "locations": total}
+
+
+def y27():
+    T = fx().T
+    ds = nc_make()
+    problems, st = _kit_problems(ds, (0, 1, 2))
+    # Purity: a second instance, read in another order (epochs out of order, indices reversed), serves the same.
+    other = nc_make()
+    pure = []
+    for e in (2, 0, 1):
+        ds.set_draw_epoch(e)
+        other.set_draw_epoch(e)
+        for i in list(np.flatnonzero(ds.assignment(e) >= 0)[:6])[::-1] + [int(np.flatnonzero(ds.assignment(e) < 0)[0])]:
+            pure.append(T.trace_digest(other[int(i)]) == T.trace_digest(ds[int(i)]))
+    share = ds.token_share(0)
+    ev_ok = True
+    for kit in ("S2L2A", "S2L2A+S1GRD"):
+        ev = T.TemporalEval(ds.temporal, 8, 4, T.EVAL_SEED, kit=kit, statics=False)
+        mb = ev[0]
+        mask = mb["attention_mask"].bool()
+        for r in range(mb["input_ids"].shape[0]):
+            mods = {b[0] for b in _nc_parse(mb["input_ids"][r][mask[r]].numpy())}
+            ev_ok &= mods == set(T.kit_modalities(kit)) | {"Date"}
+    ok = not problems and all(pure) and abs(share["single_token_share"] - 0.5) < 0.02 and ev_ok
+
+    class NoDrop(T.MixedMicrobatches):
+        def kit_table(self, epoch):
+            tab = super().kit_table(epoch)
+            return SimpleNamespace(**{**vars(tab), "keep": np.ones_like(tab.keep)})
+
+    class FixedSize(T.MixedMicrobatches):
+        def kit_size(self, stage, kit, keep_statics):
+            return int(stage.locations)
+
+    class Restarts(T.MixedMicrobatches):
+        def temporal_cursor(self, epoch):
+            return 0
+    fired = {"statics_drop ignored": bool(_kit_problems(nc_make(mixed_cls=NoDrop), (0, 1, 2), 4)[0]),
+             "micro-batches of the stage's size whatever the kit": bool(_kit_problems(nc_make(mixed_cls=FixedSize), (0,), 12)[0]),
+             "a walk that restarts every epoch": bool(_kit_problems(nc_make(mixed_cls=Restarts), (1, 2), 2)[0])}
+    record("Y27 modality draw", ok,
+           f"{st['draws']} temporal micro-batches over 3 epochs: kits at {dict((k, round(p, 3)) for k, p in NC_KITS)} and "
+           f"the statics kept at 0.8, within z 4.5; they walk the location permutation without gap or overlap "
+           f"({st['locations']} locations); {st['micro-batches']} built: one kit and one statics choice each, at "
+           f"kit_size, {st['fill'][0]:.2f}-{st['fill'][1]:.2f} of the `all` micro-batch's tokens, padding at most "
+           f"{st['pad']:.3f}; a second instance read in another order serves the same; Major TOM's token share "
+           f"{share['single_token_share']:.3f}; the eval kits hold their modalities and no statics"
+           + (f"; {problems[:3]}" if problems else ""),
+           all(fired.values()), ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in fired.items()))
+
+
+def nct_diff() -> dict:
+    """ARM_NCT against ARM_NCT_PARENT: every key that differs, and the value it must hold (the temporal block
+    is added from the arm's own TemporalConfig reading, checked against NCT_BLOCK)."""
+    from eo.data import temporal_vocab_nc as N
+    return {"dataset": "terramesh_temporal", "max_length": 2788, "model_config.vocab_size": N.TOTAL_VOCAB_SIZE,
+            "total_batch_size": 16, "per_device_train_batch_size": 1, "per_device_eval_batch_size": 1,
+            "pretrain_init.conversion": "${oc.env:MOR_EO_RCP,/data/enric}/runs/pretrain/temporal/base/" + EXT_NC.name,
+            "pretrain_init.variant": "continue", "pretrain_init.freeze_body": False, "pretrain_init.from_stage1": None,
+            "learning_rate": 0.0003, "num_train_steps": 23680, "stop_steps": 2960, "num_warmup_steps": 296,
+            "lr_scheduler_kwargs.num_decay_steps": 2368, "save_steps": 740, "eval_steps": 740,
+            "fixed_eval_steps": None, "fixed_save_steps": None, "dataloader_prefetch_factor": 8}
+
+
+#: The temporal block ARM_NCT must hold: T360-T's decisions, no ramp (Step 9's arm 3), the modality draw.
+NCT_BLOCK = {"stages": [{"dates": 4, "locations": 6, "epochs": None}], "steps_per_epoch": 740, "single_max_length": NC_SINGLE,
+             "kits": {k: p for k, p in NC_KITS}, "statics_drop": 0.2, "eval_kits": ["S2L2A", "S1GRD", "S2L2A+S1GRD"]}
+#: Inherited from the base's arm and asserted: the base's data, recipe and evaluation.
+NCT_SAME = {"multimodal.split": "train", "multimodal.vocab": "nc", "multimodal.active_modalities": IMAGE6,
+            "multimodal.token_set": "clean", "multimodal.eval_split": "v1", "multimodal.modality_order": "random",
+            "precision": "bf16", "mixed_precision": True, "eval_on_start": True, "dataloader_num_workers": 4,
+            "model_config.num_hidden_layers": 29, "recursive.enable": False, "mor.enable": False}
+
+
+def y28():
+    from omegaconf import OmegaConf
+
+    from eo.data import temporal_dataset as T
+    from eo.data import temporal_vocab_nc as N
+    from eo.train.preflight import _load_config
+    from lm_dataset.load_dataset import load_dataset_from_config, load_eval_dataset_from_config
+    from lm_dataset.modality_registry import assert_vocab_size, get_registry
+    armc, parent = compose([], name=ARM_NCT), compose([], name=ARM_NCT_PARENT)
+    tcfg = T.validate_config(armc)
+    block = json.loads(json.dumps(tcfg.record()))
+    defaults = json.loads(json.dumps(T.TemporalConfig().record()))
+    want_block = {**defaults, **NCT_BLOCK}
+    problems = [f"temporal.{k} = {block.get(k)!r}, not {v!r}" for k, v in want_block.items() if block.get(k) != v]
+    problems += [f"temporal block has {k}" for k in set(block) - set(want_block)]
+    want = {**nct_diff(), **_flat(block, "temporal")}
+    problems += _intended(_diff(parent, armc), want)
+    flat_a = _flat(armc)
+    problems += [f"{k} = {flat_a.get(k)!r}, not {v!r}" for k, v in NCT_SAME.items() if flat_a.get(k) != v]
+    on_save = lambda c: int(c.stop_steps) % int(c.save_steps) == 0 and int(c.stop_steps) % int(c.eval_steps) == 0
+    fits = (int(armc.max_length) == T.sequence_length(4, T.STATICS_NC) and on_save(armc)
+            and int(armc.num_train_steps) % int(armc.stop_steps) == 0
+            and assert_vocab_size(armc) == N.TOTAL_VOCAB_SIZE and get_registry(armc) is N)
+    fired = {"a stray seed": bool(_intended(_diff(parent, compose(["seed=43"], name=ARM_NCT)), want)),
+             "v1's vocabulary under the nc arm": refused(assert_vocab_size, compose(["multimodal.vocab=v1"], name=ARM_NCT)),
+             "Coords listed under nc": refused(T.validate_config, compose(
+                 ["multimodal.active_modalities=[S2L2A,S1GRD,S1RTC,DEM,NDVI,LULC,Coords]"], name=ARM_NCT)),
+             "max_length 2787": refused(T.validate_config, compose(["max_length=2787"], name=ARM_NCT)),
+             "a kit naming one modality twice": refused(T.TemporalConfig.from_mapping,
+                                                        {"kits": {"all": 0.5, "S2L2A": 0.25, "S2L2A+S2L2A": 0.25}}),
+             "one kit under two names": refused(T.TemporalConfig.from_mapping,
+                                                {"kits": {"all": 0.5, "S2L2A+S1GRD": 0.25, "S1GRD+S2L2A": 0.25}}),
+             "kit probabilities summing to 0.9": refused(T.validate_config, compose(
+                 ["temporal.kits.all=0.4"], name=ARM_NCT))}
+    record("Y28 nc arm", not problems and fits,
+           f"{ARM_NCT} differs from {ARM_NCT_PARENT} in exactly {len(want)} keys with their values (the temporal "
+           f"block: T360-T's decisions, four dates from step 0, the modality draw); inherited and asserted "
+           f"{sorted(NCT_SAME)}; vocab 81,296 through temporal_vocab_nc; max_length 2,788; the pilot's stop at "
+           f"{armc.stop_steps} meets a save and an eval and divides the full run" + (f"; {problems[:4]}" if problems else ""),
+           all(fired.values()), ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in fired.items()))
+
+    # The data record holds the layout and the draw; the dry build gives the eval sets per kit.
+    path = REPO / "conf/pretrain_vision/eo_terramesh" / f"{ARM_NCT}.yaml"
+    run_form = T.data_settings(compose(["multimodal.split=val"], name=ARM_NCT))
+    preflight_form = T.data_settings(OmegaConf.create(_load_config(path, {"multimodal.split": "val"})))
+    rec_ok = (run_form == preflight_form and run_form["multimodal"].get("vocab") == "nc"
+              and run_form["temporal"].get("kits") == {k: p for k, p in NC_KITS})
+    dry = compose(["multimodal.split=val"], name=ARM_NCT)
+    train = load_dataset_from_config(dry)
+    evals = load_eval_dataset_from_config(dry)
+    want_evals = {"single", "temporal", "temporal_S2L2A", "temporal_S1GRD", "temporal_S2L2A_S1GRD"}
+    first = []
+    train.set_draw_epoch(0)
+    for i in range(4):
+        mb = train[i]
+        first.append((train.members(i)[0], train.spec(i), tuple(mb["input_ids"].shape)))
+        rec_ok &= not five_key_problems(mb, nc=True) and int(mb["input_ids"].max()) < N.TOTAL_VOCAB_SIZE
+    for name in want_evals & set(evals):
+        mb = evals[name][0]
+        rec_ok &= not five_key_problems(mb, nc=True) and int(mb["input_ids"].max()) < N.TOTAL_VOCAB_SIZE
+    rec_ok &= set(evals) == want_evals and len(evals["single"]) == 276 and len(evals["temporal"]) == 68
+    tmp = Path(tempfile.mkdtemp(prefix="y28_"))
+    T.write_data_record(tmp, run_form)
+    changed = {"statics_drop 0.1": T.data_settings(compose(["multimodal.split=val", "temporal.statics_drop=0.1"], name=ARM_NCT)),
+               "the v1 layout": {**run_form, "multimodal": {k: v for k, v in run_form["multimodal"].items() if k != "vocab"}}}
+    fired = {k: refused(T.write_data_record, tmp, s) for k, s in changed.items()}
+    fired["only the schedule changed is accepted"] = not refused(T.write_data_record, tmp, T.data_settings(
+        compose(["multimodal.split=val", "stop_steps=23680", "learning_rate=0.0002"], name=ARM_NCT)))
+    shutil.rmtree(tmp)
+    record("Y28 nc data and eval sets", rec_ok,
+           f"the record (pretrain.py's form = preflight's) holds vocab nc and the kits; the dry build (split val): "
+           f"train {type(train).__name__} of {len(train)} over {len(train.temporal.location_ids)} dev locations, first "
+           f"micro-batches {first}; eval sets {sorted(evals)}, the closed five keys, ids below 81,296",
+           all(fired.values()), ", ".join(f"{k}: {'yes' if v else 'NO'}" for k, v in fired.items()))
+
+
+def y29(ext: Path = None):
+    """The nc extended base (eo/scripts/extend_checkpoint.py --layout temporal_nc)."""
+    from eo.data import temporal_vocab_nc as N
+    from eo.finetune.init import _load_state, _weights, verify_extension
+    from eo.train import clevr_init as CI
+    ext = EXT_NC if ext is None else ext
+    if not (ext / "extension.json").is_file():
+        skip("Y29 nc extended base", f"{ext} has no extension.json: the nc base has not been extended yet")
+        return
+    doc = json.loads((ext / "extension.json").read_text())
+    ident = doc["identity"]
+    plan = {"conversion": ext, "variant": CI.CONTINUE, "freeze_body": False, "from_stage1": None, "lora": None}
+    accepted = not refused(CI.verify_init, plan, N.TOTAL_VOCAB_SIZE)
+    ok = (doc["layout"] == "temporal_nc" and doc["temporal_vocab"] == N.layout_record() and ident["passed"]
+          and ident["max_abs_diff"] <= 1e-4 and doc["control_insert_before_pad"]["fired"]
+          and doc["control_untied_resize"]["fired"] and doc["extension"]["vocab_before"] == 81188
+          and doc["extension"]["vocab_after"] == N.TOTAL_VOCAB_SIZE and accepted)
+    new, src = _load_state(_weights(ext)), _load_state(_weights(Path(doc["source_checkpoint"])))
+    table_new, table_src = new[TABLE], src[TABLE]
+    moved = [k for k in src if k != TABLE and k in new and not torch.equal(src[k], new[k])]
+    missing = sorted(set(src) - set(new) - {"lm_head.weight"})
+    rows_ok = (tuple(table_new.shape) == (N.TOTAL_VOCAB_SIZE, table_src.shape[1])
+               and torch.equal(table_new[: table_src.shape[0]], table_src) and "lm_head.weight" not in new)
+    ok = ok and rows_ok and not moved and not missing
+    fired = {"under v1's 87,664 ids": refused(CI.verify_init, plan, 87664),
+             "under nc's 81,188 ids": refused(CI.verify_init, plan, 81188)}
+    tmp = Path(tempfile.mkdtemp(prefix="y29_"))
+    for name, mutate in (("the v1 record", lambda d: d.update(temporal_vocab=TV.layout_record())),
+                         ("layout temporal", lambda d: d.update(layout="temporal")),
+                         ("a failed identity", lambda d: d["identity"].update(passed=False))):
+        fake = tmp / name.replace(" ", "_")
+        fake.mkdir()
+        (fake / doc["weights_file"]).symlink_to(ext / doc["weights_file"])
+        d2 = json.loads(json.dumps(doc))
+        mutate(d2)
+        (fake / "extension.json").write_text(json.dumps(d2))
+        fired[name] = refused(CI.verify_init, {**plan, "conversion": fake}, N.TOTAL_VOCAB_SIZE, check_hash=False)
+    shutil.rmtree(tmp)
+    record("Y29 nc extended base", ok,
+           f"{ext.name}: layout temporal_nc with the current record, identity max |dlogit| {ident['max_abs_diff']:.2e} "
+           f"over ids 0..81,187, both controls fired; table {tuple(table_new.shape)}, its first 81,188 rows and every "
+           f"other tensor of {Path(doc['source_checkpoint']).name} bit for bit, lm_head tied; verify_init accepts it "
+           f"at 81,296" + ("" if ok else f"; moved {moved[:3]} missing {missing[:3]} rows_ok {rows_ok} accepted {accepted}"),
+           all(fired.values()), ", ".join(f"{k}: {'refused' if v else 'ACCEPTED'}" for k, v in fired.items()))
+
+
 CHECKS = {"Y1": y1, "Y2": y2, "Y3": y3, "Y4": y4, "Y5": y5, "Y6": y6, "Y7": y7, "Y8": y8, "Y9": y9, "Y10": y10,
           "Y11": y11, "Y12": y12, "Y13": y13, "Y14": y14, "Y15": y15, "Y16": y16, "Y17": y17, "Y18": y18,
-          "Y19": y19, "Y20": y20, "Y21": y21, "Y22": y22, "Y23": y23}
+          "Y19": y19, "Y20": y20, "Y21": y21, "Y22": y22, "Y23": y23, "Y24": y24, "Y25": y25, "Y26": y26,
+          "Y27": y27, "Y28": y28, "Y29": y29}
 
 
 def main() -> int:

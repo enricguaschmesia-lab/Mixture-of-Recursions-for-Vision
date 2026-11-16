@@ -413,17 +413,24 @@ def verify_init(plan: Dict, vocab_size: int, check_hash: bool = True) -> Dict:
     checkpoint (no extension.json), a BEN extension (87,577 rows) and a base changed after its
     identity check are all refused. The base must also name the date layout the code has now
     (temporal_vocab.layout_record), so a base written before a layout change is refused too,
-    whatever its size.
+    whatever its size. The layout is the one of the MODEL's vocabulary: 87,664 is temporal_vocab's
+    (v1), 81,296 temporal_vocab_nc's (2026-11-17), so a v1 base under an nc model and the reverse are
+    refused, whatever extension.json says.
     """
     if plan["variant"] != CONTINUE:
         return verify_conversion(plan["conversion"], plan["variant"], vocab_size, check_hash=check_hash)
-    from eo.data import temporal_vocab as TV
+    from eo.data import temporal_vocab_nc as TVL
     from eo.finetune.init import verify_extension
+    try:
+        TV = TVL.for_vocab_size(vocab_size)
+    except ValueError as e:
+        raise RuntimeError(f"continue: {e}") from None
+    layout = TVL.extension_layout(TV)
     doc = verify_extension(plan["conversion"], vocab_size, check_hash=check_hash)
-    if doc.get("layout") != "temporal" or doc.get("temporal_vocab") != TV.layout_record():
+    if doc.get("layout") != layout or doc.get("temporal_vocab") != TV.layout_record():
         raise RuntimeError(f"{plan['conversion'] / 'extension.json'}: layout {doc.get('layout')!r} does not "
-                           f"record the date rows of eo/data/temporal_vocab.py as they are now; rebuild the "
-                           f"base with extend_checkpoint.py --layout temporal")
+                           f"record the date rows of {TV.__name__} as they are now; rebuild the base with "
+                           f"extend_checkpoint.py --layout {layout}")
     return doc
 
 

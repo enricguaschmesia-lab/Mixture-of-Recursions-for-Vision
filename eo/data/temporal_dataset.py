@@ -84,6 +84,29 @@ its locations or rows and a digest of its five tensors. Off by default; it chang
 Step 8 reads it to show that a run resumed mid-epoch on two ranks serves the micro-batches the
 uninterrupted run served (finding 23), by index and by content.
 
+THE COORDS-FREE LAYOUT (`multimodal.vocab: nc`, 2026-11-17). The sequences are written in the base
+dataset's id space: eo/data/temporal_vocab_nc.py over eo_vocab_nc (81,296 ids, PAD 81,187) instead of
+temporal_vocab (87,664, PAD 87,555). Coords does not exist there, so the statics are DEM alone
+(`statics_of`): 2,788 tokens at four dates, image blocks 198n apart everywhere.
+
+THE MODALITY DRAW (`temporal.kits`, `temporal.statics_drop`; docs/plans/a1_temporal_stage.md, Step 10's
+proposal of 2026-11-15, adopted for the Coords-free base). Every temporal micro-batch draws ONE kit, the
+group modalities each of its sequences keeps at every date (`all` = S2L2A, S1GRD, NDVI and LULC once;
+otherwise a '+'-joined subset of S2L2A, S1GRD, NDVI, without LULC), and whether its sequences keep the
+statics. Downstream temporal tasks give such a subset at every date and no statics, and before this draw
+no sequence ever predicted a date from, say, S2L2A alone at the earlier dates.
+  * The unit is the micro-batch, so its sequences share one structure and trimming leaves almost no
+    padding. A micro-batch holds floor(locations x L_all / L_kit) locations of its stage (L: the
+    sequence length with the statics, or without when dropped), so every micro-batch holds about the
+    same tokens, and a kit's share of the temporal tokens (hence of the gradient) is its probability.
+  * The kits and the statics drop come from their own RNG stream, keyed on (seed, epoch), and a
+    location's layout is the `all` layout's draw with the other blocks removed: the per-location stream
+    is never touched. So with the default (`all` at 1, no statics drop) every sequence, micro-batch and
+    walk is T360-T's bit for bit, and `record()` omits the two keys, so T360-T's runs' temporal_data.json
+    still holds (gate Y24).
+  * `temporal.eval_kits` adds an in-training eval set per kit, the dev locations at eval_dates without
+    statics (`temporal_<kit>`), beside `temporal`, which keeps every modality.
+
 Runs in `.venv`, and in `mor-eo` on RCP.
 """
 from __future__ import annotations
@@ -95,6 +118,7 @@ import socket
 import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -103,6 +127,7 @@ from torch.utils.data import Dataset
 from transformers import TrainerCallback
 
 from eo.data import temporal_vocab as TV
+from eo.data import temporal_vocab_nc as TVL
 from eo.data.temporal_index import N_DATES, TemporalIndex, load_temporal_index
 from eo.data.temporal_split import load_temporal_split
 from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
@@ -113,12 +138,36 @@ ORDER_MODES = ("chronological", "leave_one_out", "uniform")
 DATE_MODES = ("first", "last", "absent")
 GROUP_MODALITIES = ("S2L2A", "S1GRD", "NDVI")        # one block each per date group
 LULC = "LULC"                                        # once per sequence (decision 3)
-STATICS = ("Coords", "DEM")                          # once per sequence, from date 0's row
+STATICS = ("Coords", "DEM")                          # once per sequence, from date 0's row (v1)
+STATICS_NC = ("DEM",)                                # the Coords-free layout's (nc)
 DATE = "Date"
 SEQUENCE_MODALITIES = STATICS + GROUP_MODALITIES + (LULC,)
+ALL_KIT = "all"                                      # the modality draw's full kit (module docstring)
+NO_DRAW = ((ALL_KIT, 1.0),)                          # kits that reproduce T360-T's stream
 
-# RNG stream tags: location draws, scene draws, the two pools' walks, an epoch's stream assignment.
-_TEMPORAL, _SINGLE, _LOC_WALK, _ROW_WALK, _ASSIGN = 0, 1, 2, 3, 4
+# RNG stream tags: location draws, scene draws, the two pools' walks, an epoch's stream assignment,
+# and the temporal micro-batches' kits and statics (the modality draw, 2026-11-17).
+_TEMPORAL, _SINGLE, _LOC_WALK, _ROW_WALK, _ASSIGN, _KIT = 0, 1, 2, 3, 4, 5
+
+
+def statics_of(vocab: Optional[str]) -> Tuple[str, ...]:
+    """The statics of a layout's sequences: Coords and DEM on v1, DEM alone on nc (no Coords id exists)."""
+    return STATICS_NC if TVL.layout(vocab) is TVL.layout(TVL.NAME) else STATICS
+
+
+def sequence_modalities(vocab: Optional[str]) -> Tuple[str, ...]:
+    """Every modality a location sequence of this layout can hold."""
+    return statics_of(vocab) + GROUP_MODALITIES + (LULC,)
+
+
+def kit_modalities(name: str) -> Tuple[str, ...]:
+    """A kit's group modalities, in GROUP_MODALITIES' order. `all` keeps LULC too; any other kit drops it."""
+    if name == ALL_KIT:
+        return GROUP_MODALITIES
+    parts = tuple(str(name).split("+"))
+    if not parts or any(p not in GROUP_MODALITIES for p in parts) or len(set(parts)) != len(parts):
+        raise ValueError(f"kit {name!r}: '{ALL_KIT}', or distinct members of {GROUP_MODALITIES} joined by '+'")
+    return tuple(m for m in GROUP_MODALITIES if m in parts)
 EVAL_SEED = 20261108                                 # the in-training temporal set, drawn once
 TRACE_ENV = "MOR_TEMPORAL_TRACE"                     # a directory: log every training micro-batch served
 TRACE_FIELDS = ("time", "host", "rank", "pid", "epoch", "index", "stream", "n_dates", "n_members",
@@ -152,10 +201,12 @@ def width(modality: str) -> int:
     return TV.get_modality(modality).tokens_per_sample + 2
 
 
-def sequence_length(n_dates: int) -> int:
-    """5 + 198 + n * (3 * 198 + 4) + 198: 1,597, 2,195 and 2,793 at two, three and four dates."""
-    group = sum(width(m) for m in GROUP_MODALITIES) + width(DATE)
-    return sum(width(m) for m in STATICS) + int(n_dates) * group + width(LULC)
+def sequence_length(n_dates: int, statics: Sequence[str] = STATICS, kit: str = ALL_KIT) -> int:
+    """5 + 198 + n * (3 * 198 + 4) + 198: 1,597, 2,195 and 2,793 at two, three and four dates (v1, every
+    modality). nc's statics are DEM alone: 2,788 at four dates. A kit keeps its own group modalities, and
+    LULC only when it is `all`; `statics=()` is a sequence whose statics were dropped."""
+    group = sum(width(m) for m in kit_modalities(kit)) + width(DATE)
+    return sum(width(m) for m in statics) + int(n_dates) * group + (width(LULC) if kit == ALL_KIT else 0)
 
 
 # --------------------------------------------------------------------------- config
@@ -182,11 +233,16 @@ class TemporalConfig:
     eval_locations_per_microbatch: int = 8                    # 544 = 8 x 68, any of 1, 2, 4 GPUs
     eval_dates: int = 4
     eval_seed: int = EVAL_SEED
+    # The modality draw (module docstring). The defaults are T360-T's stream, and record() leaves them out.
+    kits: Tuple[Tuple[str, float], ...] = NO_DRAW            # (kit, probability) per temporal micro-batch
+    statics_drop: float = 0.0                                 # share of temporal micro-batches without statics
+    eval_kits: Tuple[str, ...] = ()                           # an in-training eval set per kit, no statics
 
     @classmethod
     def from_mapping(cls, raw: Optional[Mapping]) -> "TemporalConfig":
         """YAML spelling: order_probs and date_probs as {mode: p}, stages as a list of
-        {dates, locations, epochs}. Unknown keys are refused, so a typo cannot fall back silently."""
+        {dates, locations, epochs}, kits as {kit: p}. Unknown keys are refused, so a typo cannot fall
+        back silently."""
         raw = dict(raw or {})
         known = {f.name for f in fields(cls)}
         unknown = sorted(set(raw) - known)
@@ -200,6 +256,12 @@ class TemporalConfig:
                 kw[key] = _probs(value, DATE_MODES, key)
             elif key == "stages":
                 kw[key] = tuple(Stage(**dict(s)) for s in value)
+            elif key == "kits":
+                if not isinstance(value, Mapping):
+                    raise ValueError(f"temporal.kits must be a mapping {{kit: probability}}, got {value!r}")
+                kw[key] = tuple((str(k), float(p)) for k, p in value.items())
+            elif key == "eval_kits":
+                kw[key] = tuple(str(k) for k in (value or ()))
             else:
                 kw[key] = value
         out = cls(**kw)
@@ -241,6 +303,24 @@ class TemporalConfig:
                 raise ValueError(f"temporal.{name} must be >= 1")
         if not 1 <= self.eval_dates <= N_DATES:
             raise ValueError(f"temporal.eval_dates must be in 1..{N_DATES}")
+        names = [k for k, _ in self.kits]
+        probs = [float(p) for _, p in self.kits]
+        if not names or len(set(names)) != len(names):
+            raise ValueError(f"temporal.kits must name distinct kits, got {names}")
+        for k in names + list(self.eval_kits):
+            kit_modalities(k)                    # raises on a malformed kit name
+        if len({kit_modalities(k) + ((LULC,) if k == ALL_KIT else ()) for k in names}) != len(names):
+            raise ValueError(f"temporal.kits names one kit twice (in another order): {names}")
+        if min(probs) < 0 or abs(sum(probs) - 1) > 1e-6:
+            raise ValueError(f"temporal.kits' probabilities must be non-negative and sum to 1, got {dict(self.kits)}")
+        if not 0 <= self.statics_drop <= 1:
+            raise ValueError(f"temporal.statics_drop must be in [0, 1], got {self.statics_drop}")
+        if len(set(self.eval_kits)) != len(self.eval_kits):
+            raise ValueError(f"temporal.eval_kits names a kit twice: {list(self.eval_kits)}")
+
+    def draws_kits(self) -> bool:
+        """Whether the modality draw is on: a kit other than `all` or a statics drop."""
+        return tuple((k, float(p)) for k, p in self.kits) != NO_DRAW or float(self.statics_drop) != 0.0
 
     def stage_of(self, epoch: int) -> Tuple[int, Stage]:
         """(stage number, stage) of an epoch. A function of the epoch alone, never of a counter."""
@@ -257,9 +337,18 @@ class TemporalConfig:
         return max(max(int(s.dates) for s in self.stages), int(self.eval_dates))
 
     def record(self) -> Dict:
+        """The block as a run's data record holds it. The modality draw's keys appear only when it is on
+        (`draws_kits`) or an eval kit is set: T360-T's records, written before the draw existed, then
+        still hold, and a changed default of either key is still a change (NO_DRAW is fixed)."""
         out = asdict(self)
         out["order_probs"] = dict(zip(ORDER_MODES, self.order_probs))
         out["date_probs"] = dict(zip(DATE_MODES, self.date_probs))
+        kits, drop, ev = out.pop("kits"), out.pop("statics_drop"), out.pop("eval_kits")
+        if self.draws_kits():
+            out["kits"] = {str(k): float(p) for k, p in kits}
+            out["statics_drop"] = float(drop)
+        if ev:
+            out["eval_kits"] = list(ev)
         return out
 
 
@@ -288,15 +377,16 @@ def lattice_positions(widths: Sequence[int], is_date: Sequence[bool], max_length
     return pos
 
 
-def _assemble(chunks: List[torch.Tensor], modalities: List[str], max_length: int) -> Dict[str, torch.Tensor]:
+def _assemble(chunks: List[torch.Tensor], modalities: List[str], max_length: int, V=TV) -> Dict[str, torch.Tensor]:
     """assemble_sequence, unchanged (the closed five keys, modality 0 for every BO and EO), then the
-    lattice. Never shuffles patches: T360 trained without, and the lattice assumes raster order."""
+    lattice. Never shuffles patches: T360 trained without, and the lattice assumes raster order. `V` is the
+    temporal layout (temporal_vocab or temporal_vocab_nc): its modality ids and PAD."""
     total = sum(int(c.shape[0]) for c in chunks)
     if total > max_length:
         raise RuntimeError(f"a sequence of {total} tokens exceeds max_length {max_length}")
-    out = assemble_sequence(chunks=chunks, chunk_modality_ids=[TV.MODALITY_TO_ID[m] for m in modalities],
+    out = assemble_sequence(chunks=chunks, chunk_modality_ids=[V.MODALITY_TO_ID[m] for m in modalities],
                             chunk_shufflable=[False] * len(chunks), max_length=int(max_length),
-                            pad_id=TV.PAD_ID, rng=np.random.default_rng(0), shuffle_image_patches=False)
+                            pad_id=V.PAD_ID, rng=np.random.default_rng(0), shuffle_image_patches=False)
     out["position_ids"] = lattice_positions([int(c.shape[0]) for c in chunks], [m == DATE for m in modalities],
                                             max_length)
     return out
@@ -353,7 +443,7 @@ class LocationDraw:
     held: int                           # leave-one-out's last date, drawn in every mode
     order: Tuple[int, ...]              # date indices in group order
     lulc_t: int
-    statics: Tuple[str, str]
+    statics: Tuple[str, ...]            # (Coords, DEM) in the drawn order on v1; (DEM,) on nc
     statics_slot: int                   # groups before the statics; len(order) means at the end
     date_modes: Tuple[str, ...]         # per group, in group order
     with_year: Tuple[bool, ...]         # per group, in group order
@@ -391,12 +481,16 @@ class TemporalLocations(Dataset):
         super().__init__()
         if Path(base.root_dir).resolve() != Path(index.root).resolve():
             raise ValueError(f"base reads {base.root_dir} but the index describes {index.root}")
-        missing = [m for m in SEQUENCE_MODALITIES if m not in base.active_modalities]
+        vocab = getattr(base, "vocab", "v1")
+        missing = [m for m in sequence_modalities(vocab) if m not in base.active_modalities]
         if missing:
             raise ValueError(f"the base dataset lacks {missing}, which every location sequence holds")
         if base.n_rows != len(index.dates):
             raise ValueError(f"base has {base.n_rows} rows, the index dates {len(index.dates)}")
         self.base, self.index, self.cfg, self.seed = base, index, cfg, int(seed)
+        # The id space: the base dataset's layout (v1 or nc), extended by its date rows.
+        self.V = TVL.layout(vocab)
+        self.statics = statics_of(vocab)
         ids = np.asarray(location_ids, dtype=np.int64)
         if ids.ndim != 1 or ids.size == 0 or len(np.unique(ids)) != len(ids):
             raise ValueError("location_ids must be a non-empty 1-D set of distinct ids")
@@ -451,7 +545,7 @@ class TemporalLocations(Dataset):
         else:
             order = tuple(dates[int(i)] for i in perm)
         lulc_t = dates[int(rng.integers(n))]
-        statics = STATICS if int(rng.integers(2)) == 0 else STATICS[::-1]
+        statics = self.statics if int(rng.integers(2)) == 0 else self.statics[::-1]
         slot = int(rng.integers(n + 1))
         slot = 0 if mode == "chronological" else slot
         groups, date_modes, years = [], [], []
@@ -473,21 +567,40 @@ class TemporalLocations(Dataset):
         return LocationDraw(int(loc), dates, mode, held, order, lulc_t, tuple(statics), slot,
                             tuple(date_modes), tuple(years), tuple(blocks))
 
+    def length(self, n_dates: int, kit: str = ALL_KIT, statics: bool = True) -> int:
+        """The longest sequence of this layout at n_dates with this kit, with or without the statics."""
+        return sequence_length(n_dates, self.statics if statics else (), kit)
+
+    @staticmethod
+    def kit_blocks(blocks: Sequence[Block], statics: Sequence[str], kit: str = ALL_KIT,
+                   keep_statics: bool = True) -> List[Block]:
+        """The `all` layout's blocks with what a kit leaves out removed: the other group modalities, LULC
+        unless the kit is `all`, and the statics when they are dropped. Date blocks always stay. So a
+        location's layout under any kit is its `all` draw, filtered, and the per-location stream is never
+        touched (module docstring)."""
+        keep = set(kit_modalities(kit)) | ({LULC} if kit == ALL_KIT else set()) | {DATE}
+        if keep_statics:
+            keep |= set(statics)
+        return [b for b in blocks if b.modality in keep]
+
     def sequence(self, loc: int, epoch: int, n_dates: int, seed: Optional[int] = None,
-                 draw: Optional[LocationDraw] = None) -> Dict[str, torch.Tensor]:
-        """The five-key sequence of one location, padded to sequence_length(n_dates)."""
+                 draw: Optional[LocationDraw] = None, kit: str = ALL_KIT,
+                 statics: bool = True) -> Dict[str, torch.Tensor]:
+        """The five-key sequence of one location, padded to the layout's full length at n_dates (2,793 on
+        v1, 2,788 on nc), with only `kit`'s group modalities and, unless `statics` is False, the statics."""
         d = self.draw(loc, epoch, n_dates, seed) if draw is None else draw
+        blocks = d.blocks if (kit == ALL_KIT and statics) else self.kit_blocks(d.blocks, d.statics, kit, statics)
         rows = self.rows(loc)
         chunks, mods = [], []
-        for b in d.blocks:
+        for b in blocks:
             row = int(rows[b.t])
             if b.modality == DATE:
                 year, day = self.index.date_of(row)
-                chunks.append(torch.tensor(TV.date_block(year, day, b.with_year), dtype=torch.long))
+                chunks.append(torch.tensor(self.V.date_block(year, day, b.with_year), dtype=torch.long))
             else:
                 chunks.append(self.base._load_chunk(b.modality, row))
             mods.append(b.modality)
-        return _assemble(chunks, mods, sequence_length(len(d.dates)))
+        return _assemble(chunks, mods, self.length(len(d.dates)), self.V)
 
 
 class SingleScenes:
@@ -496,6 +609,7 @@ class SingleScenes:
     def __init__(self, base: TerraMeshTokenDataset, index: TemporalIndex, rows: Sequence[int],
                  cfg: TemporalConfig, seed: int):
         self.base, self.index, self.cfg, self.seed = base, index, cfg, int(seed)
+        self.V = TVL.layout(getattr(base, "vocab", "v1"))
         rows = np.asarray(rows, dtype=np.int64)
         if rows.ndim != 1 or len(np.unique(rows)) != len(rows):
             raise ValueError("rows must be a 1-D set of distinct row ids")
@@ -529,11 +643,11 @@ class SingleScenes:
         for b in blocks:
             if b.modality == DATE:
                 year, day = self.index.date_of(d.row)
-                chunks.append(torch.tensor(TV.date_block(year, day, b.with_year), dtype=torch.long))
+                chunks.append(torch.tensor(self.V.date_block(year, day, b.with_year), dtype=torch.long))
             else:
                 chunks.append(self.base._load_chunk(b.modality, d.row))
             mods.append(b.modality)
-        return _assemble(chunks, mods, self.cfg.single_max_length)
+        return _assemble(chunks, mods, self.cfg.single_max_length, self.V)
 
 
 # --------------------------------------------------------------------------- micro-batches
@@ -568,12 +682,58 @@ class MixedMicrobatches(Dataset):
                          if self.n_single else np.zeros(0, dtype=np.int64))
         self.epoch = 0
         self._assigned: Tuple[int, Optional[np.ndarray]] = (-1, None)
+        self._kit_tables: Dict[int, SimpleNamespace] = {}
+        self._kit_totals: Dict[int, int] = {}
 
     def set_draw_epoch(self, epoch: int) -> None:
         """The epoch whose draws this dataset serves. Deliberately not `set_epoch`: accelerate calls a
         dataset's set_epoch with its own loader count, which is 0 in the loader that skips batches
         after a mid-epoch resume (module docstring). Only TemporalEpochCallback sets it."""
         self.epoch = int(epoch)
+
+    # --- the modality draw (module docstring)
+    def kit_size(self, stage: Stage, kit: str, keep_statics: bool) -> int:
+        """Locations in a micro-batch of this kit at this stage: about the `all` micro-batch's tokens."""
+        full = self.temporal.length(stage.dates, ALL_KIT, True)
+        return max(1, (int(stage.locations) * full) // self.temporal.length(stage.dates, kit, keep_statics))
+
+    def kit_table(self, epoch: int) -> SimpleNamespace:
+        """Per temporal ordinal of an epoch: its kit (index into cfg.kits), whether it keeps the statics,
+        its locations and where they start in the epoch's share of the walk. A function of (seed, epoch)
+        alone, from its own RNG stream; without the draw every micro-batch is the stage's, as before."""
+        e = int(epoch)
+        tab = self._kit_tables.get(e)
+        if tab is not None:
+            return tab
+        _, stage = self.stage_of(e)
+        n = self.n_temporal
+        if self.cfg.draws_kits():
+            rng = np.random.default_rng((self.seed, e, _KIT))
+            probs = np.asarray([float(p) for _, p in self.cfg.kits], dtype=np.float64)
+            kit = rng.choice(len(probs), size=n, p=probs / probs.sum()).astype(np.int64)
+            keep = rng.random(n) >= float(self.cfg.statics_drop)
+            size_of = {(k, s): self.kit_size(stage, name, s)
+                       for k, (name, _) in enumerate(self.cfg.kits) for s in (True, False)}
+            sizes = np.asarray([size_of[(int(k), bool(s))] for k, s in zip(kit, keep)], dtype=np.int64)
+        else:
+            kit = np.zeros(n, dtype=np.int64)
+            keep = np.ones(n, dtype=bool)
+            sizes = np.full(n, int(stage.locations), dtype=np.int64)
+        starts = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(np.int64)
+        tab = SimpleNamespace(kit=kit, keep=keep, sizes=sizes, starts=starts, total=int(sizes.sum()))
+        if len(self._kit_tables) > 4:
+            self._kit_tables.clear()
+        self._kit_tables[e] = tab
+        return tab
+
+    def spec(self, i: int, epoch: Optional[int] = None) -> Tuple[Optional[str], Optional[bool]]:
+        """(kit, keeps the statics) of temporal micro-batch i; (None, None) for a micro-batch of scenes."""
+        epoch = self.epoch if epoch is None else int(epoch)
+        a = int(self.assignment(epoch)[int(i)])
+        if a < 0:
+            return None, None
+        tab = self.kit_table(epoch)
+        return self.cfg.kits[int(tab.kit[a])][0], bool(tab.keep[a])
 
     def epoch_callback(self, verbose: bool = True) -> "TemporalEpochCallback":
         return TemporalEpochCallback(self, self.cfg.steps_per_epoch, verbose)
@@ -586,6 +746,14 @@ class MixedMicrobatches(Dataset):
 
     def temporal_cursor(self, epoch: int) -> int:
         """Locations the temporal walk drew before this epoch."""
+        if self.cfg.draws_kits():
+            # Each earlier epoch's micro-batches hold a drawn number of locations: sum them (cached).
+            total = 0
+            for e in range(int(epoch)):
+                if e not in self._kit_totals:
+                    self._kit_totals[e] = self.kit_table(e).total
+                total += self._kit_totals[e]
+            return total
         total, left = 0, int(epoch)
         for s in self.cfg.stages:
             k = left if s.epochs is None else min(left, int(s.epochs))
@@ -614,8 +782,10 @@ class MixedMicrobatches(Dataset):
         a = int(self.assignment(epoch)[int(i)])
         if a >= 0:
             _, stage = self.stage_of(epoch)
-            start = self.temporal_cursor(epoch) + a * int(stage.locations)
-            return "temporal", self.loc_walk[(start + np.arange(stage.locations)) % len(self.loc_walk)], stage.dates
+            tab = self.kit_table(epoch)
+            start = self.temporal_cursor(epoch) + int(tab.starts[a])
+            size = int(tab.sizes[a])
+            return "temporal", self.loc_walk[(start + np.arange(size)) % len(self.loc_walk)], stage.dates
         per = int(self.cfg.scenes_per_microbatch)
         start = (epoch * self.n_single + (-1 - a)) * per
         return "single", self.row_walk[(start + np.arange(per)) % len(self.row_walk)], 1
@@ -623,7 +793,10 @@ class MixedMicrobatches(Dataset):
     def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
         stream, ids, n_dates = self.members(int(i))
         if stream == "temporal":
-            items = [self.temporal.sequence(int(loc), self.epoch, n_dates) for loc in ids]
+            kit, keep = self.spec(int(i))
+            items = [self.temporal.sequence(int(loc), self.epoch, n_dates, kit=kit, statics=keep) for loc in ids]
+            if self.cfg.draws_kits():
+                stream = f"temporal:{kit}" + ("" if keep else ":nostatics")
         else:
             items = [self.single.sequence(int(row), self.epoch) for row in ids]
         out = stack_trim(items)
@@ -634,18 +807,32 @@ class MixedMicrobatches(Dataset):
 
     def token_share(self, epoch: Optional[int] = None) -> Dict[str, float]:
         """Expected real tokens per micro-batch of each stream at an epoch's stage, and Major TOM's share
-        of the step's tokens (which is its share of the gradient, module docstring)."""
+        of the step's tokens (which is its share of the gradient, module docstring). With the modality
+        draw, the temporal micro-batch's expectation runs over the kits and the statics drop."""
         epoch = self.epoch if epoch is None else int(epoch)
         _, stage = self.stage_of(epoch)
         c = self.cfg
         date_tokens = (1 - c.date_probs[DATE_MODES.index("absent")]) * (width(DATE) - c.year_drop)
-        per_location = sequence_length(stage.dates) - stage.dates * width(DATE) + stage.dates * date_tokens
-        temporal = self.n_temporal * stage.locations * per_location
+
+        def per_location(kit: str, keep: bool) -> float:
+            n = stage.dates
+            return self.temporal.length(n, kit, keep) - n * width(DATE) + n * date_tokens
+
+        if c.draws_kits():
+            probs = np.asarray([float(p) for _, p in c.kits])
+            probs = probs / probs.sum()
+            per_mb = sum(pk * (ps * self.kit_size(stage, name, keep) * per_location(name, keep))
+                         for (name, _), pk in zip(c.kits, probs)
+                         for keep, ps in ((True, 1 - float(c.statics_drop)), (False, float(c.statics_drop))))
+        else:
+            per_mb = stage.locations * per_location(ALL_KIT, True)
+        temporal = self.n_temporal * per_mb
         single = 0.0
         if self.n_single:
             mean_scene = float(self.single.base._seq_lens[self.single.rows].mean()) + date_tokens
             single = self.n_single * c.scenes_per_microbatch * mean_scene
-        return {"stage_dates": int(stage.dates), "tokens_per_location": float(per_location),
+        return {"stage_dates": int(stage.dates), "tokens_per_location": float(per_location(ALL_KIT, True)),
+                "temporal_tokens_per_microbatch": float(per_mb),
                 "temporal_tokens": float(temporal), "single_tokens": float(single),
                 "single_token_share": float(single / (single + temporal))}
 
@@ -671,14 +858,18 @@ class SingleEval(Dataset):
 
 class TemporalEval(Dataset):
     """The dev locations through the training draw, at eval_dates, with a fixed seed and epoch: the
-    same sequences at every evaluation. Early checkpoints read high by design (the ramp)."""
+    same sequences at every evaluation. Early checkpoints read high by design (the ramp). With a kit
+    (`temporal.eval_kits`) the same layouts keep only that kit's modalities, and no statics."""
 
     collate_fn = staticmethod(unwrap_microbatch)
 
-    def __init__(self, temporal: TemporalLocations, per: int, n_dates: int, seed: int = EVAL_SEED):
+    def __init__(self, temporal: TemporalLocations, per: int, n_dates: int, seed: int = EVAL_SEED,
+                 kit: str = ALL_KIT, statics: bool = True):
         super().__init__()
         microbatches(len(temporal), per, "locations")
+        kit_modalities(kit)
         self.temporal, self.per, self.n_dates, self.seed = temporal, int(per), int(n_dates), int(seed)
+        self.kit, self.statics = kit, bool(statics)
 
     def __len__(self) -> int:
         return len(self.temporal) // self.per
@@ -687,8 +878,14 @@ class TemporalEval(Dataset):
         return self.temporal.location_ids[int(m) * self.per: (int(m) + 1) * self.per]
 
     def __getitem__(self, m: int) -> Dict[str, torch.Tensor]:
-        return stack_trim([self.temporal.sequence(int(loc), 0, self.n_dates, seed=self.seed)
+        return stack_trim([self.temporal.sequence(int(loc), 0, self.n_dates, seed=self.seed, kit=self.kit,
+                                                  statics=self.statics)
                            for loc in self.locations(m)])
+
+
+def eval_kit_name(kit: str) -> str:
+    """The eval set's name for a kit: `temporal_<kit>`, '+' written '_' (HF logs eval_<name>_loss)."""
+    return "temporal_" + str(kit).replace("+", "_")
 
 
 # --------------------------------------------------------------------------- the epoch
@@ -780,10 +977,17 @@ def _settings(cfg):
         if int(cfg.get(key) or 0) != 1:
             raise ValueError(f"{key} must be 1: one index of the temporal datasets is one micro-batch")
     tcfg = TemporalConfig.from_cfg(cfg)
-    need = sequence_length(tcfg.max_dates())
+    vocab = mm.get("vocab", None) or "v1"
+    TVL.layout(vocab)                                   # refuses an unknown layout name
+    need = sequence_length(tcfg.max_dates(), statics_of(vocab))
     if int(cfg.max_length) < need:
         raise ValueError(f"max_length {cfg.max_length} < {need}, the longest sequence the ramp or the eval "
-                         f"set builds ({tcfg.max_dates()} dates)")
+                         f"set builds ({tcfg.max_dates()} dates, statics {statics_of(vocab)})")
+    if vocab != "v1":
+        listed = mm.get("active_modalities", None)
+        if not listed or "Coords" in listed:
+            raise ValueError(f"multimodal.vocab {vocab} holds no Coords: list the six image modalities in "
+                             f"multimodal.active_modalities (got {listed!r})")
     return mm, tcfg
 
 
@@ -818,6 +1022,11 @@ def data_settings(cfg) -> Dict:
            "total_batch_size": int(cfg.get("total_batch_size")), "max_length": int(cfg.get("max_length")),
            "seed": int(cfg.get("seed", 42)),
            "multimodal": {k: plain(mm.get(k, d)) for k, d in DATA_MULTIMODAL.items()}}
+    # The id space defines the data too. Recorded only off v1, so T360-T's records (written before the nc
+    # layout existed) still hold, and a run switched between layouts is still a change.
+    vocab = mm.get("vocab", None) or "v1"
+    if vocab != "v1":
+        out["multimodal"]["vocab"] = str(vocab)
     return json.loads(json.dumps(out))
 
 
@@ -876,7 +1085,7 @@ def _eval_split_path(split_ref) -> Path:
 def _base(root, split: str, mm, tcfg: TemporalConfig, seed: int) -> TerraMeshTokenDataset:
     return TerraMeshTokenDataset(root_dir=str(root), split=split, active_modalities=mm.get("active_modalities", None),
                                  max_length=tcfg.single_max_length, modality_order="random", seed=seed,
-                                 shuffle_image_patches=False, rows=None)
+                                 shuffle_image_patches=False, rows=None, vocab=mm.get("vocab", None) or "v1")
 
 
 def build_train(cfg, val_root_dir) -> MixedMicrobatches:
@@ -917,10 +1126,18 @@ def build_train(cfg, val_root_dir) -> MixedMicrobatches:
     ds = MixedMicrobatches(temporal, single, tcfg, int(cfg.total_batch_size), seed)
     ds.data_settings = data_settings(cfg)
     share = ds.token_share(epoch=0)
-    print(f"Temporal train ({split}, {root}): {len(locations)} locations, {len(rows)} Major TOM rows; an epoch is "
+    print(f"Temporal train ({split}, {root}, vocab {temporal.V.__name__.rsplit('.', 1)[-1]}, statics "
+          f"{temporal.statics}): {len(locations)} locations, {len(rows)} Major TOM rows; an epoch is "
           f"{ds.n} micro-batches ({ds.n_temporal} temporal, {ds.n_single} single) = {tcfg.steps_per_epoch} steps "
           f"of {ds.microbatches_per_step}; stages {[(s.dates, s.locations, s.epochs) for s in tcfg.stages]}; "
           f"Major TOM's token share at epoch 0 {share['single_token_share']:.3f}")
+    if tcfg.draws_kits():
+        _, stage = tcfg.stage_of(0)
+        sizes = {f"{k}{'' if s else '/no statics'}": ds.kit_size(stage, k, s) for k, _ in tcfg.kits for s in (True, False)}
+        tab = ds.kit_table(0)
+        print(f"Temporal modality draw: kits {dict(tcfg.kits)}, statics dropped from {tcfg.statics_drop} of temporal "
+              f"micro-batches; locations per micro-batch at epoch 0's stage {sizes}; epoch 0 draws "
+              f"{tab.total} locations in {len(tab.sizes)} temporal micro-batches")
     print(f"Temporal config: {json.dumps(tcfg.record())}")
     return ds
 
@@ -942,8 +1159,13 @@ def build_eval(cfg, val_root_dir, single_base: Optional[TerraMeshTokenDataset]) 
     temporal = TemporalLocations(base, index, val_dev_location_ids(index), tcfg, int(cfg.get("seed", 42)))
     out = {"single": SingleEval(single_base, tcfg.eval_scenes_per_microbatch),
            "temporal": TemporalEval(temporal, tcfg.eval_locations_per_microbatch, tcfg.eval_dates, tcfg.eval_seed)}
+    for kit in tcfg.eval_kits:
+        out[eval_kit_name(kit)] = TemporalEval(temporal, tcfg.eval_locations_per_microbatch, tcfg.eval_dates,
+                                               tcfg.eval_seed, kit=kit, statics=False)
     print(f"Temporal eval: single {len(single_base)} rows in {len(out['single'])} micro-batches of "
           f"{tcfg.eval_scenes_per_microbatch} at {single_base.max_length}; temporal {len(temporal)} dev locations "
           f"in {len(out['temporal'])} micro-batches of {tcfg.eval_locations_per_microbatch} at {tcfg.eval_dates} "
-          f"dates ({sequence_length(tcfg.eval_dates)} tokens), seed {tcfg.eval_seed}")
+          f"dates ({temporal.length(tcfg.eval_dates)} tokens), seed {tcfg.eval_seed}"
+          + (f"; the same without statics, kept to the kits {list(tcfg.eval_kits)}: "
+             f"{[eval_kit_name(k) for k in tcfg.eval_kits]}" if tcfg.eval_kits else ""))
     return out

@@ -868,6 +868,30 @@ def main(argv=None) -> int:
                       for chk in ("config", "temporal index", "temporal data", "pretrain init")]
     else:
         print(f"\n(temporal: the shipped-arm positives skipped, no {real_base} on this machine)")
+
+    # --- The Coords-free stage (2026-11-17): arm_b10cltrxnct_vanilla, the nc layout (temporal_vocab_nc, 81,296
+    # ids) and the modality draw. A v1 base under it would load nowhere (another table size) but is refused before
+    # the pod; so are v1's size, Coords under nc, and a malformed draw. ---
+    nct = eo_cfg / "arm_b10cltrxnct_vanilla.yaml"
+    nc_base = real_base.parent / "b10cltrxnc_ext_temporal_nc_ckpt33000"
+
+    def ntt(**ov):
+        return dict(env=GOOD_ENV, config=nct, overrides={"multimodal.split": "val", **ov})
+    cases += [
+        ("nc: the arm at v1's 87,664 ids",            "config",        ntt(**{"model_config.vocab_size": 87664})),
+        ("nc continue: a v1 extended base",            "pretrain init", ntt(**{"pretrain_init.conversion": str(ext_ok)})),
+        ("nc: Coords listed under the nc layout",      "coords",        ntt(**{"multimodal.active_modalities": [
+            "S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC", "Coords"]})),
+        ("nc temporal: kits summing to 0.9",           "temporal data", ntt(**{"temporal.kits.all": 0.4})),
+        ("nc temporal: statics_drop 1.5",              "temporal data", ntt(**{"temporal.statics_drop": 1.5})),
+        ("nc temporal: max_length 2787 (needs 2,788)", "temporal data", ntt(max_length=2787)),
+    ]
+    if (nc_base / "extension.json").is_file():
+        shipped = _results(**ntt())
+        t_pos += [("arm_b10cltrxnct_vanilla as shipped, split val", chk, shipped)
+                  for chk in ("config", "coords", "temporal index", "temporal data", "pretrain init")]
+    else:
+        print(f"\n(temporal: the nc arm's positives skipped, no {nc_base} on this machine)")
     ci_pos += t_pos
 
     # --- Coords (2026-11-12). Enric: every model trained from now on is without Coords (worklog §5). The

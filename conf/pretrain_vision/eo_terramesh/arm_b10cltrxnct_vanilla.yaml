@@ -1,0 +1,116 @@
+# @package _global_
+#
+# ARM B10cL-tr-x10-NC-T — the temporal stage (A1) on the Coords-free base, with the modality draw. Written
+# 2026-11-17. B10cL-tr-x10-NC (SmolLM-135M's body, 29 layers of 576, trained 33,000 steps on train without
+# Coords, nc vocabulary) continued on TerraMesh's four-date locations, mixed with Major TOM scenes, as T360-T
+# continued T360, with three changes: no Coords anywhere (the nc layout: DEM is the only static), no length
+# ramp (Step 9's arm 3: it only delayed the four-date task), and the modality draw.
+#
+# ┌── THE DIFF FROM ITS BASE'S ARM (arm_b10ctrxnc_vanilla), IN FULL ─────────────────────────────────────┐
+# │                                      B10c(L)-tr-x10-NC        this                                   │
+# │   dataset                            terramesh_multimodal     terramesh_temporal                     │
+# │   max_length                         990                      2788 (four dates, DEM the only static) │
+# │   model_config.vocab_size            81188                    81296 (BEN's 21 reserved, 87 date ids) │
+# │   total_batch_size                   256 scenes               16 micro-batches (~258k tokens)        │
+# │   per_device_train_batch_size        16                       1 (one micro-batch)                    │
+# │   per_device_eval_batch_size         4 (inherited)            1                                      │
+# │   temporal                           absent                   every key below                        │
+# │   pretrain_init                      absent                   continue, the extended base            │
+# │   learning_rate                      3e-3                     3e-4 (T360-T's arm 2: a tenth of peak) │
+# │   num_train_steps                    33000                    23680 (8 passes)                       │
+# │   stop_steps                         33000                    2960 (the pilot: one pass, 4 epochs)   │
+# │   num_warmup_steps                   165                      296 (a tenth of a pass)                │
+# │   lr_scheduler_kwargs.num_decay_steps 3300                    2368 (the last 10%)                    │
+# │   save_steps, eval_steps             330, 165                 740, 740 (one epoch, a quarter pass)   │
+# │   fixed_eval_steps, fixed_save_steps the dense early lists    null                                   │
+# │   dataloader_prefetch_factor         absent (torch's 2)       8 (a whole step ready)                 │
+# │ Inherited and asserted: split train, vocab nc, the six image modalities, token set clean, eval split   │
+# │ v1, random modality order, bf16, eval_on_start, 4 workers, 29 layers. Y28 in verify_temporal.py.       │
+# └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+# THE DATA (eo/data/temporal_dataset.py). One index is one homogeneous micro-batch: whole locations at four
+# dates, or 16 Major TOM scenes of at most 994 tokens (990 and a date block), half the micro-batches each.
+# THE MODALITY DRAW: each temporal micro-batch draws one kit for all of its sequences, at every date
+#   all 0.5 (S2L2A, S1GRD, NDVI, and LULC once) | S2L2A 1/6 | S1GRD 1/6 | S2L2A+S1GRD 1/6
+# and drops the statics (DEM) with probability 0.2. It holds floor(6 x 2,788 / L_kit) locations, so every
+# micro-batch holds ~16k tokens: 6 (all), 16 (one modality; 20 without DEM), 9 (S2L2A+S1GRD; 10 without).
+# A kit's share of the temporal tokens, hence of the gradient, is its probability. The eval sets: `single`
+# (the base's 4,416 held-out rows), `temporal` (the 544 dev locations, every modality), and one per eval
+# kit (the same locations without DEM, kept to the kit): temporal_S2L2A, temporal_S1GRD, temporal_S2L2A_S1GRD.
+#
+# THE SCHEDULE. A step serves 8 temporal micro-batches, ~81 locations on average, so a pass over the
+# 239,544 locations is ~2,955 steps; an epoch is 740 steps (a quarter pass), the pilot's stop 2,960 (one pass,
+# a multiple of save_steps and eval_steps: HF never saves at stop_steps alone). The full run resumes it with
+# only stop_steps changed (schedule keys are free; temporal_data.json refuses a changed design).
+#
+# THE BASE: B10cL-tr-x10-NC's checkpoint-33000 with the 108 rows appended (extend_checkpoint.py --layout
+# temporal_nc, identity-checked on CPU). It lives under ${MOR_EO_RCP} on RCP and under /data/enric here.
+# ⚠ Copy it to RCP with a SHA-256 check, never rebuild it there (a base's hash depends on the device that took
+# its new rows' mean). Every parameter trains from it, with a fresh optimizer (clevr_init, variant continue).
+#
+#   launch (RCP, one A100): jobs/train.sh vanilla10cltrxnct eo_terramesh/arm_b10cltrxnct_vanilla <run-id>
+
+defaults:
+  - arm_b10ctrxnc_vanilla
+  - _self_
+
+dataset: terramesh_temporal
+multimodal:
+  split: train
+  vocab: nc
+  active_modalities: ['S2L2A', 'S1GRD', 'S1RTC', 'DEM', 'NDVI', 'LULC']
+max_length: 2788
+model_config:
+  vocab_size: 81296
+precision: bf16
+
+total_batch_size: 16
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+
+temporal:
+  order_probs:
+    chronological: 0.4
+    leave_one_out: 0.4
+    uniform: 0.2
+  date_probs:
+    first: 0.8
+    last: 0.1
+    absent: 0.1
+  year_drop: 0.3
+  stages:
+    - {dates: 4, locations: 6, epochs: null}
+  scenes_per_microbatch: 16
+  single_share: 0.5
+  steps_per_epoch: 740
+  single_max_length: 994
+  eval_scenes_per_microbatch: 16
+  eval_locations_per_microbatch: 8
+  eval_dates: 4
+  eval_seed: 20261108
+  kits:
+    all: 0.5
+    S2L2A: 0.16666666666666666
+    S1GRD: 0.16666666666666666
+    S2L2A+S1GRD: 0.16666666666666666
+  statics_drop: 0.2
+  eval_kits: ['S2L2A', 'S1GRD', 'S2L2A+S1GRD']
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/runs/pretrain/temporal/base/b10cltrxnc_ext_temporal_nc_ckpt33000
+  variant: continue
+  freeze_body: false
+  from_stage1: null
+
+learning_rate: 0.0003
+num_train_steps: 23680
+stop_steps: 2960
+num_warmup_steps: 296
+lr_scheduler_kwargs:
+  num_decay_steps: 2368
+save_steps: 740
+eval_steps: 740
+eval_on_start: true
+fixed_eval_steps: null
+fixed_save_steps: null
+dataloader_prefetch_factor: 8

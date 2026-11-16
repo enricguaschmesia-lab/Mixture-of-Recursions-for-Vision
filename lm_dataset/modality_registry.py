@@ -97,16 +97,17 @@ def vocab_layout(cfg) -> str:
     """`multimodal.vocab`: "v1" (eo_vocab, the default) or "nc" (eo_vocab_nc, no Coords; 2026-11-14).
 
     The Coords-free layout is a second id space over the same image codebooks (eo/data/eo_vocab_nc.py),
-    so it is chosen per run here, beside the dataset's registry, and only for TerraMesh pretraining:
-    BEN's and the temporal stage's ids are appended to v1, and no nc version of either exists.
+    so it is chosen per run here, beside the dataset's registry: for TerraMesh pretraining, and for the
+    temporal stage since 2026-11-17 (eo/data/temporal_vocab_nc.py, the date rows appended to nc as
+    temporal_vocab appends them to v1). BEN's ids are appended to v1 only: no nc BEN layout exists.
     """
     mm = cfg.get("multimodal") if hasattr(cfg, "get") else None
     name = (mm.get("vocab") if mm is not None and hasattr(mm, "get") else None) or "v1"
     if name not in ("v1", "nc"):
         raise ValueError(f"multimodal.vocab {name!r}: v1 (eo_vocab) or nc (eo_vocab_nc, no Coords)")
-    if name == "nc" and registry_kind(cfg) != "eo":
-        raise ValueError(f"multimodal.vocab nc exists for TerraMesh pretraining only, not for dataset(s) "
-                         f"{dataset_names(cfg)} (no nc BEN or temporal layout)")
+    if name == "nc" and registry_kind(cfg) not in ("eo", "eo_temporal"):
+        raise ValueError(f"multimodal.vocab nc exists for TerraMesh pretraining and its temporal stage only, "
+                         f"not for dataset(s) {dataset_names(cfg)} (no nc BEN layout)")
     return name
 
 
@@ -122,6 +123,8 @@ def get_registry(cfg) -> ModuleType:
         )
     if kind == "eo" and vocab_layout(cfg) == "nc":
         return importlib.import_module("eo.data.eo_vocab_nc")
+    if kind == "eo_temporal" and vocab_layout(cfg) == "nc":
+        return importlib.import_module("eo.data.temporal_vocab_nc")
     return importlib.import_module(_MODULE_BY_KIND[kind])
 
 

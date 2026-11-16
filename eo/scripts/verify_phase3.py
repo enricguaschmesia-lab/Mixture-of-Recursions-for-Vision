@@ -2736,14 +2736,17 @@ def w32_init_comparison_arms() -> bool:
         c_vocab = True
     bad = []
     for spec in (dict(dataset="ben_multimodal", multimodal=dict(vocab="nc")),
-                 dict(dataset="terramesh_temporal", multimodal=dict(vocab="nc")),
                  dict(dataset="terramesh_multimodal", multimodal=dict(vocab="v2"))):
         try:
             vocab_layout(OmegaConf.create(spec)); bad.append(False)
         except ValueError:
             bad.append(True)
-    print(f"    control: vocab_size 87,556 with vocab nc is refused = {c_vocab}; nc for BEN, nc for the temporal "
-          f"stage and an unknown layout are refused = {all(bad)}")
+    # Since 2026-11-17 the temporal stage has an nc layout (eo/data/temporal_vocab_nc.py; verify_temporal Y25):
+    # accepted there, through its own registry, and never through eo_vocab_nc's.
+    t_nc = OmegaConf.create(dict(dataset="terramesh_temporal", multimodal=dict(vocab="nc")))
+    bad.append(vocab_layout(t_nc) == "nc" and get_registry(t_nc).__name__ == "eo.data.temporal_vocab_nc")
+    print(f"    control: vocab_size 87,556 with vocab nc is refused = {c_vocab}; nc for BEN and an unknown layout "
+          f"are refused, and nc for the temporal stage resolves to temporal_vocab_nc = {all(bad)}")
 
     # 3. The data, held out: nc ids, no Coords, and exactly B10c-NC's v1 sequences with BO/EO and PAD remapped.
     ev = load_eval_dataset_from_config(cfg)

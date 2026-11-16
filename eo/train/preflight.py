@@ -1061,7 +1061,8 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
     except (ValueError, RuntimeError, FileNotFoundError, KeyError) as e:
         if isinstance(block, dict) and block.get("variant") == CI.CONTINUE:
             hint = ("continue: pretrain_init.conversion names an extended base written by "
-                    "extend_checkpoint.py --layout temporal, with its extension.json, copied with a SHA-256 "
+                    "extend_checkpoint.py --layout temporal (v1, 87,664 ids) or --layout temporal_nc (the "
+                    "Coords-free layout, 81,296), the model's own, with its extension.json, copied with a SHA-256 "
                     "check and never rebuilt (its hash depends on the device that computed its new rows).")
         else:
             hint = ("Stage 1: launch arm_b10c{v,s,l,ls}_stage1 as it is. Stage 2: pass "

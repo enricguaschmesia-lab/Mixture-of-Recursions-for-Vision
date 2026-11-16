@@ -7,7 +7,10 @@
         --out /data/enric/runs/pretrain/phase6/base/b10_ext_ckpt3300
 
 `--layout ben`, the default, adds BEN's 21 ids. `--layout temporal` adds those and the 87 date ids
-of eo/data/temporal_vocab.py, 108 rows in all. `--device cpu` runs without a card: the check compares
+of eo/data/temporal_vocab.py, 108 rows in all. `--layout temporal_nc` (2026-11-17) does the same to a
+Coords-free (nc, 81,188-id) checkpoint: BEN's 21 reserved ids and the 87 date ids of
+eo/data/temporal_vocab_nc.py, 81,296 in all; its identity covers ids 0..81,187 and its control 1 inserts
+before nc's PAD (81,187). `--device cpu` runs without a card: the check compares
 before and after on one device, so it holds on either, and a T360 pass takes minutes.
 
 `extend()` is the same, callable (2026-11-09): eo/scripts/verify_temporal.py's Y15 extends a miniature
@@ -40,7 +43,9 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eo.data import ben_vocab as BV  # noqa: E402
 from eo.data import eo_vocab as EV  # noqa: E402
+from eo.data import eo_vocab_nc as EVNC  # noqa: E402
 from eo.data import temporal_vocab as TV  # noqa: E402
+from eo.data import temporal_vocab_nc as TVNC  # noqa: E402
 from eo.finetune import extend as X  # noqa: E402
 from eo.generate import conditional as G  # noqa: E402
 
@@ -50,7 +55,10 @@ N_ROWS_PER_CORPUS = 2    # stratified: majortom (S1RTC) AND ssl4eos12 (S1GRD) ro
 LAYOUTS = {"ben": (BV.TOTAL_VOCAB_SIZE, "ben_vocab",
                    {"base": BV.BASE, "bo_ben": BV.BO_BEN, "eo_ben": BV.EO_BEN,
                     "total": BV.TOTAL_VOCAB_SIZE, "pad_id": BV.PAD_ID}),
-           "temporal": (TV.TOTAL_VOCAB_SIZE, "temporal_vocab", TV.layout_record())}
+           "temporal": (TV.TOTAL_VOCAB_SIZE, "temporal_vocab", TV.layout_record()),
+           "temporal_nc": (TVNC.TOTAL_VOCAB_SIZE, "temporal_vocab", TVNC.layout_record())}
+#: layout -> the pretraining vocabulary it extends: the source checkpoint's size and its PAD (control 1)
+SOURCES = {"ben": EV, "temporal": EV, "temporal_nc": EVNC}
 
 
 def sha256(path: Path) -> str:
@@ -123,13 +131,16 @@ def extend(arm_config: str, checkpoint: Path, out: Path, *, seed: int = 0, layou
     X.assert_tied(model)
     batch, rows = fixed_batch(cfg, batch_rows)
     before = per_row_logits(model, batch, device)
-    v_old = EV.TOTAL_VOCAB_SIZE
-    assert before.shape[-1] == v_old
+    src = SOURCES[layout]
+    v_old = src.TOTAL_VOCAB_SIZE
+    if before.shape[-1] != v_old:
+        raise ExtensionRefused(f"--layout {layout} extends a {v_old}-id checkpoint; {checkpoint} built from "
+                               f"{arm_config} has {before.shape[-1]} (another vocabulary layout)")
     n_new = v_total - v_old
 
     # Control 1: insert before PAD. Must FAIL identity.
     ctrl = copy.deepcopy(model)
-    X.extend_vocab(ctrl, n_new, seed=seed, insert_before_pad=True, pad_id=EV.PAD_ID)
+    X.extend_vocab(ctrl, n_new, seed=seed, insert_before_pad=True, pad_id=src.PAD_ID)
     rep_c1 = X.identity_report(before, per_row_logits(ctrl, batch, device),
                                batch["attention_mask"], v_old)
     del ctrl
