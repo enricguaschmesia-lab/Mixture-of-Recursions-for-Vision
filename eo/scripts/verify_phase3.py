@@ -144,8 +144,13 @@ unverified deliverable:
                                                     depth = a recount on body positions of the label frame
                                                     (padding and delimiters in is the control); forward unchanged;
                                                     the price saved with each checkpoint and restored on a resume,
-                                                    which is refused without it. Part 2 through pretrain.py
-  W35 the warm start                     [B1, 2026-11-15] Paper B intervention 4 (eo/train/warm_start.py): a
+                                                    which is refused without it. Part 2 through pretrain.py.
+                                                    [2026-11-16, B1 Step 6] the measure (soft or hard top-1 body
+                                                    mean) and the deadband: inside it nothing moves (an ignored band
+                                                    is the control); the hard mean = a recount of the update's
+                                                    counts; Part 3 runs the hard overlay through pretrain.py (the
+                                                    soft mean fed in its place is the control)
+  W35 the warm start                    [B1, 2026-11-15] Paper B intervention 4 (eo/train/warm_start.py): a
                                                     random-router checkpoint continued exactly under a learned
                                                     router: source tensors and Adam state carried by name (groups
                                                     = MoRTrainer's), a fresh router with no state, logits = the
@@ -1966,25 +1971,36 @@ def w31_depth_shares() -> bool:
 
 
 # ---- W34: the compute target (Paper B intervention 1; B1, 2026-11-15; eo/train/compute_target.py) ----------------
-CT_SMOKES = {"eo_terramesh/arm_a10cs2ct18_mor": ("eo_terramesh/arm_a10cs2_mor", 1.8),
-             "eo_terramesh/arm_a10cs2ct20_mor": ("eo_terramesh/arm_a10cs2_mor", 2.0),
-             "eo_terramesh/arm_a10cct18_mor": (ARM_A10C, 1.8),
-             "eo_terramesh/arm_a10cct20_mor": (ARM_A10C, 2.0),
-             # the factorial's arm B (and arm D's warm-start target), v1 like arm A (Enric, 2026-11-15)
-             "eo_terramesh/arm_a10cb3trncct18_mor": ("eo_terramesh/arm_a10cb3trnc_mor", 1.8),
-             "eo_terramesh/arm_a10cb3trs2ncct18_mor": ("eo_terramesh/arm_a10cb3trs2nc_mor", 1.8)}
+#: overlay -> (parent, target, measure, deadband). Since 2026-11-16 (B1 Step 6) the smokes read the soft mean with no
+#: band, as they ran; the hard replay reads the top-1 body mean with a deadband of 0.05 (Enric's first choice, which
+#: failed its smokes); arm B reads the soft mean as built (Enric's second choice, "Soft as built (c)").
+CT_SMOKES = {"eo_terramesh/arm_a10cs2ct18_mor": ("eo_terramesh/arm_a10cs2_mor", 1.8, "soft", 0.0),
+             "eo_terramesh/arm_a10cs2ct20_mor": ("eo_terramesh/arm_a10cs2_mor", 2.0, "soft", 0.0),
+             "eo_terramesh/arm_a10cct18_mor": (ARM_A10C, 1.8, "soft", 0.0),
+             "eo_terramesh/arm_a10cct20_mor": (ARM_A10C, 2.0, "soft", 0.0),
+             # B1 Step 6's replay of the hard measure, from A10c-s2's checkpoint-1650
+             "eo_terramesh/arm_a10cs2ct18h_mor": ("eo_terramesh/arm_a10cs2_mor", 1.8, "hard", 0.05),
+             # the factorial's arm B (and arm D's warm-start target), v1 like arm A (Enric, 2026-11-15); the soft target as
+             # built (Enric, 2026-11-16: "Soft as built (c)", after the hard measure cycled and rang in B1 Step 6)
+             "eo_terramesh/arm_a10cb3trncct18_mor": ("eo_terramesh/arm_a10cb3trnc_mor", 1.8, "soft", 0.0),
+             "eo_terramesh/arm_a10cb3trs2ncct18_mor": ("eo_terramesh/arm_a10cb3trs2nc_mor", 1.8, "soft", 0.0)}
 CT_DIFF_KEYS = {"mor.token.balancing", "mor.token.compute.target", "mor.token.compute.gain",
-                "mor.token.compute.proportional", "mor.token.compute.price_init"}
+                "mor.token.compute.proportional", "mor.token.compute.price_init",
+                "mor.token.compute.measure", "mor.token.compute.deadband"}
 
 
 def _ct_proportional(block, means, states) -> bool:
     """Every controller step moved the integral by exactly gain x the gap, and set the price to proportional x
-    gap + integral (states[t] is the controller after means[t]; states[-1] the start)."""
+    gap + integral (states[t] is the controller after means[t]; states[-1] the start). The gap is measured - target,
+    or 0 when |measured - target| <= the block's deadband (written here independently of compute_target.gap)."""
     import math
     from eo.train import compute_target as CT
     prev = states[-1]
+    band = float(block.get("deadband", 0.0))
     for m, st in zip(means, states[:-1]):
         e = m - block["target"]
+        if abs(e) <= band:
+            e = 0.0
         if not (math.isclose(st["lam"] - prev["lam"], block["gain"] * e, rel_tol=1e-12, abs_tol=1e-15)
                 and math.isclose(CT.price(block, st), block["proportional"] * e + st["lam"], rel_tol=1e-12, abs_tol=1e-15)):
             return False
@@ -1995,33 +2011,44 @@ def _ct_proportional(block, means, states) -> bool:
 def w34s_compute_target() -> bool:
     """W34's CPU part, no model: the overlays, the controller rule, and the saved state.
 
-    The four smoke overlays differ from their parents in exactly the balancing mode and the compute block, and
-    their read_block is what their headers say; the twins at 1.8 and 2.0 differ in the target alone. The rule moves
-    the controller in proportion to the gap. The state round-trips through compute_target.json, and a missing file,
-    another target, another step and a non-finite controller are refused. Controls: a stray seed in an overlay is
-    caught; a sign-update controller fails the proportionality check; a gap-free controller (price stuck at its
-    start) fails it too."""
+    The smoke overlays and arm B's differ from their parents in exactly the balancing mode and the compute block, and
+    their read_block is what their headers say; the twins at 1.8 and 2.0 differ in the target alone, and the soft and
+    hard 1.8 replays in the measure and the deadband alone. The rule moves the controller in proportion to the gap,
+    and (B1 Step 6, 2026-11-16) not at all inside the deadband. The hard body mean is a recount of the per-class depth
+    counts over the modality rows. The state round-trips through compute_target.json, and a missing file, another
+    target, another step, a non-finite controller, another measure, another deadband and a version-1 file under the
+    hard measure are refused; a version-1 file under the soft measure with no band, what it was written under, is
+    read. Controls: a stray seed in an overlay is caught; a sign-update controller, a price stuck at its start and a
+    controller that ignores the band each fail the rule check; padding and delimiters in the hard recount move it."""
+    import math
     import tempfile
+    import torch
     from eo.train import compute_target as CT
     ok = True
-    for arm, (parent, target) in CT_SMOKES.items():
+    for arm, (parent, target, measure, band) in CT_SMOKES.items():
         a, p = _compose(arm), _compose(parent)
         diff = _arm_diff(p, a)
         blk = CT.read_block(a)
-        good = diff == CT_DIFF_KEYS and blk == {"target": target, "gain": 0.01, "proportional": 0.5, "price_init": 0.0}
+        want = {"target": target, "gain": 0.01, "proportional": 0.5, "price_init": 0.0, "measure": measure,
+                "deadband": band}
+        good = diff == CT_DIFF_KEYS and blk == want
         print(f"    {arm.split('/')[1]} vs {parent.split('/')[1]}: differs in exactly the compute keys, target "
-              f"{blk['target'] if blk else None} = {good}")
+              f"{blk['target'] if blk else None}, {blk['measure'] if blk else None} mean, deadband "
+              f"{blk['deadband'] if blk else None} = {good}")
         if diff != CT_DIFF_KEYS:
             print(f"      measured: {sorted(diff)}")
         ok &= good
     twins = _arm_diff(_compose("eo_terramesh/arm_a10cs2ct18_mor"), _compose("eo_terramesh/arm_a10cs2ct20_mor"))
     t_ok = twins == {"mor.token.compute.target"}
     print(f"    the 1.8 and 2.0 twins differ in the target alone = {t_ok}")
+    hs = _arm_diff(_compose("eo_terramesh/arm_a10cs2ct18_mor"), _compose("eo_terramesh/arm_a10cs2ct18h_mor"))
+    h_ok = hs == {"mor.token.compute.measure", "mor.token.compute.deadband"}
+    print(f"    the soft and hard 1.8 replays differ in the measure and the deadband alone = {h_ok}")
     c1 = _arm_diff(_compose("eo_terramesh/arm_a10cs2_mor"),
                    _compose("eo_terramesh/arm_a10cs2ct18_mor", ["seed=44"])) != CT_DIFF_KEYS
     print(f"    control: a stray seed in an overlay is caught = {c1}")
 
-    blk = {"target": 1.8, "gain": 0.01, "proportional": 0.5, "price_init": 0.0}
+    blk = {"target": 1.8, "gain": 0.01, "proportional": 0.5, "price_init": 0.0, "measure": "soft", "deadband": 0.0}
     means = [2.05, 1.97, 1.91, 1.84, 1.79, 1.80, 1.83, 1.62]
     states, st = [], CT.initial_state(blk)
     for m in means:
@@ -2039,20 +2066,55 @@ def w34s_compute_target() -> bool:
     c3 = not _ct_proportional(blk, means, stuck + [CT.initial_state(blk)])
     print(f"    control: a sign update fails it = {c2}; a price stuck at its start fails it = {c3}")
 
+    # B1 Step 6 (2026-11-16): the deadband, on arm B's block and hard means of which five fall inside +-0.05
+    hblk = dict(blk, measure="hard", deadband=0.05)
+    hmeans = [2.00, 1.92, 1.84, 1.80, 1.78, 1.76, 1.60, 1.70, 1.83, 1.87]
+    inside = [i for i, m in enumerate(hmeans) if abs(m - 1.8) <= 0.05]
+    hstates, st = [], CT.initial_state(hblk)
+    for m in hmeans:
+        st = CT.step(hblk, st, m)
+        hstates.append(st)
+    b_ok = _ct_proportional(hblk, hmeans, hstates + [CT.initial_state(hblk)]) and len(inside) == 5
+    held = all(hstates[i]["e_last"] == 0.0 and hstates[i]["lam"] == hstates[i - 1]["lam"] for i in inside)
+    moved = all(hstates[i]["e_last"] != 0.0 for i in range(len(hmeans)) if i not in inside)
+    print(f"    deadband 0.05: on the {len(inside)} updates inside it the integral holds and the proportional part is "
+          f"zero, and outside it the controller moves by the rule = {bool(b_ok and held and moved)}")
+    ignored, s = [], CT.initial_state(hblk)
+    for m in hmeans:
+        e = m - hblk["target"]
+        s = {"lam": s["lam"] + hblk["gain"] * e, "e_last": e}
+        ignored.append(s)
+    c8 = not _ct_proportional(hblk, hmeans, ignored + [CT.initial_state(hblk)])
+    print(f"    control: a controller that ignores the band fails it = {c8}")
+
+    # the hard body mean: the modality rows of the per-class counts (none, three modalities, delim, pad x depths 1-3)
+    cnt = np.array([[0, 0, 0], [6, 4, 0], [0, 10, 0], [2, 0, 6], [0, 0, 7], [0, 0, 3]])
+    want_h = (6 * 1 + 4 * 2 + 10 * 2 + 2 * 1 + 6 * 3) / (6 + 4 + 10 + 2 + 6)
+    hm, hm_t = CT.hard_body_mean(cnt), CT.hard_body_mean(torch.tensor(cnt, dtype=torch.long))
+    m_ok = math.isclose(hm, want_h, rel_tol=1e-15) and hm_t == hm
+    wide = float((cnt[1:] * np.arange(1, 4)).sum() / cnt[1:].sum())
+    c9 = not math.isclose(wide, hm, rel_tol=1e-6)
+    print(f"    the hard body mean = a recount of the modality rows ({hm:.6f}), from numpy and from a tensor = {m_ok}; "
+          f"control: padding and delimiters in give {wide:.6f} = {c9}")
+
     d = Path(tempfile.mkdtemp())
     (d / "trainer_state.json").write_text(json.dumps({"global_step": 1650}))
-    CT.write_state(d, blk, states[-1], 1650, origin="W34")
-    back = CT.read_state(d, blk)
-    s_ok = back == states[-1]
-    print(f"    the controller round-trips through {CT.FILE} = {s_ok}")
+    CT.write_state(d, hblk, hstates[-1], 1650, origin="W34")
+    back = CT.read_state(d, hblk)
+    s_ok = back == hstates[-1] and json.loads((d / CT.FILE).read_text())["measure"] == "hard"
+    print(f"    the controller round-trips through {CT.FILE}, with its measure and deadband = {s_ok}")
 
-    def refused(mutate, label):
+    def v1_file(e):
+        (e / CT.FILE).write_text(json.dumps({"version": 1, "target": 1.8, "gain": 0.01, "proportional": 0.5,
+                                             "price_init": 0.0, "lam": 0.002, "e_last": -0.01, "global_step": 1650}))
+
+    def refused(mutate, label, block=hblk):
         e = Path(tempfile.mkdtemp())
         (e / "trainer_state.json").write_text(json.dumps({"global_step": 1650}))
-        CT.write_state(e, blk, states[-1], 1650, origin="W34 control")
+        CT.write_state(e, hblk, hstates[-1], 1650, origin="W34 control")
         mutate(e)
         try:
-            CT.read_state(e, blk)
+            CT.read_state(e, block)
             r = False
         except RuntimeError:
             r = True
@@ -2069,7 +2131,20 @@ def w34s_compute_target() -> bool:
     c5 = refused(set_field("target", 2.0), "a file written under target 2.0")
     c6 = refused(set_field("global_step", 1320), "a file for step 1320 in checkpoint 1650")
     c7 = refused(set_field("lam", float("nan")), "a non-finite controller")
-    return bool(ok and t_ok and c1 and r_ok and c2 and c3 and s_ok and c4 and c5 and c6 and c7)
+    c10 = refused(set_field("measure", "soft"), "a file written under the soft measure, in a hard run")
+    c11 = refused(set_field("deadband", 0.0), "a file written with no deadband, in a run with 0.05")
+    c12 = refused(v1_file, "a version-1 file (soft, no band) in a hard run")
+    e = Path(tempfile.mkdtemp())
+    (e / "trainer_state.json").write_text(json.dumps({"global_step": 1650}))
+    v1_file(e)
+    try:
+        v1_ok = CT.read_state(e, blk) == {"lam": 0.002, "e_last": -0.01}
+    except RuntimeError as err:
+        print(f"      {err}")
+        v1_ok = False
+    print(f"    a version-1 file is read as what it was written under, soft with no band = {v1_ok}")
+    return bool(ok and t_ok and h_ok and c1 and r_ok and c2 and c3 and b_ok and held and moved and c8 and m_ok and c9
+                and s_ok and c4 and c5 and c6 and c7 and c10 and c11 and c12 and v1_ok)
 
 
 def _w34_rows(f):
@@ -2091,6 +2166,14 @@ def _w34_body_soft(hd, row, include_delim=False):
     return float(soft[keep].sum() / counts[keep].sum())
 
 
+def _w34_body_hard(hd, row):
+    """The update's top-1 body mean, recounted from the row's per-class depth counts (B1 Step 6)."""
+    cls = hd["classes"]
+    keep = [i for i, c in enumerate(cls) if c not in ("none", "delim", "pad")]
+    c = np.asarray(row["counts"], dtype=np.float64)[keep]
+    return float((c * np.arange(1, c.shape[1] + 1)).sum() / c.sum())
+
+
 def w34_compute_target() -> bool:
     """W34, with the model. Part 1 in process (CPU, fp32, an untrained A10c-s2-ct18, two held-out rows, training
     mode): the priced soft depth equals a recount from the router's own probabilities (a forward hook) over the
@@ -2105,7 +2188,13 @@ def w34_compute_target() -> bool:
     the priced soft mean equals the per-class sums' body mean; checkpoint-2 holds compute_target.json for step 2 with
     that controller; a resume from a copy of checkpoint-2 trains its update 3 under the saved price. Controls: the
     per-class mean with padding and delimiters in differs; the copy without compute_target.json is refused, and so is
-    a copy whose file names target 2.0."""
+    a copy whose file names target 2.0.
+
+    Part 3 (B1 Step 6, 2026-11-16) through pretrain.py under the hard measure (A10c-s2-ct18h, 3 updates, the same
+    settings): every row records both means and the measure; its hard mean equals a recount of its own counts; the
+    controller reads the hard mean with the band (each row's in_band flag is |hard - target| <= 0.05), and each next
+    price is the rule's, which the following row trains under. Control: the soft mean fed in place of the hard one
+    gives other prices. The band itself is W34s's (an untrained router need not land inside it)."""
     import math
     import shutil
     import time
@@ -2289,7 +2378,50 @@ def w34_compute_target() -> bool:
     print(f"    control: a copy whose file names target 2.0 is refused (rc {rc_t}) = {c5}")
     for p in base.glob(f"w34_{stamp}*"):
         shutil.rmtree(p, ignore_errors=True)
-    return bool(ok1 and first and chain and cons and c3 and s_ok and r_ok and c4 and c5)
+
+    # ---- Part 3 (B1 Step 6, 2026-11-16): the hard measure through pretrain.py ----
+    HARD = "eo_terramesh/arm_a10cs2ct18h_mor"
+    hblk = CT.read_block(_compose(HARD))
+    root_h = base / f"w34h_{stamp}"
+    rc_h, log_h = _pretrain(HARD, f"gate_w34/w34h_{stamp}", over + [f"hydra.run.dir={root_h}/hydra"], env)
+    root_h.mkdir(parents=True, exist_ok=True)
+    (root_h / f"pretrain_{int(time.time())}.log").write_text(log_h)
+    fh = root_h / "depth_shares.jsonl"
+    h_ok = c6 = False
+    if rc_h == 0 and fh.is_file():
+        hdh, rh = _w34_rows(fh)
+        st_h = CT.initial_state(hblk)
+        st_s = CT.initial_state(hblk)          # the control: the soft mean fed in place of the hard one
+        chain_h = rh.get(1, {}).get("ct", {}).get("price") == hblk["price_init"]
+        recount = flags = True
+        diverge, n_in = False, 0
+        for s in (1, 2, 3):
+            r = rh.get(s)
+            if r is None or "hard_mean" not in r.get("ct", {}):
+                chain_h = False
+                break
+            c = r["ct"]
+            recount &= math.isclose(_w34_body_hard(hdh, r), c["hard_mean"], rel_tol=1e-12) and c["measure"] == "hard"
+            inb = abs(c["hard_mean"] - hblk["target"]) <= hblk["deadband"]
+            flags &= c["in_band"] == inb
+            n_in += int(inb)
+            chain_h &= c["price"] == CT.price(hblk, st_h)
+            st_h = CT.step(hblk, st_h, c["hard_mean"])
+            chain_h &= c["next"] == CT.price(hblk, st_h)
+            st_s = CT.step(hblk, st_s, c["soft_mean"])
+            diverge |= CT.price(hblk, st_s) != c["next"]
+        h_ok, c6 = bool(chain_h and recount and flags), bool(diverge)
+        print(f"    Part 3 ({HARD.split('/')[1]}, 3 updates): each row's hard mean = a recount of its counts, the "
+              f"controller reads it with the band ({n_in} of 3 rows inside), each next price is the rule's and the next "
+              f"row trains under it = {h_ok}  (hard {[round(rh[s]['ct']['hard_mean'], 4) for s in sorted(rh)]}, soft "
+              f"{[round(rh[s]['ct']['soft_mean'], 4) for s in sorted(rh)]}, prices "
+              f"{[round(rh[s]['ct']['price'], 5) for s in sorted(rh)]})")
+        print(f"    control: the soft mean fed in place of the hard one gives other prices = {c6}")
+    else:
+        print(f"    Part 3: pretrain.py rc {rc_h}, depth_shares.jsonl present {fh.is_file()}: see {root_h}")
+        return False
+    shutil.rmtree(root_h, ignore_errors=True)
+    return bool(ok1 and first and chain and cons and c3 and s_ok and r_ok and c4 and c5 and h_ok and c6)
 
 
 # ---- W35: the warm start (Paper B intervention 4; B1, 2026-11-15; eo/train/warm_start.py) ------------------------

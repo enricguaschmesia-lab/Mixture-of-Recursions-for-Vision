@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Paper B's five convergence criteria as pass or fail, for one arm of runs (B1, 2026-11-15).
+"""Paper B's convergence criteria as pass or fail, with criterion 4 as a signal, for one arm of runs (B1).
 
 The criteria were fixed on 2026-11-05 (direction note, "What counts as convergence"); the meeting of 11 Nov ratified
 how they are read (worklog §5, item 56): time means over B0's four windows, criterion 4 by the regret test on five
@@ -7,6 +7,11 @@ slots in both frames, Coords out, S1 as one slot. This script applies them to th
 learned-router run writes since wave 1 (`depth_shares.jsonl`, util/trainer_pt.py, gate W31), so the factorial's arms
 (Paper B plan, B2) are all read by one rule. Windows, in update steps, ends included: early 330-990, plateau 990-2970,
 late 1980-3300, anneal 2970-3300. A time mean is the mean over updates of each class's shares (b3_depth_shares.py).
+
+SUCCESS (changed 2026-11-16, Enric; worklog §5): C1, C2 and C3 pass, and C5 passes or is n/a. C4, and every depth
+direction predicted before a run, are SIGNALS: read by their rules and reported beside the verdict, never part of it.
+An allocation that reproduces and beats its comparisons is a success even if it runs against the gain. Until then the
+verdict was all five, C4 included; the JSON keeps that one as passes_all_rule_2026_11_15, so an arm reads both ways.
 
   C1 REPRODUCIBLE  per pair of seeds, in the plateau and in the late window: Spearman of the six image modalities'
                    mean depths >= 0.9 and every modality within 0.3 passes (B0 Step 4's rule). Passes if every pair
@@ -22,16 +27,20 @@ late 1980-3300, anneal 2970-3300. A time mean is the mean over updates of each c
                    as b3_criteria.py fixed it (2026-11-15, 12:28), which read arm A first; the two agree on arm A.
                    Passes if every modality of every run is stable.
   C3 WORTH IT      after retraining at equal compute the allocation beats its permuted tables, the other seed's and
-                   a histogram-matched random router, each by more than the cell's seed gap. Needs B1's transplants
-                   or retrains (open decision 2); not readable from depth shares, so "not measured" until they exist.
-  C4 MEANINGFUL    per run, the regret of its time-mean allocation (five slots, S1 pooled by held-out token share)
+                   a histogram-matched random router, each by more than the cell's seed gap. Since 2026-11-16 it
+                   must also beat fixed depth (uniform 2) and the matched vanilla (B10c-5L-tr-NC in the cell), each
+                   by more than the cell's seed gap too (Enric). Needs B1's transplants or retrains (open
+                   decision 2); not readable from depth shares, so "not measured" until they exist.
+  C4 MEANINGFUL    A SIGNAL since 2026-11-16, never part of the verdict.
+                   per run, the regret of its time-mean allocation (five slots, S1 pooled by held-out token share)
                    at its own load against the transport optimum, with p over its 120 slot relabellings
                    (b0_criterion4.regret_test); follows the gain if p <= 0.05 in the plateau and late windows.
                    The cost table is the cell's random-router CE at depths 1-3 per slot: target only (primary; mean
                    of the five late checkpoints, tforce units) and all forced (beside; the cell has 1980 and 3300).
                    *Proposed 2026-11-15, before any arm's C4 was read:* the primary table is the mean of the cell's
                    two random-router seeds' tables (both scored on the same held-out rows), each seed's verdict
-                   reported beside. Passes if every run follows the gain in the primary frame.
+                   reported beside. Reads "follows the gain" if every run follows it in the primary frame, and
+                   "does not follow the gain" otherwise.
   C5 DISCOVERED    a method that injects anything per modality must return to the same allocation from a permuted
                    start and reach the same conclusion when its knob moves 2-4x: read with C1's pair rule between
                    those runs and the arm's seeds. An arm that injects nothing per modality (the balancing loss, the
@@ -45,6 +54,7 @@ time means must equal b3_depth_shares' stored readings, and C1's numbers b3_seed
 
     .venv/bin/python eo/experiments/routing/paper_b_criteria.py --self-test
     .venv/bin/python eo/experiments/routing/paper_b_criteria.py read A
+    .venv/bin/python eo/experiments/routing/paper_b_criteria.py read C990     (arm C: from its switch on; C1980 too)
 
 Writes /data/enric/reports/b1/criteria/<arm>.{json,txt}. Runs in `.venv`, CPU, seconds.
 """
@@ -94,6 +104,21 @@ ARMS = {
           "runs": {"a10cb3trnc": RUNS / "mor10cb3trnc_20261112_101703",
                    "a10cb3trs2nc": RUNS / "mor10cb3trs2nc_20261113_072043"},
           "stored": True},
+    # Arm C (intervention 4, 2026-11-16): a random-router checkpoint continued exactly under arm A's learned router
+    # (eo/train/warm_start.py). Its router exists only from the switch on, so the windows before it are left out, and
+    # the windows read are B0's by their steps, from the switch: at 990 the plateau starts with the router's first
+    # update; at 1980 the plateau holds only its first 990 updates and C2's first window (1980-2640) starts at the
+    # switch, as flagged for the meeting (worklog §4, item 69).
+    "C990": {"label": "arm C at 990: A10cR-b3-tr-NC's checkpoint-990 continued under a learned router (seeds 42, 43)",
+             "cell": "b3trnc", "router_forms": 1, "injects_per_modality": False, "switch": 990,
+             "windows": ("plateau", "late", "anneal"),
+             "runs": {"c990s42": RUNS / "mor10cwb3trnc990_20261116_175333",
+                      "c990s43": RUNS / "mor10cwb3trs2nc990_20261116_175333"}},
+    "C1980": {"label": "arm C at 1980: A10cR-b3-tr-NC's checkpoint-1980 continued under a learned router (seeds 42, 43)",
+              "cell": "b3trnc", "router_forms": 1, "injects_per_modality": False, "switch": 1980,
+              "windows": ("plateau", "late", "anneal"),
+              "runs": {"c1980s42": RUNS / "mor10cwb3trnc1980_20261116_175333",
+                       "c1980s43": RUNS / "mor10cwb3trs2nc1980_20261116_175333"}},
 }
 
 
@@ -136,10 +161,10 @@ def per_update_depth(classes, steps, counts, m, a, b):
 
 # ------------------------------------------------------------------------------------------------ the criteria
 
-def c1_pair(da: dict, db: dict, w_grd: float) -> dict:
+def c1_pair(da: dict, db: dict, w_grd: float, windows=tuple(WINDOWS)) -> dict:
     """C1 for one pair: per window, rho over the six image modalities with its exact p, max and mean |d|, verdict."""
     out = {}
-    for w in WINDOWS:
+    for w in windows:
         a = [depth(da[w][m]) for m in IMG]
         b = [depth(db[w][m]) for m in IMG]
         mad, pm = BT.meanabs(a, b)
@@ -226,9 +251,9 @@ def cell_costs(cell: str):
     return out, mean, w_grd, w_slot
 
 
-def c4_run(dm: dict, costs: dict, mean: dict, w_grd: float, w_slot: np.ndarray) -> dict:
+def c4_run(dm: dict, costs: dict, mean: dict, w_grd: float, w_slot: np.ndarray, windows=tuple(WINDOWS)) -> dict:
     out = {}
-    for w in WINDOWS:
+    for w in windows:
         mix = five(dm[w], w_grd)
         r = {"depth": [depth(x) for x in mix]}
         for frame in ("target_only", "all_forced"):
@@ -264,23 +289,36 @@ def read_arm(name: str) -> int:
     check_t()
     arm = ARMS[name]
     costs, mean, w_grd, w_slot = cell_costs(arm["cell"])
+    WIN = {w: WINDOWS[w] for w in arm.get("windows", WINDOWS)}     # an arm whose router starts late reads fewer
+    if not set(C1_WINDOWS) | set(C4_WINDOWS) <= set(WIN):
+        raise SystemExit(f"arm {name}: its windows {list(WIN)} leave out a rule window")
     data, dm = {}, {}
     for tag, d in arm["runs"].items():
+        if not (Path(d) / "depth_shares.jsonl").is_file():     # an arm read while its later seeds still train
+            print(f"  {tag}: no {d}/depth_shares.jsonl yet; read without it")
+            continue
         data[tag] = load_run(d)
-        dm[tag] = {w: mixes(*data[tag], *ab) for w, ab in WINDOWS.items()}
-    tags = list(arm["runs"])
+        if "switch" in arm and int(data[tag][1][0]) != arm["switch"] + 1:
+            raise SystemExit(f"{tag}: its depth shares start at {data[tag][1][0]}, not at switch {arm['switch']} + 1")
+        dm[tag] = {w: mixes(*data[tag], *ab) for w, ab in WIN.items()}
+    tags = list(dm)
+    if not tags:
+        raise SystemExit(f"arm {name}: no run has depth shares yet")
     L = [f"Paper B criteria, {arm['label']}; cell: {CELLS[arm['cell']]['label']}",
          f"  runs: " + ", ".join(f"{t} ({arm['runs'][t].name})" for t in tags),
          f"  slots: S1 pooled by held-out token share (S1GRD {w_grd:.4f}); slot weights {np.round(w_slot, 4).tolist()}"]
+    if "switch" in arm:
+        L.append(f"  router from the switch at {arm['switch']}: windows " + ", ".join(
+            f"{w} {max(a, arm['switch'] + 1)}-{b}" for w, (a, b) in WIN.items()))
 
     # ---- controls ----
     ctl = {}
-    selfp = c1_pair(dm[tags[0]], dm[tags[0]], w_grd)
+    selfp = c1_pair(dm[tags[0]], dm[tags[0]], w_grd, WIN)
     ctl["c1_self_passes"] = bool(selfp["passes"] and all(abs(selfp[w]["rho"] - 1) < 1e-12 and selfp[w]["max_abs"] == 0
                                                          for w in C1_WINDOWS))
     if len(tags) > 1:
-        shifted = {w: {m: dm[tags[1]][w][IMG[(i + 1) % 6]] for i, m in enumerate(IMG)} for w in WINDOWS}
-        ctl["c1_shuffled_fails"] = not c1_pair(dm[tags[0]], shifted, w_grd)["passes"]
+        shifted = {w: {m: dm[tags[1]][w][IMG[(i + 1) % 6]] for i, m in enumerate(IMG)} for w in WIN}
+        ctl["c1_shuffled_fails"] = not c1_pair(dm[tags[0]], shifted, w_grd, WIN)["passes"]
     ctl["c2_synthetic"] = c2_synthetic_ok()
     ctl["c4_optimum_passes_worst_fails"] = all(c4_controls(dm[t], mean, w_grd, w_slot) for t in tags)
     if arm.get("stored"):
@@ -288,20 +326,21 @@ def read_arm(name: str) -> int:
     L.append("  controls: " + ", ".join(f"{k} {'holds' if v else 'FAILS'}" for k, v in ctl.items()))
 
     # ---- C1 ----
-    pairs = {f"{a}|{b}": c1_pair(dm[a], dm[b], w_grd) for a, b in itertools.combinations(tags, 2)}
+    pairs = {f"{a}|{b}": c1_pair(dm[a], dm[b], w_grd, WIN) for a, b in itertools.combinations(tags, 2)}
     if arm.get("stored") and len(tags) == 2:
         ctl["reproduces_b3_seed_tables"] = reproduces_seed_tables(tags, pairs[f"{tags[0]}|{tags[1]}"])
         L.append(f"  control: C1's numbers equal b3_seed_tables' stored reading: "
                  f"{'holds' if ctl['reproduces_b3_seed_tables'] else 'FAILS'}")
     n_seeds, forms = len(tags), int(arm["router_forms"])
     all_pairs = bool(pairs) and all(p["passes"] for p in pairs.values())
-    c1 = ("pass" if all_pairs and n_seeds >= 3 and forms >= 2 else
+    c1 = ("not measured (one seed)" if n_seeds < 2 else
+          "pass" if all_pairs and n_seeds >= 3 and forms >= 2 else
           f"screen pass ({n_seeds} seeds, {forms} router form{'s' if forms > 1 else ''}; the criterion asks 3 and 2)"
           if all_pairs else "fail")
     L.append(f"\n  C1 reproducible: {c1.upper()}  (rule: rho >= {C1_RHO} and every |d| <= {C1_BAND}, six image "
              f"modalities, in {' and '.join(C1_WINDOWS)})")
     for k, p in pairs.items():
-        for w in WINDOWS:
+        for w in WIN:
             r = p[w]
             L.append(f"    {k:28s} {w:8s} rho {r['rho']:+.2f} (p {r['p']:.3f})  max|d| {r['max_abs']:.3f}  mean|d| "
                      f"{r['mean_abs']:.3f} (p {r['p_mean_abs']:.3f})  five slots: rho {r['rho5']:+.2f} max|d| "
@@ -325,17 +364,19 @@ def read_arm(name: str) -> int:
              f"decision 2)")
 
     # ---- C4 ----
-    c4r = {t: c4_run(dm[t], costs, mean, w_grd, w_slot) for t in tags}
-    c4 = "pass" if all(r["follows"] for r in c4r.values()) else "fail"
-    L.append(f"\n  C4 meaningful: {c4.upper()}  (rule: regret at the run's own load, p <= {C4_P} over 120 slot "
-             f"relabellings in {' and '.join(C4_WINDOWS)}; target only primary on the mean of the cell's seeds' tables)")
+    c4r = {t: c4_run(dm[t], costs, mean, w_grd, w_slot, WIN) for t in tags}
+    c4_follows = all(r["follows"] for r in c4r.values())
+    c4 = "follows the gain" if c4_follows else "does not follow the gain"
+    L.append(f"\n  C4 meaningful, a SIGNAL (never part of the verdict since 2026-11-16): {c4.upper()}  (rule: regret "
+             f"at the run's own load, p <= {C4_P} over 120 slot relabellings in {' and '.join(C4_WINDOWS)}; target "
+             f"only primary on the mean of the cell's seeds' tables)")
     for frame in ("target_only", "all_forced"):
         C = mean[frame]
         L.append(f"    cell table, {frame.replace('_', ' ')}: CE(1) - CE(2) " + " ".join(
             f"{s} {C[k, 0] - C[k, 1]:+.4f}" for k, s in enumerate(SLOTS)) + "; CE(3) - CE(2) " + " ".join(
             f"{s} {C[k, 2] - C[k, 1]:+.4f}" for k, s in enumerate(SLOTS)))
     for t, r in c4r.items():
-        for w in WINDOWS:
+        for w in WIN:
             x = r[w]
             L.append(f"    {t:14s} {w:8s} depths " + " ".join(f"{s} {d:.2f}" for s, d in zip(SLOTS, x["depth"]))
                      + f" | target only: regret {x['target_only']['regret']:.4f} p {x['target_only']['p']:.3f} "
@@ -350,9 +391,13 @@ def read_arm(name: str) -> int:
              + (" (the arm injects nothing per modality)" if c5 == "n/a" else
                 " (needs a permuted-start run and a knob run 2-4x, read with C1's pair rule)"))
 
-    verdicts = {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5": c5}
-    every = all(v == "pass" for k, v in verdicts.items() if k != "C5") and c5 in ("pass", "n/a")
-    L.append(f"\n  VERDICTS: {verdicts}; passes all five: {every}")
+    verdicts = {"C1": c1, "C2": c2, "C3": c3, "C5": c5}
+    signals = {"C4": c4}
+    success = all(verdicts[k] == "pass" for k in ("C1", "C2", "C3")) and c5 in ("pass", "n/a")
+    old_rule = success and c4_follows          # 2026-11-15's verdict: all five, with C4 a condition
+    L.append(f"\n  VERDICTS (success needs C1, C2 and C3, and C5 where it applies): {verdicts}; success: {success}")
+    L.append(f"  SIGNALS (read and reported, never a condition): {signals}")
+    L.append(f"  under the rule of 2026-11-15 (C4 a condition): passes all five: {old_rule}")
     text = "\n".join(L)
     print(text)
     if not all(ctl.values()):
@@ -362,10 +407,12 @@ def read_arm(name: str) -> int:
     (OUT / f"{name}.txt").write_text(text + "\n")
     (OUT / f"{name}.json").write_text(json.dumps({
         "arm": name, "label": arm["label"], "cell": arm["cell"], "runs": {k: str(v) for k, v in arm["runs"].items()},
-        "controls": ctl, "verdicts": verdicts, "passes_all": every,
+        "controls": ctl, "verdicts": verdicts, "signals": signals, "success": success,
+        "passes_all_rule_2026_11_15": old_rule,
         "c1": pairs, "c2": c2r, "c4": c4r, "w_grd": w_grd, "w_slot": w_slot.tolist(),
         "cell_tables": {s: {f: v.tolist() for f, v in c.items()} for s, c in costs.items()},
-        "time_means": {t: {w: {m: dm[t][w][m].tolist() for m in IMG} for w in WINDOWS} for t in tags},
+        "time_means": {t: {w: {m: dm[t][w][m].tolist() for m in IMG} for w in WIN} for t in tags},
+        "windows": {w: list(ab) for w, ab in WIN.items()}, "switch": arm.get("switch"), "runs_read": tags,
     }, indent=1, default=float))
     return 0
 

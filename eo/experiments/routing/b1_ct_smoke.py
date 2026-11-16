@@ -34,6 +34,18 @@ Adam state is mature; arm B starts from a uniform router, a fresh Adam and a 165
 move the soft mean 0.32 passes. So its smoke reads the same R-hold with the windows moved to the end of 330 updates:
 transient 1-230, read 231-330, late 281-330 (the plateau's first 165 updates are 166-330).
 
+THE HARD MEASURE (B1 Step 6; Enric, 2026-11-16: "Hard mean (a)"). When the run's header says `measure: hard`, the
+controller read the update's top-1 body mean with a deadband, and the rule is R-hold-hard, fixed in the B1 plan on
+2026-11-15 (Step 6) before any hard smoke ran:
+  R-hold-hard  Over 1751-1850, the time mean of the body HARD mean is within the deadband (0.05) of the target, and
+               no update over 1801-1850 is more than 0.10 passes away (half a slot). With --scratch: 231-330 and
+               281-330. The hard mean is recounted from each update's counts, independently of the trainer's record
+               (which must equal it). R-ring is read as above, against the stored control.
+  Description, read by no rule: the soft mean beside it, the updates inside the band, the hard mean's changes, the
+  price's path. A signal (decision 13), given --signal-table: each slot's hard time-mean depth over the read window
+  (S1 pooled by positions) beside a predicted table, e.g. A10c-s2's own gain-optimal table at 1.8 from its first
+  passes at 1650: S2L2A 1, S1 3, DEM 1, NDVI 3, LULC 1 (Paper B plan, B2).
+
 Writes /data/enric/reports/b1/smoke/<tag>.{json,txt}. Runs in `.venv`, CPU, seconds.
 """
 from __future__ import annotations
@@ -52,8 +64,10 @@ OUT = Path("/data/enric/reports/b1/smoke")
 IMG = ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC"]
 WIN = {"transient": (1651, 1750), "read": (1751, 1850)}
 HOLD_MEAN, HOLD_MAX, HOLD_LATE = 0.02, 0.10, (1801, 1850)
+HOLD_HARD_MEAN, HOLD_HARD_MAX = 0.05, 0.10          # R-hold-hard (B1 plan, Step 6), fixed 2026-11-15
 RING_P = 0.01
 DEM1 = 0.5
+SLOTS = {"S2L2A": ["S2L2A"], "S1": ["S1GRD", "S1RTC"], "DEM": ["DEM"], "NDVI": ["NDVI"], "LULC": ["LULC"]}
 
 
 def load(path: Path):
@@ -137,12 +151,41 @@ def read(classes, steps, counts, soft, ct, hdr, rng) -> dict:
                        "price_read_range": [float(p_ct[sel].min()), float(p_ct[sel].max())] if sel.any() else None,
                        "soft_path": {int(s): round(float(v), 4) for s, v in zip(s_ct[::10], m_ct[::10])},
                        "price_path": {int(s): round(float(v), 5) for s, v in zip(s_ct[::10], p_ct[::10])}}
+        if block.get("measure", "soft") == "hard":
+            # R-hold-hard (B1 Step 6): the hard mean recounted from the counts, not the trainer's record
+            band = float(block.get("deadband", 0.0))
+            gap = hard - tgt
+            hsel = (steps >= a) & (steps <= b)
+            hlate = (steps >= HOLD_LATE[0]) & (steps <= HOLD_LATE[1])
+            rec = [abs(float(ct[int(s)]["hard_mean"]) - float(h)) < 1e-9 for s, h in zip(steps, hard)
+                   if int(s) in ct and "hard_mean" in ct[int(s)]]
+            mg = float(gap[hsel].mean()) if hsel.any() else None
+            ml = float(np.abs(gap[hlate]).max()) if hlate.any() else None
+            out["hold_hard"] = {
+                "target": tgt, "deadband": band, "mean_gap_read": mg, "max_gap_late": ml,
+                "holds": bool(hsel.sum() >= 50 and hlate.sum() >= 25 and abs(mg) <= HOLD_HARD_MEAN
+                              and ml <= HOLD_HARD_MAX),
+                "in_band_read": int((np.abs(gap[hsel]) <= band).sum()), "n_read": int(hsel.sum()),
+                "changes_read": int((np.abs(np.diff(hard[hsel])) > 0.02).sum()),
+                "recorded_equals_recount": bool(rec) and all(rec),
+                "hard_path": {int(s): round(float(v), 4) for s, v in zip(steps[::10], hard[::10])}}
+    a, b = WIN["read"]
+    sel = (steps >= a) & (steps <= b)
+    out["slot_depths_read"] = {}
+    d = np.arange(1, counts.shape[2] + 1)
+    for slot, mods in SLOTS.items():
+        idx = [classes.index(m) for m in mods if m in classes]
+        c = counts[sel][:, idx, :].sum((0, 1))
+        if c.sum() > 0:
+            out["slot_depths_read"][slot] = float((c * d).sum() / c.sum())
     return out
 
 
 def verdict(res: dict, ctl: dict | None) -> dict:
     v = {}
-    if "hold" in res:
+    if "hold_hard" in res:
+        v["R-hold-hard"] = "holds" if res["hold_hard"]["holds"] else "does not hold"
+    elif "hold" in res:
         v["R-hold"] = "holds" if res["hold"]["holds"] else "does not hold"
     if ctl is None:
         v["R-ring"] = "no control given"
@@ -180,6 +223,21 @@ def text(tag, src, res, v, ctl_tag=None, ctl=None) -> str:
                  f"range {h['price_read_range']})")
         L.append(f"    soft mean every 10 updates: {h['soft_path']}")
         L.append(f"    price every 10 updates: {h['price_path']}")
+    if "hold_hard" in res:
+        g = res["hold_hard"]
+        L.append(f"  R-hold-hard: target {g['target']}, deadband {g['deadband']}: HARD mean gap over the read window "
+                 f"{g['mean_gap_read']:+.4f} (rule: within {HOLD_HARD_MEAN}), largest late gap {g['max_gap_late']:.4f} "
+                 f"(rule: at most {HOLD_HARD_MAX}); {g['in_band_read']} of {g['n_read']} read updates inside the band, "
+                 f"{g['changes_read']} changes of the hard mean; the trainer's record equals the recount = "
+                 f"{g['recorded_equals_recount']}")
+        L.append(f"    hard mean every 10 updates: {g['hard_path']}")
+    if res.get("slot_depths_read"):
+        L.append("  slot hard depths over the read window: " + ", ".join(
+            f"{s} {v:.2f}" for s, v in res["slot_depths_read"].items()))
+    if res.get("signal_table"):
+        st = res["signal_table"]
+        L.append(f"  SIGNAL (decision 13; not a condition): predicted {st['predicted']}; slots within 0.5 of it: "
+                 f"{st['within']} of {len(st['predicted'])}")
     L.append(f"  ringing ties (p < {RING_P}) in the read window: {res['ringing'] or 'none'}; ties: {res['ties'] or 'none'}"
              + (f"; control {ctl_tag}: ringing {ctl['ringing'] or 'none'}, ties {ctl['ties'] or 'none'}" if ctl else ""))
     L.append(f"  VERDICTS: {v}")
@@ -200,6 +258,26 @@ def synthetic(kind: str, rng, n=200, start=1651):
     return classes, steps, counts, soft, ct, hdr
 
 
+def synthetic_hard(series, start=1651, per=200, record_offset=0.0):
+    """A hard-measure run whose body hard mean follows `series` (each modality split between depths 1 and 2)."""
+    classes, _, _ = DS.synthetic("uniform", np.random.default_rng(0), n=1)
+    n = len(series)
+    counts = np.zeros((n, len(classes), 3))
+    for t, h in enumerate(series):
+        n2 = int(round((h - 1.0) * per))
+        for i, c in enumerate(classes):
+            if c not in ("none", "delim", "pad"):
+                counts[t, i] = [per - n2, n2, 0]
+    steps = np.arange(start, start + n)
+    soft = (counts * np.arange(1, 4)).sum(2)
+    hard = 1.0 + np.array([int(round((h - 1.0) * per)) for h in series]) / per
+    ct = {int(s): {"price": 0.0, "soft_mean": float(v), "hard_mean": float(v) + record_offset, "measure": "hard",
+                   "in_band": bool(abs(v - 1.8) <= 0.05), "next": 0.0, "skipped": False} for s, v in zip(steps, hard)}
+    hdr = {"classes": classes, "compute_target": {"target": 1.8, "gain": 0.01, "proportional": 0.5, "price_init": 0.0,
+                                                  "measure": "hard", "deadband": 0.05}}
+    return classes, steps, counts, soft, ct, hdr
+
+
 def self_test() -> int:
     rng = np.random.default_rng(0)
     ok = True
@@ -207,7 +285,18 @@ def self_test() -> int:
     osc = read(*synthetic("osc", rng), rng)
     ring = read(*synthetic("ring", rng), rng)
     flat_ctl = read(*synthetic("flat", rng), rng)
+    t = np.arange(200)
+    h_held = read(*synthetic_hard(1.8 + 0.02 * np.sin(2 * np.pi * t / 17)), rng)
+    h_cycle = read(*synthetic_hard(np.where((t // 5) % 2 == 0, 1.6, 2.0)), rng)
+    h_low = read(*synthetic_hard(np.full(200, 1.7)), rng)
+    h_rec = read(*synthetic_hard(np.full(200, 1.8), record_offset=0.01), rng)
     checks = [
+        ("hard: a hard mean holding 1.8 +- 0.02 holds R-hold-hard, its record equal to the recount",
+         h_held["hold_hard"]["holds"] and h_held["hold_hard"]["recorded_equals_recount"]
+         and verdict(h_held, None)["R-hold-hard"] == "holds"),
+        ("hard: a whole slot cycling 1.6 / 2.0 (mean 1.8) does not hold", not h_cycle["hold_hard"]["holds"]),
+        ("hard: a hard mean stuck at 1.7 does not hold", not h_low["hold_hard"]["holds"]),
+        ("hard: a record that differs from the recount is flagged", not h_rec["hold_hard"]["recorded_equals_recount"]),
         ("a price holding 1.8 +- 0.005 holds", held["hold"]["holds"]),
         ("a soft mean swinging +-0.15 does not hold", not osc["hold"]["holds"]),
         ("a planted period-4 tie (NDVI) is a ringing tie", ring["ringing"] == ["NDVI"]),
@@ -230,6 +319,7 @@ def main() -> int:
     ap.add_argument("--control", nargs=2, metavar=("TAG", "RUN_DIR"))
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--scratch", action="store_true", help="arm B from step 0: windows 1-230 and 231-330, late 281-330")
+    ap.add_argument("--signal-table", help="a predicted table read as a signal, e.g. S2L2A=1,S1=3,DEM=1,NDVI=3,LULC=1")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
@@ -243,6 +333,11 @@ def main() -> int:
     rng = np.random.default_rng(0)
     src = a.run_dir / "depth_shares.jsonl"
     res = read(*load(src), rng)
+    if a.signal_table:
+        pred = {k: int(v) for k, v in (x.split("=") for x in a.signal_table.split(","))}
+        got = res.get("slot_depths_read", {})
+        res["signal_table"] = {"predicted": pred,
+                               "within": int(sum(abs(got[k] - v) <= 0.5 for k, v in pred.items() if k in got))}
     ctl = None
     if a.control:
         ctl = read(*load(Path(a.control[1]) / "depth_shares.jsonl"), np.random.default_rng(0))

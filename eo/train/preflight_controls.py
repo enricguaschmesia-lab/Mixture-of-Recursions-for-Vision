@@ -928,7 +928,9 @@ def main(argv=None) -> int:
     # without compute_target.json (the price would restart silently), with one written under another target or for
     # another step, and a balancing run resuming a compute-target checkpoint. ---
     from eo.train import compute_target as CTm
-    ct_good = {"target": 1.8, "gain": 0.01, "proportional": 0.5, "price_init": 0.0}
+    # arm B's form since 2026-11-16 (B1 Step 6): the hard body mean with a deadband of 0.05
+    ct_good = {"target": 1.8, "gain": 0.01, "proportional": 0.5, "price_init": 0.0, "measure": "hard", "deadband": 0.05}
+    ct_soft = {**ct_good, "measure": "soft", "deadband": 0.0}
     ct_blk = CTm.read_block({"mor": {"token": {"balancing": "compute", "compute": ct_good}},
                              "recursive": {"num_recursion": 3}})
 
@@ -947,10 +949,20 @@ def main(argv=None) -> int:
                             step if file_step is None else file_step, origin="preflight control")
         return d
 
+    def ct_ckpt_v1(name, step=20):
+        """A compute_target.json as written before 2026-11-16 (version 1: no measure, no deadband)."""
+        d = tmp / f"run_ct_{name}"
+        c = _fake_checkpoint(d, "mor", step=step)
+        (c / "trainer_state.json").write_text(json.dumps({"train_batch_size": 4, "global_step": step}))
+        (c / CTm.FILE).write_text(json.dumps({"version": 1, "target": 1.8, "gain": 0.01, "proportional": 0.5,
+                                              "price_init": 0.0, "lam": 0.01, "e_last": -0.05, "global_step": step}))
+        return d
+
     def ct_resume(run, config):
         return dict(env=GOOD_ENV, run_dir=run, resuming=True, allow_existing=True, config=config)
 
     ct_ok = ct_cfg()
+    ct_soft_ok = ct_cfg(mor__token__compute=dict(ct_soft))
     cases += [(label, "compute target", kw) for label, kw in [
         ("compute: no mor.token.compute block",        dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute=None))),
         ("compute: gain missing",                      dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={
@@ -970,17 +982,31 @@ def main(argv=None) -> int:
         ("compute: resume, the file is for step 10",   ct_resume(ct_ckpt("other_step", file_step=10), ct_ok)),
         ("compute: balancing run on a ct checkpoint",  ct_resume(ct_ckpt("as_balancing"),
                                                                  _broken_config(tmp, multimodal__active_modalities=list(IMAGE_MODALITIES)))),
+        # B1 Step 6 (2026-11-16): the measure and the deadband
+        ("compute: a misspelt measure (hrad)",         dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_good, "measure": "hrad"}))),
+        ("compute: a 2026-11-15 block (no measure)",   dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={
+            k: v for k, v in ct_good.items() if k not in ("measure", "deadband")}))),
+        ("compute: deadband -0.01",                    dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_good, "deadband": -0.01}))),
+        ("compute: deadband 0.1 (half a slot)",        dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_good, "deadband": 0.1}))),
+        ("compute: resume, the file's measure is soft", ct_resume(ct_ckpt("other_measure", measure="soft"), ct_ok)),
+        ("compute: resume, the file's deadband is 0",  ct_resume(ct_ckpt("other_band", deadband=0.0), ct_ok)),
+        ("compute: resume, a version-1 file, hard run", ct_resume(ct_ckpt_v1("v1_hard"), ct_ok)),
     ]]
     ci_pos += [(label, "compute target", res) for label, res in [
         ("compute: a good block, a new run",           _results(env=GOOD_ENV, config=ct_ok)),
         ("compute: resumed with its own file",         _results(**ct_resume(ct_ckpt("good"), ct_ok))),
         ("compute: n/a on a balancing run",            _results(env=GOOD_ENV, overrides=NO_COORDS)),
+        ("compute: the soft measure, a new run",       _results(env=GOOD_ENV, config=ct_soft_ok)),
+        ("compute: a version-1 file, soft run",        _results(**ct_resume(ct_ckpt_v1("v1_soft"), ct_soft_ok))),
     ] + [
         (f"compute: {arm} as shipped (replays only)", _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml",
                                                                run_dir=ct_ckpt(f"ship_{arm}", **{
-                                                                   "target": 2.0 if "ct20" in arm else 1.8}),
+                                                                   "target": 2.0 if "ct20" in arm else 1.8,
+                                                                   **({} if arm.endswith("18h_mor") else
+                                                                      {"measure": "soft", "deadband": 0.0})}),
                                                                resuming=True, allow_existing=True))
-        for arm in ("arm_a10cs2ct18_mor", "arm_a10cs2ct20_mor", "arm_a10cct18_mor", "arm_a10cct20_mor")
+        for arm in ("arm_a10cs2ct18_mor", "arm_a10cs2ct20_mor", "arm_a10cct18_mor", "arm_a10cct20_mor",
+                    "arm_a10cs2ct18h_mor")
     ] + [
         (f"compute: {arm} as shipped, a new run (arm B)", _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml"))
         for arm in ("arm_a10cb3trncct18_mor", "arm_a10cb3trs2ncct18_mor")

@@ -50,7 +50,8 @@ REQUIRED = ("pytorch_model.bin", "optimizer.pt", "scheduler.pt", "rng_state.pth"
 #: The keys a target config may change against its source: the router, and the compute target's own.
 ALLOWED_DIFF = {"mor.rand_router"}
 COMPUTE_DIFF = {"mor.token.balancing", "mor.token.compute.target", "mor.token.compute.gain",
-                "mor.token.compute.proportional", "mor.token.compute.price_init"}
+                "mor.token.compute.proportional", "mor.token.compute.price_init",
+                "mor.token.compute.measure", "mor.token.compute.deadband"}     # the last two since 2026-11-16 (B1 Step 6)
 RECORD = "warm_start.json"
 
 

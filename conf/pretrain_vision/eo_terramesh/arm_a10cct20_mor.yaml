@@ -8,6 +8,7 @@
 # │   mor.token.balancing       loss (0.1)      compute                        │
 # │   mor.token.compute         (absent)        target 2.0, gain 0.01,         │
 # │                                             proportional 0.5, price_init 0 │
+# │                                             measure soft, deadband 0       │
 # │ Nothing else. W34 in eo/scripts/verify_phase3.py asserts it.               │
 # └─────────────────────────────────────────────────────────────────────────────┘
 #
@@ -32,3 +33,5 @@ mor:
       gain: 0.01
       proportional: 0.5
       price_init: 0.0
+      measure: soft
+      deadband: 0.0

@@ -9,13 +9,17 @@
 # │   mor.token.balancing       loss (0.1)       compute                         │
 # │   mor.token.compute         (absent)         target 1.8, gain 0.01,          │
 # │                                              proportional 0.5, price_init 0  │
+# │                                              measure soft, deadband 0        │
 # │ Nothing else. W34s in eo/scripts/verify_phase3.py asserts it.                │
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # The compute target (eo/train/compute_target.py): the equal-load balancing loss is off, and a price holds the
-# router's SOFT expected depth over body positions (padding and delimiters masked) at 1.8; after each update the price
-# moves in proportion to the gap. 1.8 = one image slot at depth 1 and four at 2, the table the cell's swap readout
-# predicts for a gain-following router (DEM at depth 1; Paper B plan, B2, the cell's prediction of 2026-11-15).
+# router's SOFT expected depth over body positions (padding and delimiters masked) at 1.8; after each update the
+# price moves in proportion to the gap. The hard (top-1) mean, which compute follows, is not held: it is an outcome,
+# reported beside every reading (Enric, 2026-11-16: "Soft as built (c)", after the hard measure cycled and rang in
+# B1 Step 6; worklog section 5, item 72).
+# 1.8 = one image slot at depth 1 and four at 2, the table the cell's swap readout predicts for a gain-following
+# router (DEM at depth 1; Paper B plan, B2, the cell's prediction of 2026-11-15; a signal since 2026-11-16).
 #
 #   arm B (RCP, course project; Enric's yes first):
 #     jobs/train.sh mor10cb3trs2ncct18 eo_terramesh/arm_a10cb3trs2ncct18_mor mor10cb3trs2ncct18_<ts>
@@ -34,3 +38,5 @@ mor:
       gain: 0.01
       proportional: 0.5
       price_init: 0.0
+      measure: soft
+      deadband: 0.0

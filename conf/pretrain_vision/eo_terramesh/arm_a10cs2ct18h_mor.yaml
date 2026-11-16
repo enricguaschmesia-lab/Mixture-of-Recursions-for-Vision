@@ -1,0 +1,39 @@
+# @package _global_
+#
+# SMOKE A10c-s2-ct18h — A10c-s2 under the COMPUTE TARGET at 1.8 passes, read on the HARD (top-1) body mean with a
+# deadband of +-0.05, for 200-step replays from its checkpoint-1650 on the workstation (Paper B, B1 Step 6: the
+# measure Enric chose on 2026-11-16, "Hard mean (a)"). Never a run from step 0.
+#
+# ┌── THE DIFF FROM A10c-s2 (arm_a10cs2_mor), IN FULL ─────────────────────────┐
+# │                             A10c-s2         A10c-s2-ct18h (this)           │
+# │   mor.token.balancing       loss (0.1)      compute                        │
+# │   mor.token.compute         (absent)        target 1.8, gain 0.01,         │
+# │                                             proportional 0.5, price_init 0 │
+# │                                             measure hard, deadband 0.05    │
+# │ Nothing else. W34s in eo/scripts/verify_phase3.py asserts it; against      │
+# │ arm_a10cs2ct18_mor it differs in the measure and the deadband alone.       │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# The compute target (eo/train/compute_target.py): the equal-load balancing loss is off. The controller reads the
+# update's top-1 mean depth over body positions (padding and delimiters masked); inside +-0.05 passes of the target
+# the gap counts as zero, and outside it the price moves in proportion to the gap. The price still multiplies the
+# router's SOFT expected depth in the loss, so the force on the router stays continuous.
+#
+#   replay (workstation, TITAN V under the watchdog):
+#     /data/enric/reports/b1/smoke/ct_replay.sh <run-id> eo_terramesh/arm_a10cs2ct18h_mor \
+#         /data/enric/runs/pretrain/phase3/mor10cs2_20261012_181812/checkpoint-1650 1850
+
+defaults:
+  - arm_a10cs2_mor
+  - _self_
+
+mor:
+  token:
+    balancing: compute
+    compute:
+      target: 1.8
+      gain: 0.01
+      proportional: 0.5
+      price_init: 0.0
+      measure: hard
+      deadband: 0.05

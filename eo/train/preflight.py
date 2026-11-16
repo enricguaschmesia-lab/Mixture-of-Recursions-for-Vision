@@ -1100,9 +1100,9 @@ def check_compute_target(ctx: PreflightContext) -> CheckResult:
         return CheckResult("compute target", True, "skipped (no config)")
     cfg = _load_config(ctx.config_path, ctx.overrides)
     from eo.train import compute_target as CT
-    hint = ("mor.token.compute needs exactly target (1 < t < Nr), gain > 0, proportional >= 0, price_init, on a "
-            "learned softmax router at alpha 1.0 on one GPU. A replay's copied checkpoint needs compute_target.json, "
-            "written by its launcher (compute_target.write_state).")
+    hint = ("mor.token.compute needs exactly target (1 < t < Nr), gain > 0, proportional >= 0, price_init, measure "
+            "(soft or hard) and deadband (0 <= d < 0.1), on a learned softmax router at alpha 1.0 on one GPU. A replay's "
+            "copied checkpoint needs compute_target.json, written by its launcher (compute_target.write_state).")
     try:
         block = CT.read_block(cfg)
     except ValueError as e:
@@ -1117,8 +1117,9 @@ def check_compute_target(ctx: PreflightContext) -> CheckResult:
     problems = CT.config_problems(cfg, n_gpus=ctx.n_gpus)
     if problems:
         return CheckResult("compute target", False, "; ".join(problems), hint)
-    detail = (f"target {block['target']:g} passes on body positions, gain {block['gain']:g}, proportional "
-              f"{block['proportional']:g}, price_init {block['price_init']:g}")
+    detail = (f"target {block['target']:g} passes on the {block['measure']} body mean (deadband "
+              f"{block['deadband']:g}), gain {block['gain']:g}, proportional {block['proportional']:g}, price_init "
+              f"{block['price_init']:g}")
     if ctx.resuming:
         if ck is None:
             return CheckResult("compute target", False, f"resuming, but no checkpoint-* under {ctx.run_dir}")

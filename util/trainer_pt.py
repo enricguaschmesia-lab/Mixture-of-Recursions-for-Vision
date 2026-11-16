@@ -347,8 +347,9 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                                    "sum_d d*p_d; divide by the class's counts for its mean (B1, 2026-11-15)")
                 if ct is not None:
                     hdr["compute_target"] = dict(ct["block"], rule="eo/train/compute_target.py: ct.price = the price the "
-                                                 "update trained under, ct.soft_mean = its body positions' soft mean, "
-                                                 "ct.next = the price after it")
+                                                 "update trained under, ct.soft_mean and ct.hard_mean = its body positions' "
+                                                 "soft and top-1 means, ct.measure = the one the controller read, "
+                                                 "ct.in_band = its gap was inside the deadband, ct.next = the price after it")
                 f.write(_json.dumps({"header": hdr}) + "\n")
                 d["started"] = True
             row = {"step": int(self.state.global_step), "counts": acc.tolist()}
@@ -362,8 +363,10 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
     # ---- EO: the compute target (Paper B intervention 1; B1, 2026-11-15) ----------------------------------------------
     # mor.token.balancing "compute" (eo/train/compute_target.py): no balancing loss; each micro-batch's loss gains
     # price * (its body positions' soft mean depth) / accumulation steps, so an update trains under price * m; after the
-    # optimizer step the controller moves in proportion to the update's gap m - target (compute_target.step). The soft
-    # depth is the MoR layer's eo_soft_depth, on the classes the depth shares hand it. The controller is written to
+    # optimizer step the controller moves in proportion to the update's gap from the target (compute_target.step), read
+    # on the soft mean or, with `measure: hard` (B1 Step 6, 2026-11-16), on the update's top-1 body mean, with a
+    # deadband. The soft depth is the MoR layer's eo_soft_depth, on the classes the depth shares hand it, and the top-1
+    # counts are the depth shares' own. The controller is written to
     # <checkpoint>/compute_target.json at every save (_save_rng_state) and read back on a resume, which is refused
     # without it (_ct_load). Gate W34 in eo/scripts/verify_phase3.py.
     def _ct_setup(self):
@@ -378,7 +381,7 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
         if problems:
             raise ValueError("compute target: " + "; ".join(problems))
         self._ct = {"block": block, "state": CT.initial_state(block), "sum": None, "cnt": None, "term": None,
-                    "last": None, "log": [0.0, 0]}
+                    "last": None, "log": [0.0, 0.0, 0]}
 
     def _ct_term(self):
         """This micro-batch's priced term: price * its body positions' soft mean / accumulation steps."""
@@ -393,21 +396,30 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
         return CT.price(ct["block"], ct["state"]) * term / div
 
     def _ct_update(self, skipped: bool):
-        """After an optimizer step: the update's soft mean over all its micro-batches, and the controller's step.
-        A step the grad scaler skipped moves nothing, so the controller does not move either (no wind-up)."""
+        """After an optimizer step: the update's soft and hard body means over all its micro-batches, and the
+        controller's step on the one its block measures (B1 Step 6, 2026-11-16: `measure` soft or hard; the hard mean
+        comes from the per-class top-1 counts this update accumulated for the depth shares, which are flushed after
+        this call). A step the grad scaler skipped moves nothing, so the controller does not move either (no wind-up)."""
         from eo.train import compute_target as CT
         ct = self._ct
         if ct["sum"] is None:
             raise RuntimeError("compute target: an update ended with no soft depth accumulated")
-        m = float(ct["sum"] / ct["cnt"])
-        used = CT.price(ct["block"], ct["state"])
+        acc = self._eo_depth["acc"]
+        if acc is None:
+            raise RuntimeError("compute target: an update ended with no depth counts accumulated")
+        m_soft = float(ct["sum"] / ct["cnt"])
+        m_hard = CT.hard_body_mean(acc)
+        blk = ct["block"]
+        m = m_hard if blk["measure"] == "hard" else m_soft
+        used = CT.price(blk, ct["state"])
         if not skipped:
-            ct["state"] = CT.step(ct["block"], ct["state"], m)
-        ct["last"] = {"price": used, "soft_mean": m, "next": CT.price(ct["block"], ct["state"]),
-                      "skipped": bool(skipped)}
+            ct["state"] = CT.step(blk, ct["state"], m)
+        ct["last"] = {"price": used, "soft_mean": m_soft, "hard_mean": m_hard, "measure": blk["measure"],
+                      "in_band": CT.gap(blk, m) == 0.0, "next": CT.price(blk, ct["state"]), "skipped": bool(skipped)}
         ct["sum"] = ct["cnt"] = None
-        ct["log"][0] += m
-        ct["log"][1] += 1
+        ct["log"][0] += m_soft
+        ct["log"][1] += m_hard
+        ct["log"][2] += 1
 
     def _ct_load(self, checkpoint):
         """On a resume: the controller saved with the checkpoint, refused if absent or under other settings. A
@@ -1535,12 +1547,13 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                 logs["balancing_entropy"] = round(bal_tr_entropy_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
                 logs["router_z_loss"] = round(router_z_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
                 ct = getattr(self, "_ct", None)
-                if ct is not None:      # EO compute target (B1): the price ahead, the window's mean soft body depth
+                if ct is not None:      # EO compute target (B1): the price ahead, the window's mean body depths
                     from eo.train import compute_target as CT
                     logs["ct_price"] = round(CT.price(ct["block"], ct["state"]), 6)
-                    if ct["log"][1]:
-                        logs["ct_soft_depth"] = round(ct["log"][0] / ct["log"][1], 4)
-                    ct["log"] = [0.0, 0]
+                    if ct["log"][2]:
+                        logs["ct_soft_depth"] = round(ct["log"][0] / ct["log"][2], 4)
+                        logs["ct_hard_depth"] = round(ct["log"][1] / ct["log"][2], 4)
+                    ct["log"] = [0.0, 0.0, 0]
             
             # ⚠ The per-modality drain used to sit here. It now lives in
             # PerModalityLossMixin.log(), which self.log(logs, start_time)

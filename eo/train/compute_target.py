@@ -31,6 +31,20 @@ gate W31): position t counts under the modality of the token it predicts (t + 1)
 Positions predicting a BO/EO, padding and the last position are masked (5.5% of positions; every learned run
 put them at depth 3, and with them in, the statistic would price a free 0.166 of depth-3 load).
 
+WHAT THE CONTROLLER READS (`measure`, added 2026-11-16; Enric: "Hard mean (a)", B1 plan Step 5, decision 12). B1's
+smokes found the router's probabilities stay diffuse, so the soft mean is not the compute: a soft target of 1.8 held
+the soft mean to 0.003 while the hard (top-1) body mean, which is what compute follows, settled at 1.38. So:
+
+    measure: soft   e_t = soft mean - target   (as built; the four smoke overlays keep it)
+    measure: hard   e_t = hard mean - target   (the update's top-1 depths over its body positions, from the
+                                                per-class counts the depth shares already accumulate)
+
+Either way the price still multiplies the SOFT mean in the loss, so the force on the router stays continuous; only
+what the controller measures changes. The hard mean moves in whole-modality steps (each image slot is 0.2 of the
+mean per pass), so a DEADBAND: when |e_t| <= deadband the gap counts as zero (the integral holds and the
+proportional part is zero), and outside it the rule above applies to the full gap. 0 <= deadband < 0.1 (half a
+slot); arm B uses 0.05, a quarter of a slot, so a whole-modality 1.8 sits inside it.
+
 THE PRICE IS TRAINER STATE, not a weight: <checkpoint>/compute_target.json, written at every save and read back
 on a resume. A resume without it is refused, because a price restarted at its initial value would be a silent
 transient (bal_warmup_step's unsaved counter restarts the same way). A replay from another run's checkpoint gets
@@ -48,9 +62,14 @@ from typing import Dict, Optional
 
 FILE = "compute_target.json"
 MODE = "compute"
-KEYS = ("target", "gain", "proportional", "price_init")
+KEYS = ("target", "gain", "proportional", "price_init", "measure", "deadband")
+NUMBERS = ("target", "gain", "proportional", "price_init", "deadband")
+MEASURES = ("soft", "hard")
+DEADBAND_MAX = 0.1          # exclusive: half an image slot (each slot is 0.2 of the body mean per pass)
 #: The fields a resume must not change (a schedule key may; these define the arm).
-IDENTITY = ("target", "gain", "proportional", "price_init")
+IDENTITY = KEYS
+#: What a version-1 file (2026-11-15, before `measure` and `deadband` existed) was written under.
+V1_DEFAULTS = {"measure": "soft", "deadband": 0.0}
 
 
 def _get(node, key, default=None):
@@ -86,11 +105,17 @@ def read_block(cfg) -> Optional[Dict[str, float]]:
     if extra or missing:
         raise ValueError(f"mor.token.compute must hold exactly {list(KEYS)}: unknown {extra}, missing {missing}")
     out = {}
-    for k in KEYS:
+    for k in NUMBERS:
         v = blk[k]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)):
             raise ValueError(f"mor.token.compute.{k} must be a finite number, got {v!r}")
         out[k] = float(v)
+    if blk["measure"] not in MEASURES:
+        raise ValueError(f"mor.token.compute.measure {blk['measure']!r} must be one of {list(MEASURES)}")
+    out["measure"] = str(blk["measure"])
+    if not 0.0 <= out["deadband"] < DEADBAND_MAX:
+        raise ValueError(f"mor.token.compute.deadband {out['deadband']} must lie in [0, {DEADBAND_MAX}) passes "
+                         f"(below half an image slot)")
     n_rec = int(_get(_get(cfg, "recursive") or {}, "num_recursion") or 0)
     if n_rec < 2:
         raise ValueError(f"recursive.num_recursion {n_rec}: a compute target needs at least two depths")
@@ -139,20 +164,40 @@ def price(block: Dict[str, float], state: Dict[str, float]) -> float:
     return float(block["proportional"]) * float(state["e_last"]) + float(state["lam"])
 
 
-def step(block: Dict[str, float], state: Dict[str, float], soft_mean: float) -> Dict[str, float]:
-    """The controller after an update whose body positions averaged `soft_mean` passes. Pure: returns a new state.
+def gap(block: Dict[str, float], measured: float) -> float:
+    """The gap the controller acts on: measured - target, or 0 inside the deadband (|gap| <= deadband)."""
+    e = float(measured) - float(block["target"])
+    return 0.0 if abs(e) <= float(block["deadband"]) else e
 
-    THE RULE, in one place (W34 tests it, with a sign update as the control that must fail).
+
+def step(block: Dict[str, float], state: Dict[str, float], measured: float) -> Dict[str, float]:
+    """The controller after an update whose body positions averaged `measured` passes, in the block's measure (the
+    soft mean, or the hard top-1 mean). Pure: returns a new state.
+
+    THE RULE, in one place (W34s tests it, with a sign update, a stuck price and an ignored band as the controls).
     """
-    e = float(soft_mean) - float(block["target"])
+    e = gap(block, measured)
     return {"lam": float(state["lam"]) + float(block["gain"]) * e, "e_last": e}
+
+
+def hard_body_mean(counts) -> float:
+    """The update's hard (top-1) mean depth over its body positions, from per-class depth counts (classes x depths:
+    "none", the modalities, "delim", "pad"; util/trainer_pt.py's per-update depth shares). Depths are passes 1..Nr."""
+    import numpy as np
+    c = counts.detach().cpu().numpy() if hasattr(counts, "detach") else counts
+    c = np.asarray(c, dtype=np.float64)
+    body = c[1:c.shape[0] - 2]
+    n = float(body.sum())
+    if not n > 0:
+        raise ValueError("no body positions were counted in this update")
+    return float((body * np.arange(1, c.shape[1] + 1)).sum() / n)
 
 
 def write_state(ckpt_dir, block: Dict[str, float], state: Dict[str, float], global_step: int,
                 origin: str) -> Path:
     """<ckpt_dir>/compute_target.json: the settings, the controller and the step it belongs to."""
     p = Path(ckpt_dir) / FILE
-    doc = {"version": 1, **{k: float(block[k]) for k in KEYS},
+    doc = {"version": 2, **{k: float(block[k]) for k in NUMBERS}, "measure": str(block["measure"]),
            "lam": float(state["lam"]), "e_last": float(state["e_last"]), "price_next": price(block, state),
            "global_step": int(global_step), "origin": str(origin)}
     p.write_text(json.dumps(doc, indent=1) + "\n")
@@ -180,7 +225,15 @@ def read_state(ckpt_dir, block: Dict[str, float]) -> Dict[str, float]:
                            f"value. A run's own checkpoints always carry it; a replay's copy gets it from its "
                            f"launcher (eo.train.compute_target.write_state)")
     doc = json.loads(p.read_text())
-    bad = {k: (doc.get(k), block[k]) for k in IDENTITY if doc.get(k) is None or float(doc[k]) != float(block[k])}
+    if int(doc.get("version", 1)) == 1:          # written before `measure` and `deadband`: soft, no band
+        doc = {**V1_DEFAULTS, **doc}
+
+    def differs(k):
+        a, b = doc.get(k), block[k]
+        if a is None:
+            return True
+        return a != b if k == "measure" else float(a) != float(b)
+    bad = {k: (doc.get(k), block[k]) for k in IDENTITY if differs(k)}
     if bad:
         raise RuntimeError(f"{p} was written under other settings: "
                            + ", ".join(f"{k} {a!r} -> {b!r}" for k, (a, b) in bad.items()))
