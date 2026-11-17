@@ -39,6 +39,23 @@ THE READINGS (units are (layout, target, options); `READINGS` below):
 LOCATIONS: Step 0's 256 dev locations and target dates (eo/eval/temporal.step0_locations). No test
 location is ever built: TemporalLocations refuses them.
 
+THE COORDS-FREE STAGE (docs/plans/a1_nc_stage.md, N5, 2026-11-17): `--layout-tag nc1`, the file
+temporal_layouts_nc1.json (`vocab: nc`), read on the nc stage (default --temporal-config
+arm_b10cltrxnct_vanilla, 81,296 ids; its extended base without --checkpoint). Its layouts are v1's tasks and
+readings without Coords (DEM the only static), plus:
+    k.<task>.<kit>[.nostatics]   the subset histories: left_out, forecast and gap fill with only a kit's
+                                 modalities at every date (the arm's S2L2A, S1GRD, S2L2A+S1GRD), with and
+                                 without DEM: the task layout filtered as training filters a draw
+    c.<group>.<name>             the base's candidate baselines, no date blocks, per task, kit task and the
+                                 two-date bar (bar2); the file's rule picks one per group and target on the
+                                 extended base's own reading (`report`), never on a trained checkpoint's
+    b.pair_cross(_none)          the cross-date pair: the offset curve and the lattice's reference
+Its readings: v1's names (tasks, probe, probe_null, bars, far, offset, lattice, context, date,
+readings_nodate, pilot, quarter, baselines) and `kits`, `kits_nodate`, and `base` (the extended base at
+step 0: candidates, tasks, kits and the readings). `--model source` scores the checkpoint the base was
+extended from (81,188 ids, from its extension.json, hash checked) on layouts without date blocks. `report`
+pairs every task, kit task and bar with its baseline, with itself at step 0 and without its date blocks.
+
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$(.venv/bin/python -m eo.train.gpu titanx) \\
       .venv/bin/python -X faulthandler -u eo/scripts/eval_temporal.py run --tag t360t_base --readings repro
     .venv/bin/python eo/scripts/eval_temporal.py report --tag t360t_base
@@ -277,6 +294,166 @@ def build_layouts(tag: str = "v1", created: str = "2026-11-09") -> Dict:
             "layouts": L}
 
 
+# =========================================================================== nc builders (write nc1 once)
+NC_KITS = ("S2L2A", "S1GRD", "S2L2A+S1GRD")          # arm_b10cltrxnct_vanilla's kits other than `all`
+NC_TEMPORAL_CONFIG = "eo_terramesh/arm_b10cltrxnct_vanilla"
+NC_BASE_TAG = "b10cltrxnct_base"                     # the nc extended base's reading: step 0 and the baselines
+
+
+def kit_tag(kit: str, statics: bool) -> str:
+    """A kit in layout names: '+' as '_' (temporal_dataset.eval_kit_name's), '.nostatics' when dropped."""
+    return kit.replace("+", "_") + ("" if statics else ".nostatics")
+
+
+def statics_nc(t: int) -> List[Tuple[str, int]]:
+    """The statics nc's task prompts hold, in Step 0's order: DEM from date 0's row, LULC from the first context
+    date's (temporal.task_blocks with STATICS_NC): statics_t less Coords."""
+    return [("DEM", 0), ("LULC", others(t)[0])]
+
+
+def build_layouts_nc(tag: str = "nc1", created: str = "2026-11-17") -> Dict:
+    """The Coords-free stage's layouts (docs/plans/a1_nc_stage.md, N5), written out as build_layouts writes v1's:
+    the four tasks on nc (DEM the only static), each task under the arm's kits with and without the statics
+    (the subset histories), the readings in the same grammar, the base's cross-date pair for the offset curve
+    and the lattice, and the base's candidate baselines without date blocks, for every task, kit task and the
+    two-date bar. No Coords anywhere (layout_problems refuses one in an nc file). The baselines are chosen
+    by the file's rule on the extended base's reading (eval_temporal report), never by hand."""
+    from eo.data.temporal_dataset import STATICS_NC, kit_modalities
+    from eo.eval import temporal as T
+
+    L: Dict[str, Dict] = {}
+
+    def add(name, about, role, targets, dates, fn, **extra):
+        if name in L:
+            raise ValueError(f"layout {name} written twice")
+        rule = dates["rule"]
+        ts = [None] if rule == "none" else ([int(dates["t"])] if rule == "fixed" else list(range(4)))
+        L[name] = {"about": about, "role": role, "targets": list(targets), "dates": dates,
+                   "blocks": {m: {("*" if t is None else str(t)): _fmt(fn(m, t)) for t in ts} for m in targets},
+                   **extra}
+
+    step0, pair, fixed = {"rule": "step0", "j": "target"}, {"rule": "step0", "j": 0}, {"rule": "fixed", "t": 3}
+    task_dates = {"left_out": step0, "forecast": fixed, "gap_fill": step0}
+
+    # The four tasks: Step 6's defaults with nc's statics.
+    for task, targets, dates in (("left_out", TG, step0), ("forecast", TG, fixed), ("gap_fill", ("S2L2A", "NDVI"), step0),
+                                 ("date", (DATE,), {"rule": "step0", "j": 0})):
+        add(f"t.{task}", f"the {task} task on nc: Step 6's defaults, DEM the only static (temporal.task_blocks)", "task",
+            targets, dates, lambda m, t, task=task: _from_task(T.task_blocks(task, t, m, statics=STATICS_NC)), task=task)
+    # The subset histories: each task with only a kit's modalities at every date, with and without the statics.
+    for kit in NC_KITS:
+        km = kit_modalities(kit)
+        for keep in (True, False):
+            for task in T.KIT_TASKS:
+                targets = [m for m in T.TARGETS[task] if m in km]
+                if not targets or (task == "gap_fill" and "S1GRD" not in km):
+                    continue
+                add(f"k.{task}.{kit_tag(kit, keep)}", f"t.{task} with only {kit} at every date"
+                    f"{'' if keep else ' and no statics'}, filtered as training filters a draw (temporal.kit_task_blocks)",
+                    "kit", targets, task_dates[task],
+                    lambda m, t, task=task, kit=kit, keep=keep: _from_task(T.kit_task_blocks(task, t, m, kit, keep)),
+                    task=task, kit=kit, statics=keep)
+    # The readings, in the stage's grammar: DEM first, chronological groups each led by its date block, S2L2A,
+    # S1GRD, NDVI in a group, LULC once, the target's group last with its date block first.
+    add("t.bar2", "two dates: DEM, the near date's group (all three, LULC), then the target's group", "reading", TG,
+        step0, lambda m, t: [("DEM", 0), ("Date", near(t))] + [(k, near(t)) for k in TG] + [("LULC", near(t)), ("Date", t),
+                                                                                         (m, t)])
+
+    def ctx(m, t, full_near):
+        out = [("DEM", 0)]
+        for i, u in enumerate(others(t)):
+            out += [("Date", u)] + ([(k, u) for k in TG] if (full_near and u == near(t)) else [(m, u)])
+            out += [("LULC", u)] if i == 0 else []
+        return out + [("Date", t), (m, t)]
+    add("t.ctx_a", "DEM and the same modality at the other three dates, chronological groups, LULC in the first",
+        "reading", TG, step0, lambda m, t: ctx(m, t, False))
+    add("t.ctx_b", "t.ctx_a with the other two modalities added to the near date's group", "reading", TG, step0,
+        lambda m, t: ctx(m, t, True))
+    full = [("DEM", 0), ("Date", 0), ("LULC", 0)] + [(k, 0) for k in TG] + \
+           [b for u in (1, 2, 3) for b in [("Date", u)] + [(k, u) for k in TG]]
+    add("t.profile", "one full chronological sequence with a date block first in every group (LULC after date 0's): "
+        "the block profile", "reading", ("*",), {"rule": "none"}, lambda m, t: full)
+    add("t.profile_drop0", "t.profile without date 0's group (its date block, S2L2A, S1GRD, NDVI); LULC stays",
+        "reading", ("*",), {"rule": "none"}, lambda m, t: [b for b in full if not (b[1] == 0 and b[0] in TG + ("Date",))])
+    add("t.lattice", "the cross-date pair with the target's date block between (lattice positions)", "reading",
+        ("S2L2A",), pair, lambda m, t: [("S2L2A", near(t)), ("Date", t), (m, t)])
+    add("t.lattice_each", "the cross-date pair with a date block before each block", "reading", ("S2L2A",), pair,
+        lambda m, t: [("Date", near(t)), ("S2L2A", near(t)), ("Date", t), (m, t)])
+    add("b.pair_cross", "S2L2A at the near date -> S2L2A at t, no date blocks: the lattice's reference and, with the "
+        "target moved by 198(k-1), the base's offset curve", "pair", ("S2L2A",), pair, lambda m, t: [("S2L2A", near(t)), (m, t)])
+    add("b.pair_cross_none", "S2L2A alone (the cross-date pair's no-source reference)", "pair", ("S2L2A",), pair,
+        lambda m, t: [(m, t)])
+
+    # The base's candidate baselines (no date blocks): every block one its task prompt also holds.
+    def cand(group, nm, about, targets, dates, fn, **extra):
+        add(f"c.{group}.{nm}", about, "candidate", targets, dates, lambda m, t, fn=fn: fn(m, t) + [(m, t)], task=group,
+            **extra)
+
+    lo = {"same_mod": lambda m, t: [(m, u) for u in others(t)],
+          "one_near": lambda m, t: [(m, near(t))],
+          "statics_same_mod": lambda m, t: statics_nc(t) + [(m, u) for u in others(t)],
+          "statics_near_all": lambda m, t: statics_nc(t) + [(k, near(t)) for k in TG],
+          "statics_near_others_same_mod": lambda m, t: statics_nc(t) + [(k, near(t)) for k in xs(m)]
+          + [(m, u) for u in others(t)]}
+    for task in ("left_out", "forecast"):
+        for nm, fn in lo.items():
+            cand(task, nm, f"the base's {task} candidate `{nm}`, no date blocks", TG, task_dates[task], fn)
+    gc = {"s1": lambda m, t: [("S1GRD", t)],
+          "statics_s1": lambda m, t: statics_nc(t) + [("S1GRD", t)],
+          "same_mod_s1": lambda m, t: [(m, u) for u in others(t)] + [("S1GRD", t)],
+          "statics_same_mod_s1": lambda m, t: statics_nc(t) + [(m, u) for u in others(t)] + [("S1GRD", t)],
+          "statics_s1_same_mod": lambda m, t: statics_nc(t) + [("S1GRD", t)] + [(m, u) for u in others(t)],
+          "statics_near_all_s1": lambda m, t: statics_nc(t) + [(k, near(t)) for k in TG] + [("S1GRD", t)]}
+    for nm, fn in gc.items():
+        cand("gap_fill", nm, f"the base's gap-fill candidate `{nm}`, no date blocks", ("S2L2A", "NDVI"), step0, fn)
+    bc = {"one_near": lambda m, t: [(m, near(t))],
+          "near_all": lambda m, t: [(k, near(t)) for k in TG],
+          "statics_one_near": lambda m, t: [("DEM", 0), ("LULC", near(t)), (m, near(t))],
+          "statics_near_all": lambda m, t: [("DEM", 0), ("LULC", near(t))] + [(k, near(t)) for k in TG]}
+    for nm, fn in bc.items():
+        cand("bar2", nm, f"the base's candidate `{nm}` on t.bar2's date pair, no date blocks", TG, step0, fn)
+    for kit in NC_KITS:
+        km = kit_modalities(kit)
+        for keep in (True, False):
+            g, st = kit_tag(kit, keep), ([("DEM", 0)] if keep else [])
+            kc = {"same_mod": lambda m, t, st=st: st + [(m, u) for u in others(t)],
+                  "one_near": lambda m, t, st=st: st + [(m, near(t))]}
+            if len(km) > 1:
+                kc["near_kit"] = lambda m, t, st=st, km=km: st + [(k, near(t)) for k in km]
+                kc["kit_all"] = lambda m, t, st=st, km=km: st + [(k, u) for u in others(t) for k in km]
+            for task in ("left_out", "forecast"):
+                for nm, fn in kc.items():
+                    cand(f"k.{task}.{g}", nm, f"the base's candidate `{nm}` for k.{task}.{g}, no date blocks", km,
+                         task_dates[task], fn, kit=kit, statics=keep)
+            if {"S2L2A", "S1GRD"} <= set(km):
+                gk = {"s1": lambda m, t, st=st: st + [("S1GRD", t)],
+                      "same_mod_s1": lambda m, t, st=st: st + [(m, u) for u in others(t)] + [("S1GRD", t)],
+                      "kit_all_s1": lambda m, t, st=st, km=km: st + [(k, u) for u in others(t) for k in km] + [("S1GRD", t)]}
+                for nm, fn in gk.items():
+                    cand(f"k.gap_fill.{g}", nm, f"the base's candidate `{nm}` for k.gap_fill.{g}, no date blocks",
+                         ("S2L2A",), step0, fn, kit=kit, statics=keep)
+
+    return {"tag": tag, "created": created, "vocab": "nc",
+            "about": "A1 on the Coords-free base (docs/plans/a1_nc_stage.md, N5): every layout of the nc stage's readings, "
+                     "per target and target date, the target block last, written in the nc layout (no Coords; DEM the only "
+                     "static). Blocks are MODALITY@date-index of the location's four chronological dates; a date block "
+                     "keeps its year. Written by eo/scripts/eval_temporal.py layouts --layout-tag nc1; frozen by its hash "
+                     "(eo/eval/temporal.FROZEN_LAYOUTS).",
+            "locations": {"rule": "step0", "split": "temporal_rows_v1.json dev", "n": ET.STEP0_N, "seed": ET.STEP0_SEED,
+                          "target_dates": "t = (i + j) % 4: location i of the n, j the target's index in (S2L2A, S1GRD, "
+                                          "NDVI) or the layout's fixed j; forecast t = 3; the date task j = 0"},
+            "probe": {"layout": "t.left_out", "which": "target", "day_shift": 36, "year_shift": 0, "null_day_shift": 1,
+                      "about": "v1's probe: the target's day bin moved by 36 of 73 (about half a year), its year kept; the "
+                               "null moves it by one bin"},
+            "baselines": {"rule": "per group (a task, a kit task, or bar2) and target: of the candidates (role candidate, "
+                                  "`task` naming the group), the one with the lowest mean CE on the n dev locations, read "
+                                  "on the extended base without date blocks (reading tag `read_on`); within 0.005 nats, "
+                                  "the shorter layout. Applied by eval_temporal report to the base's units alone, so "
+                                  "nothing a trained checkpoint reads enters the choice",
+                          "read_on": NC_BASE_TAG, "date": "prior (Step 12)"},
+            "layouts": L}
+
+
 # =========================================================================== units
 def unit_key(layout: str, target: str, with_dates: bool = True, move: Optional[Dict] = None, delta: int = 0) -> str:
     k = f"{layout}__{'all' if target == '*' else target}"
@@ -291,8 +468,52 @@ def U(layout, target, with_dates=True, move=None, delta=0) -> Dict:
             "key": unit_key(layout, target, with_dates, move, delta)}
 
 
+def readings_nc(doc: Dict) -> Dict[str, List[Dict]]:
+    """The nc file's readings (module docstring, THE COORDS-FREE STAGE): v1's names where the reading is the
+    same, `kits` and `kits_nodate` for the subset histories, `base` for the extended base at step 0."""
+    lay = doc["layouts"]
+    by_role = lambda role: [n for n, e in lay.items() if e["role"] == role]       # noqa: E731
+    R: Dict[str, List[Dict]] = {}
+    R["baselines"] = [U(n, m, with_dates=False) for n in by_role("candidate") for m in lay[n]["targets"]]
+    tasks = by_role("task")
+    R["tasks"] = [U(n, m) for n in tasks for m in lay[n]["targets"]]
+    R["tasks_nodate"] = [U(n, m, with_dates=False) for n in tasks if n != "t.date" for m in lay[n]["targets"]]
+    R["kits"] = [U(n, m) for n in by_role("kit") for m in lay[n]["targets"]]
+    R["kits_nodate"] = [U(n, m, with_dates=False) for n in by_role("kit") for m in lay[n]["targets"]]
+    p = doc["probe"]
+    mv = {"which": p["which"], "day_shift": p["day_shift"], "year_shift": p["year_shift"]}
+    R["probe"] = [U(p["layout"], m, move=mv) for m in lay[p["layout"]]["targets"]]
+    R["probe_null"] = [U(p["layout"], m, move={**mv, "day_shift": p["null_day_shift"]}) for m in lay[p["layout"]]["targets"]]
+    R["wrong_all"] = [U(p["layout"], m, move={**mv, "which": "all"}) for m in lay[p["layout"]]["targets"]]
+    R["bars"] = [U("t.bar2", m) for m in TG]
+    R["far"] = [U("t.profile", "*"), U("t.profile_drop0", "*")]
+    R["offset"] = [U("b.pair_cross", "S2L2A", delta=BLOCK * (k - 1)) for k in LONG_K] + [U("b.pair_cross_none", "S2L2A")]
+    R["lattice"] = [U("b.pair_cross", "S2L2A"), U("t.lattice", "S2L2A"), U("t.lattice_each", "S2L2A"),
+                    U("b.pair_cross_none", "S2L2A")]
+    R["context"] = [U(n, m) for n in ("t.ctx_a", "t.ctx_b") for m in TG]
+    R["date"] = [U("t.date", DATE)]
+    R["readings_nodate"] = ([U(n, "*", with_dates=False) for n in ("t.profile", "t.profile_drop0")]
+                            + [U("t.bar2", m, with_dates=False) for m in TG]
+                            + [U(n, m, with_dates=False) for n in ("t.ctx_a", "t.ctx_b") for m in TG])
+
+    def union(*names):
+        out = []
+        for name in names:
+            out += [u for u in R[name] if u["key"] not in {x["key"] for x in out}]
+        return out
+    # The extended base (step 0): every candidate, then what pairs with a checkpoint. kits_nodate is left out:
+    # each kit layout without its date blocks is one of its own candidates (same_mod or kit_all).
+    R["base"] = union("bars", "baselines", "tasks", "kits", "far", "offset", "lattice", "context", "date",
+                      "readings_nodate")
+    R["pilot"] = union("tasks", "kits", "probe", "bars", "far", "offset", "lattice", "context", "date")
+    R["quarter"] = union("bars", "kits")
+    return R
+
+
 def readings(doc: Dict) -> Dict[str, List[Dict]]:
-    """The units of each reading (module docstring)."""
+    """The units of each reading (module docstring); an nc file's are readings_nc's."""
+    if doc.get("vocab", "v1") != "v1":
+        return readings_nc(doc)
     lay = doc["layouts"]
     by_role = lambda role: [n for n, e in lay.items() if e["role"] == role]       # noqa: E731
     R: Dict[str, List[Dict]] = {}
@@ -384,7 +605,10 @@ def cmd_layouts(a) -> int:
         sys.exit(f"{path} exists; a layout file is written once (--force only while it is unfrozen)")
     if ET.FROZEN_LAYOUTS.get(a.layout_tag):
         sys.exit(f"{a.layout_tag} is frozen: write a new tag")
-    doc = build_layouts(a.layout_tag)
+    builders = {ET.LAYOUTS_TAG: build_layouts, ET.LAYOUTS_TAG_NC: build_layouts_nc}
+    if a.layout_tag not in builders:
+        sys.exit(f"no builder for layout tag {a.layout_tag!r}: {sorted(builders)}")
+    doc = builders[a.layout_tag](a.layout_tag)
     bad = ET.layout_problems(doc)
     if bad:
         sys.exit(f"the builders made an invalid file: {bad[:5]}")
@@ -396,12 +620,34 @@ def cmd_layouts(a) -> int:
 def _ckpt_name(checkpoint, model: str = "temporal") -> str:
     if model == "t360":
         return Path(T360_CKPT).name
+    if model == "source":
+        return "source"
     return "extended_base" if checkpoint is None else Path(checkpoint).name
+
+
+#: The model labels run.json records, per layout file and --model (v1's are T360-T's and T360's, as before).
+MODEL_LABELS = {("v1", "temporal"): "T360-T", ("v1", "t360"): "T360",
+                ("nc", "temporal"): "nc temporal", ("nc", "source"): "nc source"}
+
+
+def nc_source(temporal_config: str) -> Tuple[str, str, str]:
+    """The checkpoint an nc stage's extended base was extended from, its arm and its weights' SHA-256, from the
+    base's extension.json (the arm's pretrain_init.conversion)."""
+    from hydra import compose, initialize_config_dir
+    with initialize_config_dir(config_dir=str(REPO / "conf" / "pretrain_vision"), version_base=None):
+        cfg = compose(config_name=temporal_config)
+    ext = json.loads((Path(str(cfg.pretrain_init.conversion)) / "extension.json").read_text())
+    return ext["source_checkpoint"], ext["arm_config"], ext["source_weights_sha256"]
 
 
 def cmd_run(a) -> int:
     from eo.scripts.eval_forgetting import build_temporal
     doc = ET.load_layouts(a.layout_tag, allow_unfrozen=a.allow_unfrozen)
+    vocab = doc.get("vocab", "v1")
+    if a.temporal_config is None:
+        a.temporal_config = NC_TEMPORAL_CONFIG if vocab == "nc" else "eo_terramesh/arm_t360t_vanilla"
+    if (vocab, a.model) not in MODEL_LABELS:
+        sys.exit(f"--model {a.model} does not read the {vocab} layouts (t360 is v1's, source nc's)")
     R = readings(doc)
     want = [r for r in a.readings.split(",") if r]
     bad = [r for r in want if r not in R]
@@ -427,8 +673,9 @@ def cmd_run(a) -> int:
     (out / "units").mkdir(parents=True, exist_ok=True)
     meta_p = out / "run.json"
     meta = json.loads(meta_p.read_text()) if meta_p.exists() else {}
+    label = MODEL_LABELS[(vocab, a.model)]
     for key, val in (("precision", a.precision), ("checkpoint", a.checkpoint), ("temporal_config", a.temporal_config),
-                     ("n_locations", a.n), ("model", "T360" if a.model == "t360" else "T360-T")):
+                     ("n_locations", a.n), ("model", label), ("layouts", doc["tag"])):
         if key in meta and meta[key] != val:
             sys.exit(f"{out} was scored with {key}={meta[key]!r}; this run has {val!r}: use another --tag")
     todo = []
@@ -457,15 +704,38 @@ def cmd_run(a) -> int:
         model, cfg = G.build_model(T360_ARM, T360_CKPT, device=device)
         loaded = {"checkpoint": T360_CKPT, "arm_config": T360_ARM}
         want_vocab = 87_556
+    elif a.model == "source":
+        # The nc base's own source checkpoint (B10cL-tr-x10-NC at 81,188 ids), as extension.json names it: the
+        # base without time, for layouts without date blocks only. Loaded strictly, its hash checked.
+        from eo.finetune.extend import assert_tied
+        from eo.finetune.init import strict_load
+        from eo.generate import conditional as G
+        if a.checkpoint is not None:
+            sys.exit("--model source reads the checkpoint the base was extended from; --checkpoint is for the stage's")
+        dated = [u["key"] for u in todo if u["with_dates"] and any(
+            b.modality == DATE for t in doc["layouts"][u["layout"]]["blocks"][u["target"]].values()
+            for b in ET.parse_blocks(t))]
+        if dated:
+            sys.exit(f"the source has no date rows: {dated[:3]}")
+        src, arm, sha = nc_source(a.temporal_config)
+        got = hashlib.sha256((Path(src) / "model.safetensors").read_bytes()).hexdigest()
+        if got != sha:
+            sys.exit(f"{src}: weights hash {got[:12]}, extension.json recorded {sha[:12]}")
+        model, cfg = G.build_model(arm, None, device="cpu")
+        loaded = {"checkpoint": src, "arm_config": arm, "weights_sha256": got, "load": strict_load(model, Path(src))}
+        assert_tied(model)
+        model.to(device).eval()
+        want_vocab = 81_188
     else:
         model, cfg, loaded = build_temporal(a.temporal_config, a.checkpoint, device=device)
-        want_vocab = 87_664
+        want_vocab = 87_664 if vocab == "v1" else 81_296
     if int(model.config.vocab_size) != want_vocab or next(model.parameters()).dtype != torch.float32:
         sys.exit(f"{a.model} at {want_vocab:,} ids with fp32 parameters expected")
-    temporal, index = ET.dev_temporal(VAL)
+    temporal, index = ET.dev_temporal(VAL, vocab=vocab)
+    ET.check_layout(model, temporal)
     locs, groups, names = ET.step0_locations(index)
     locs, groups, names = locs[: a.n], groups[: a.n], names[: a.n]
-    meta.update(model="T360" if a.model == "t360" else "T360-T", temporal_config=a.temporal_config, checkpoint=a.checkpoint, loaded=loaded, gpu=gpu,
+    meta.update(model=label, temporal_config=a.temporal_config, checkpoint=a.checkpoint, loaded=loaded, gpu=gpu,
                 precision=a.precision, layouts=doc["tag"], layouts_sha256=doc["sha256"], root=str(VAL),
                 n_locations=int(a.n), location_names_sha256=ET.canonical_sha(names),
                 attn=str(getattr(model.config, "_attn_implementation", "?")),
@@ -541,9 +811,258 @@ def _r(x, nd=4):
     return x
 
 
+def _common_sections(rep: Dict, doc: Dict, get, groups_of, day_bins, pair: str = "s0.pair_cross",
+                     pair_none: str = "s0.pair_cross_none") -> None:
+    """The report's sections that read the same on every layout file: the date probe and the wrong date, far
+    attention, the offset curve and the lattice on the cross-date pair (`pair`, `pair_none`: v1's Step 0
+    layouts, nc's b.pair_cross), more context, the date task. Written into `rep` in that order."""
+    L = doc["layouts"]
+    # ---- the date probe and the wrong date: paired against the right date, by the target date's quarter
+    p = doc["probe"]
+    for name, which, shift in (("probe", p["which"], p["day_shift"]), ("probe_null", p["which"], p["null_day_shift"]),
+                               ("wrong_all", "all", p["day_shift"])):
+        mv = {"which": which, "day_shift": shift, "year_shift": p["year_shift"]}
+        sec = {}
+        for m in L[p["layout"]]["targets"]:
+            u, w = get(p["layout"], m), get(p["layout"], m, move=mv)
+            if u is None or w is None:
+                continue
+            g, q = groups_of(u), ET.quarter(day_bins(u))
+            d = w["ce"] - u["ce"]
+            sec[m] = {"moved_minus_right": _ci(d, g), "abs_max": float(np.abs(d).max()),
+                      "by_quarter": {ET.QUARTERS[k]: {"n": int((q == k).sum()), "diff": _ci(d[q == k], g[q == k])}
+                                     for k in range(4) if (q == k).sum() > 1}}
+        if sec:
+            rep[name] = {"settings": mv, "layout": p["layout"], "targets": sec}
+
+    # ---- far attention: the block profile, and the last date without the oldest group
+    fp, fd = get("t.profile", "*"), get("t.profile_drop0", "*")
+    if fp is not None:
+        g = groups_of(fp)
+        names = [str(x) for x in fp["block_names"]]
+        far = {"n": len(fp["locations"]), "by_block": {nm: _ci(fp["block_ce"][:, i], g) for i, nm in enumerate(names)}}
+        if fd is not None:
+            dn = [str(x) for x in fd["block_names"]]
+            far["last_date_without_oldest_minus_with"] = {
+                m: _ci(fd["block_ce"][:, dn.index(f"{m}@3")] - fp["block_ce"][:, names.index(f"{m}@3")], g) for m in TG}
+        fn = get("t.profile", "*", with_dates=False)
+        if fn is not None:
+            nn = [str(x) for x in fn["block_names"]]
+            far["dates_minus_nodate"] = {nm: _ci(fp["block_ce"][:, i] - fn["block_ce"][:, nn.index(nm)], g)
+                                         for i, nm in enumerate(names) if nm in nn}
+            img = [i for i, nm in enumerate(names) if not nm.startswith(("Date", "Coords"))]
+            imn = [nn.index(names[i]) for i in img]
+            far["image_mean"] = {"dates": float(fp["block_ce"][:, img].mean()), "nodate": float(fn["block_ce"][:, imn].mean())}
+        rep["far"] = far
+
+    # ---- the offset curve (no date blocks) and the cost of a date block on the cross-date pair
+    adj, none = get(pair, "S2L2A"), get(pair_none, "S2L2A")
+    if adj is not None:
+        g = groups_of(adj)
+        curve = {}
+        for k in LONG_K:
+            u = get(pair, "S2L2A", delta=BLOCK * (k - 1))
+            if u is not None:
+                curve[str(BLOCK * k)] = {"ce": _ci(u["ce"], g), "rise_vs_198": _ci(u["ce"] - adj["ce"], g)}
+        rep["offset"] = {"pair": "S2L2A at the near date -> S2L2A at t", "by_offset": curve,
+                         "none": _ci(none["ce"], g) if none is not None else None}
+        if none is not None:
+            gain = float((none["ce"] - adj["ce"]).mean())
+            lat = {"adjacent": _ci(adj["ce"], g), "none": _ci(none["ce"], g), "gain": gain}
+            for n_ in ("t.lattice", "t.lattice_each"):
+                u = get(n_, "S2L2A")
+                if u is not None:
+                    rise = _ci(u["ce"] - adj["ce"], g)
+                    lat[n_] = {"ce": _ci(u["ce"], g), "rise": rise, "share_of_gain": rise["mean"] / gain}
+            rep["lattice"] = lat
+
+    # ---- more context helps?
+    ctxr = {}
+    for m in TG:
+        A, B = get("t.ctx_a", m), get("t.ctx_b", m)
+        if A is not None and B is not None:
+            g = groups_of(A)
+            ctxr[m] = {"a": _ci(A["ce"], g), "b": _ci(B["ce"], g), "b_minus_a": _ci(B["ce"] - A["ce"], g),
+                       "tokens": [int(A["length"]), int(B["length"])]}
+            An, Bn = get("t.ctx_a", m, with_dates=False), get("t.ctx_b", m, with_dates=False)
+            if An is not None and Bn is not None:
+                ctxr[m]["nodate"] = {"a": _ci(An["ce"], g), "b": _ci(Bn["ce"], g), "b_minus_a": _ci(Bn["ce"] - An["ce"], g)}
+    if ctxr:
+        rep["more_context"] = ctxr
+
+    # ---- the date task
+    u = get("t.date", DATE)
+    if u is not None:
+        g, q = groups_of(u), ET.quarter(u["day"])
+        dm = ET.date_measures(u)
+        sec = {"ce_y": _ci(u["ce_y"], g), "ce_d": _ci(u["ce_d"], g), "mass_years": float(u["mass_years"].mean()),
+               "mass_days": float(u["mass_days"].mean()), **{k: _ci(v, g) for k, v in dm.items()},
+               "chance": {"top1_year": 1 / 12, "day_err_uniform_days": float(ET.BIN_DAYS * np.mean(
+                   ET.circular_bins(np.arange(73)[:, None], np.arange(73)[None, :])))},
+               "by_quarter": {ET.QUARTERS[k]: {"n": int((q == k).sum()), "ce_d": float(u["ce_d"][q == k].mean()),
+                                               "day_err_mode": float(dm["day_err_mode"][q == k].mean())}
+                              for k in range(4) if (q == k).sum()}}
+        rep["date"] = sec
+
+
+def choose_baselines(doc: Dict, base_units: Dict[str, Dict], groups_of) -> Dict[Tuple[str, str], Dict]:
+    """An nc file's baseline rule (its `baselines.rule`) on the extended base's units: per (group, target), of the
+    group's candidates the one with the lowest mean CE, within TIE the shorter layout. Each entry says how many of
+    the group's candidates were read (`complete` when all), the pick (`chosen`, its unit), and every candidate."""
+    L = doc["layouts"]
+    want: Dict[Tuple[str, str], List[str]] = {}
+    have: Dict[Tuple[str, str], List] = {}
+    for n_, e in L.items():
+        if e["role"] != "candidate":
+            continue
+        for m in e["targets"]:
+            want.setdefault((e["task"], m), []).append(n_)
+            u = base_units.get(unit_key(n_, m, with_dates=False))
+            if u is not None:
+                have.setdefault((e["task"], m), []).append((n_, u))
+    out: Dict[Tuple[str, str], Dict] = {}
+    for key, names in sorted(want.items()):
+        lst = have.get(key, [])
+        entry = {"read": len(lst), "of": len(names), "complete": len(lst) == len(names)}
+        if lst:
+            g = groups_of(lst[0][1])
+            rows = sorted(((float(u["ce"].mean()), int(u["length"]), n_, u) for n_, u in lst), key=lambda x: x[0])
+            pick = min([r for r in rows if r[0] - rows[0][0] <= TIE], key=lambda r: r[1])
+            entry.update(chosen=pick[2], unit=pick[3],
+                         candidates={r[2]: {"tokens": r[1], "ce": _ci(r[3]["ce"], g), "top1": float(r[3]["top1"].mean())}
+                                     for r in rows})
+            if len(rows) > 1:
+                other = rows[1] if pick is rows[0] else rows[0]
+                entry["chosen_minus_next"] = {"next": other[2], "diff": _ci(pick[3]["ce"] - other[3]["ce"], g)}
+        out[key] = entry
+    return out
+
+
+def cmd_report_nc(a, doc: Dict) -> int:
+    """An nc file's report: the baselines chosen on the extended base's units by the file's rule (the base's own
+    reading, <base-root>/<baselines.read_on>/extended_base), then the tasks, the kit tasks and the two-date bar,
+    each against its baseline, against itself at step 0 (the base, with date blocks) and without its date
+    blocks when read; a kit task also against the same task with every modality, and without statics against
+    with; then the sections every file shares (_common_sections, on b.pair_cross)."""
+    from eo.data.temporal_index import load_temporal_index
+    out = a.out_root / a.tag / _ckpt_name(a.checkpoint, getattr(a, "model", "temporal"))
+    units = load_units(out)
+    if not units:
+        sys.exit(f"no units under {out}")
+    base_dir = (a.base_root or a.out_root) / doc["baselines"]["read_on"] / "extended_base"
+    is_base = out.resolve() == base_dir.resolve()
+    base_units = units if is_base else (load_units(base_dir) if (base_dir / "units").is_dir() else {})
+    run = json.loads((out / "run.json").read_text())
+    if base_units and not is_base:
+        brun = json.loads((base_dir / "run.json").read_text())
+        for key in ("precision", "layouts", "temporal_config", "n_locations"):
+            if brun.get(key) != run.get(key):
+                sys.exit(f"the base's reading has {key}={brun.get(key)!r}, this one {run.get(key)!r}: not paired")
+    index = load_temporal_index(VAL)
+    locs_all, groups_all, _ = ET.step0_locations(index)
+    L = doc["layouts"]
+    rep: Dict = {"tag": a.tag, "checkpoint": a.checkpoint, "run": run,
+                 "layouts": doc["tag"], "layouts_sha256": doc["sha256"], "n_units": len(units),
+                 "base_reading": str(base_dir), "base_units": len(base_units)}
+    for which, us in (("this reading's", units), ("the base's", base_units)):
+        stale = [k for k, u in us.items() if u["spec"]["layout"] not in L
+                 or u["spec"]["entry_sha256"] != ET.canonical_sha(L[u["spec"]["layout"]])]
+        if stale:
+            sys.exit(f"{which} units were scored under another layout entry: {stale[:5]}")
+
+    def get(layout, target, with_dates=True, move=None, delta=0, src=None):
+        return (units if src is None else src).get(unit_key(layout, target, with_dates, move, delta))
+
+    def groups_of(u):
+        n = len(u["locations"])
+        if not np.array_equal(u["locations"], locs_all[:n]):
+            raise RuntimeError("a unit's locations are not Step 0's, in Step 0's order")
+        return groups_all[:n]
+
+    def day_bins(u):
+        return np.array([index.date_of(int(index.locations[int(l)][int(t)]))[1] for l, t in zip(u["locations"], u["t"])])
+
+    def paired(u, b):
+        n = min(len(u["ce"]), len(b["ce"]))
+        if not (np.array_equal(u["locations"][:n], b["locations"][:n]) and np.array_equal(u["t"][:n], b["t"][:n])):
+            raise RuntimeError("two paired units on other locations or target dates")
+        return _ci(u["ce"][:n] - b["ce"][:n], groups_of(u)[:n])
+
+    rep["seconds"] = {k: _r(float(u["seconds"]), 1) for k, u in units.items()}
+    by_reading = {}
+    for name, us in readings(doc).items():
+        have = [units[u["key"]] for u in us if u["key"] in units]
+        if have:
+            by_reading[name] = {"units": len(have), "of": len(us), "seconds": round(sum(float(u["seconds"]) for u in have), 1),
+                                "tokens": int(sum(int(u["length"]) * len(u["locations"]) for u in have))}
+    rep["time_by_reading"] = by_reading
+
+    B = choose_baselines(doc, base_units, groups_of)
+    if B:
+        rep["baselines"] = {f"{grp}/{m}": {k: v for k, v in e.items() if k != "unit"} for (grp, m), e in B.items()}
+
+    def cell(layout, m, u, **extra):
+        e = L[layout]
+        grp = e["task"] if e["role"] == "task" else (layout if e["role"] == "kit" else "bar2")
+        c = {**extra, "tokens": int(u["length"]), "ce": _ci(u["ce"], groups_of(u)), "top1": float(u["top1"].mean())}
+        b = B.get((grp, m))
+        if b and "unit" in b:
+            c["baseline"] = {"layout": b["chosen"], "ce": float(b["unit"]["ce"].mean()), "complete": b["complete"]}
+            c["minus_baseline"] = paired(u, b["unit"])
+        s = None if is_base else get(layout, m, src=base_units)
+        if s is not None:
+            c["step0"] = float(s["ce"].mean())
+            c["minus_step0"] = paired(u, s)
+        v = get(layout, m, with_dates=False)
+        if v is not None:
+            c["nodate"] = _ci(v["ce"], groups_of(v))
+            c["dates_minus_nodate"] = paired(u, v)
+        return c
+
+    tasks = {f"{L[n_]['task']}/{m}": cell(n_, m, get(n_, m)) for n_ in ("t.left_out", "t.forecast", "t.gap_fill")
+             for m in L[n_]["targets"] if get(n_, m) is not None}
+    if tasks:
+        rep["tasks"] = tasks
+    kits = {}
+    for n_, e in L.items():
+        for m in (e["targets"] if e["role"] == "kit" else []):
+            u = get(n_, m)
+            if u is None:
+                continue
+            c = cell(n_, m, u, kit=e["kit"], statics=e["statics"], task=e["task"])
+            every = get(f"t.{e['task']}", m)
+            if every is not None:
+                c["minus_every_modality"] = paired(u, every)
+            kept = get(n_.replace(".nostatics", ""), m) if not e["statics"] else None
+            if kept is not None:
+                c["minus_with_statics"] = paired(u, kept)
+            kits[f"{n_}/{m}"] = c
+    if kits:
+        rep["kits"] = kits
+    bars = {m: cell("t.bar2", m, get("t.bar2", m)) for m in TG if get("t.bar2", m) is not None}
+    if bars:
+        rep["bars_quarter_pass"] = bars
+    _common_sections(rep, doc, get, groups_of, day_bins, "b.pair_cross", "b.pair_cross_none")
+
+    path = out / "report.json"
+    tmp = path.with_suffix(".tmp.json")
+    tmp.write_text(json.dumps(_r(rep, 6), indent=1) + "\n")
+    os.replace(tmp, path)
+    print(f"wrote {path}")
+    print("time_by_reading", json.dumps(_r(rep["time_by_reading"], 3))[:1500])
+    for sec in ("tasks", "kits", "bars_quarter_pass"):
+        for k, c in rep.get(sec, {}).items():
+            mb = c.get("minus_baseline")
+            print(f"  {sec}/{k}: {c['ce']['mean']:.4f}" + (f", baseline {c['baseline']['layout']} "
+                  f"{mb['mean']:+.4f} [{mb['lo']:+.4f}, {mb['hi']:+.4f}]" if mb else ""))
+    return 0
+
+
 def cmd_report(a) -> int:
     from eo.data.temporal_index import load_temporal_index
     doc = ET.load_layouts(a.layout_tag, allow_unfrozen=a.allow_unfrozen)
+    if doc.get("vocab", "v1") != "v1":
+        return cmd_report_nc(a, doc)
     out = a.out_root / a.tag / _ckpt_name(a.checkpoint, getattr(a, "model", "temporal"))
     units = load_units(out)
     if not units:
@@ -690,92 +1209,7 @@ def cmd_report(a) -> int:
     if bars:
         rep["bars_quarter_pass"] = bars
 
-    # ---- the date probe and the wrong date: paired against the right date, by the target date's quarter
-    p = doc["probe"]
-    for name, which, shift in (("probe", p["which"], p["day_shift"]), ("probe_null", p["which"], p["null_day_shift"]),
-                               ("wrong_all", "all", p["day_shift"])):
-        mv = {"which": which, "day_shift": shift, "year_shift": p["year_shift"]}
-        sec = {}
-        for m in L[p["layout"]]["targets"]:
-            u, w = get(p["layout"], m), get(p["layout"], m, move=mv)
-            if u is None or w is None:
-                continue
-            g, q = groups_of(u), ET.quarter(day_bins(u))
-            d = w["ce"] - u["ce"]
-            sec[m] = {"moved_minus_right": _ci(d, g), "abs_max": float(np.abs(d).max()),
-                      "by_quarter": {ET.QUARTERS[k]: {"n": int((q == k).sum()), "diff": _ci(d[q == k], g[q == k])}
-                                     for k in range(4) if (q == k).sum() > 1}}
-        if sec:
-            rep[name] = {"settings": mv, "layout": p["layout"], "targets": sec}
-
-    # ---- far attention: the block profile, and the last date without the oldest group
-    fp, fd = get("t.profile", "*"), get("t.profile_drop0", "*")
-    if fp is not None:
-        g = groups_of(fp)
-        names = [str(x) for x in fp["block_names"]]
-        far = {"n": len(fp["locations"]), "by_block": {nm: _ci(fp["block_ce"][:, i], g) for i, nm in enumerate(names)}}
-        if fd is not None:
-            dn = [str(x) for x in fd["block_names"]]
-            far["last_date_without_oldest_minus_with"] = {
-                m: _ci(fd["block_ce"][:, dn.index(f"{m}@3")] - fp["block_ce"][:, names.index(f"{m}@3")], g) for m in TG}
-        fn = get("t.profile", "*", with_dates=False)
-        if fn is not None:
-            nn = [str(x) for x in fn["block_names"]]
-            far["dates_minus_nodate"] = {nm: _ci(fp["block_ce"][:, i] - fn["block_ce"][:, nn.index(nm)], g)
-                                         for i, nm in enumerate(names) if nm in nn}
-            img = [i for i, nm in enumerate(names) if not nm.startswith(("Date", "Coords"))]
-            imn = [nn.index(names[i]) for i in img]
-            far["image_mean"] = {"dates": float(fp["block_ce"][:, img].mean()), "nodate": float(fn["block_ce"][:, imn].mean())}
-        rep["far"] = far
-
-    # ---- the offset curve (no date blocks) and the cost of a date block on the cross-date pair
-    adj, none = get("s0.pair_cross", "S2L2A"), get("s0.pair_cross_none", "S2L2A")
-    if adj is not None:
-        g = groups_of(adj)
-        curve = {}
-        for k in LONG_K:
-            u = get("s0.pair_cross", "S2L2A", delta=BLOCK * (k - 1))
-            if u is not None:
-                curve[str(BLOCK * k)] = {"ce": _ci(u["ce"], g), "rise_vs_198": _ci(u["ce"] - adj["ce"], g)}
-        rep["offset"] = {"pair": "S2L2A at the near date -> S2L2A at t", "by_offset": curve,
-                         "none": _ci(none["ce"], g) if none is not None else None}
-        if none is not None:
-            gain = float((none["ce"] - adj["ce"]).mean())
-            lat = {"adjacent": _ci(adj["ce"], g), "none": _ci(none["ce"], g), "gain": gain}
-            for n_ in ("t.lattice", "t.lattice_each"):
-                u = get(n_, "S2L2A")
-                if u is not None:
-                    rise = _ci(u["ce"] - adj["ce"], g)
-                    lat[n_] = {"ce": _ci(u["ce"], g), "rise": rise, "share_of_gain": rise["mean"] / gain}
-            rep["lattice"] = lat
-
-    # ---- more context helps?
-    ctxr = {}
-    for m in TG:
-        A, B = get("t.ctx_a", m), get("t.ctx_b", m)
-        if A is not None and B is not None:
-            g = groups_of(A)
-            ctxr[m] = {"a": _ci(A["ce"], g), "b": _ci(B["ce"], g), "b_minus_a": _ci(B["ce"] - A["ce"], g),
-                       "tokens": [int(A["length"]), int(B["length"])]}
-            An, Bn = get("t.ctx_a", m, with_dates=False), get("t.ctx_b", m, with_dates=False)
-            if An is not None and Bn is not None:
-                ctxr[m]["nodate"] = {"a": _ci(An["ce"], g), "b": _ci(Bn["ce"], g), "b_minus_a": _ci(Bn["ce"] - An["ce"], g)}
-    if ctxr:
-        rep["more_context"] = ctxr
-
-    # ---- the date task
-    u = get("t.date", DATE)
-    if u is not None:
-        g, q = groups_of(u), ET.quarter(u["day"])
-        dm = ET.date_measures(u)
-        sec = {"ce_y": _ci(u["ce_y"], g), "ce_d": _ci(u["ce_d"], g), "mass_years": float(u["mass_years"].mean()),
-               "mass_days": float(u["mass_days"].mean()), **{k: _ci(v, g) for k, v in dm.items()},
-               "chance": {"top1_year": 1 / 12, "day_err_uniform_days": float(ET.BIN_DAYS * np.mean(
-                   ET.circular_bins(np.arange(73)[:, None], np.arange(73)[None, :])))},
-               "by_quarter": {ET.QUARTERS[k]: {"n": int((q == k).sum()), "ce_d": float(u["ce_d"][q == k].mean()),
-                                               "day_err_mode": float(dm["day_err_mode"][q == k].mean())}
-                              for k in range(4) if (q == k).sum()}}
-        rep["date"] = sec
+    _common_sections(rep, doc, get, groups_of, day_bins)
 
     path = out / "report.json"
     path.write_text(json.dumps(_r(rep, 6), indent=1) + "\n")
@@ -890,13 +1324,18 @@ def main() -> int:
         p.add_argument("--layout-tag", default=ET.LAYOUTS_TAG)
         p.add_argument("--allow-unfrozen", action="store_true", help="while the layout file is being drawn up")
         p.add_argument("--n", type=int, default=ET.STEP0_N, help="Step 0's first n locations (smoke tests only)")
-    sub.choices["report"].add_argument("--model", choices=("temporal", "t360"), default="temporal")
+    sub.choices["report"].add_argument("--model", choices=("temporal", "t360", "source"), default="temporal")
+    sub.choices["report"].add_argument("--base-root", type=Path, default=None,
+                                       help="nc: where the extended base's reading (the file's baselines.read_on) "
+                                            "lies; default --out-root")
     rp = sub.choices["run"]
     rp.add_argument("--readings", required=True)
     rp.add_argument("--only", default="", help="comma-separated substrings of unit keys (development)")
-    rp.add_argument("--temporal-config", default="eo_terramesh/arm_t360t_vanilla")
-    rp.add_argument("--model", choices=("temporal", "t360"), default="temporal",
-                    help="temporal: T360-T (default); t360: T360 itself at 87,556 ids, layouts without date blocks only")
+    rp.add_argument("--temporal-config", default=None,
+                    help=f"default eo_terramesh/arm_t360t_vanilla for v1's layouts, {NC_TEMPORAL_CONFIG} for nc's")
+    rp.add_argument("--model", choices=("temporal", "t360", "source"), default="temporal",
+                    help="temporal: the stage's model (T360-T on v1); t360: T360 itself at 87,556 ids; source: the nc "
+                         "base's source checkpoint at 81,188 ids; t360 and source read layouts without date blocks only")
     rp.add_argument("--precision", choices=("fp32", "fp16", "bf16"), default="fp32")
     rp.add_argument("--device", default="cuda")
     rp.add_argument("--expect-gpu", default="TITAN X")

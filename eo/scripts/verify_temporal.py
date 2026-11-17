@@ -232,6 +232,35 @@ split only, as Step 4's checks; about a minute on CPU.
       tied; clevr_init.verify_init accepts it at 81,296. SKIPPED while the base is missing
                                      | refused at 87,664 and 81,188, and with the v1 record, layout
                                        `temporal` or a failed identity
+
+Step 14 (the evaluation tools on nc, docs/plans/a1_nc_stage.md N5, 2026-11-17): eo/eval/temporal.py's layouts
+and scorers on the nc layout, eo/scripts/eval_temporal.py's nc builder, readings and report, and the layout
+file eo/eval/temporal_layouts_nc1.json. Y31 reads the nc extended base and its source checkpoint on CPU.
+
+  Y30 The nc layout file is frozen and equal to its sources: vocab nc and no Coords block; every task layout
+      task_blocks' with nc's statics and every kit layout kit_task_blocks'; every layout v1 also has (the
+      readings, forecast's and gap fill's candidates) v1's less its Coords blocks, at v1's target-date rule,
+      and b.pair_cross(_none) v1's s0.pair_cross(_none); every task, kit task and bar target has at least two
+      candidates, none with a date block or a block its group's prompt lacks, at the group's date rule; each
+      kit layout without its date blocks is one of its own candidates (so the base's kit reading without
+      dates is read once); the baseline rule names the base's reading
+                                     | the file edited by one block (refused by its pinned hash); a Coords
+                                       block; an NDVI block in an S2L2A kit layout; two blocks of a kit
+                                       layout swapped; a date block in a candidate; a candidate block its
+                                       prompt lacks
+  Y31 The scorer's paths on nc, CPU, fp32, Step 0's first locations: the target path gives the nc extended
+      base the per-location CE and top-1 of the checkpoint it was extended from (layouts without date
+      blocks: the base without time) within 1e-4; items of two lengths padded with nc's PAD score as each
+      alone; the profile path's block means within one fp16 step of fp32 taken directly; the date path's CE
+      of Y and D and year distribution a direct log-softmax's at nc's date ids
+                                     | the same units at the next target date; v1's PAD in an nc model
+                                       (refused); a model of the other layout (check_layout); labels left
+                                       on every body; a profile off by one; the date task on the source,
+                                       which has no date rows
+  Y32 The wrong date on nc: the probe's settings, every date block moved and a year moved change exactly the
+      moved date's tokens (nc's date ids), in input_ids and labels alike, and nothing else
+                                     | Y21's broken movers; the date task's own target and a sequence
+                                       without date blocks refused
 """
 from __future__ import annotations
 
@@ -2679,7 +2708,7 @@ def y20():
            f"date block without its year refused: {yearless_refused}")
 
 
-def move_problems(ts, moved, which: str, day_shift: int, year_shift: int) -> list:
+def move_problems(ts, moved, which: str, day_shift: int, year_shift: int, V=TV) -> list:
     """What a wrong date may change (eo/eval/temporal.move_dates): the year and day tokens of the target
     date's own date block ('target') or of every date block before the target ('all'), in input_ids and
     labels alike, to the moved date; nothing else, anywhere."""
@@ -2692,8 +2721,8 @@ def move_problems(ts, moved, which: str, day_shift: int, year_shift: int) -> lis
     want = ts.full["input_ids"].clone()
     for i in chosen:
         s = starts[i]
-        y, d = TV.decode_date_block(want[s:s + ET.block_width(blocks[i])].tolist())
-        want[s:s + ET.block_width(blocks[i])] = torch.tensor(TV.date_block(y + year_shift, (d + day_shift) % N_DOY_BINS))
+        y, d = V.decode_date_block(want[s:s + ET.block_width(blocks[i])].tolist())
+        want[s:s + ET.block_width(blocks[i])] = torch.tensor(V.date_block(y + year_shift, (d + day_shift) % N_DOY_BINS))
     out = []
     if not torch.equal(moved.full["input_ids"], want):
         out.append(f"input_ids differ from the moved date at {torch.nonzero(moved.full['input_ids'] != want).flatten()[:4].tolist()}")
@@ -3584,10 +3613,330 @@ def y29(ext: Path = None):
            all(fired.values()), ", ".join(f"{k}: {'refused' if v else 'ACCEPTED'}" for k, v in fired.items()))
 
 
+# ---------------------------------------------------------------- Step 14: the evaluation tools on nc (N5)
+def _layouts_nc():
+    from eo.eval import temporal as ET
+    return ET.load_layouts(ET.LAYOUTS_TAG_NC, allow_unfrozen=ET.FROZEN_LAYOUTS.get(ET.LAYOUTS_TAG_NC) is None)
+
+
+def nc_group_layout(L: dict, group: str):
+    """The layout a candidate group is the baseline of: t.<task> for a task or bar2, else the kit layout itself."""
+    return f"t.{group}" if f"t.{group}" in L else group
+
+
+def nc_layout_problems(doc, v1) -> list:
+    """nc1 against its sources (Y30's docstring): builders, v1's layouts less Coords, the candidates' rules."""
+    from eo.data.temporal_dataset import STATICS_NC
+    from eo.eval import temporal as ET
+    from eo.scripts import eval_temporal as E
+    L, V1, out = doc["layouts"], v1["layouts"], []
+    if doc.get("vocab") != "nc" or any("Coords" in s for e in L.values() for by_t in e["blocks"].values()
+                                       for s in by_t.values()):
+        out.append("not an nc file, or a Coords block")
+    twins = {"b.pair_cross": "s0.pair_cross", "b.pair_cross_none": "s0.pair_cross_none"}
+    for name, e in L.items():
+        twin = twins.get(name, name)
+        if twin in V1 and V1[twin]["dates"] != e["dates"]:
+            out.append(f"{name}: another target-date rule than v1's {twin}")
+        for m, by_t in e["blocks"].items():
+            for t, spec in by_t.items():
+                blocks, tt = ET.parse_blocks(spec), (None if t == "*" else int(t))
+                want = (ET.task_blocks(e["task"], tt, m, statics=STATICS_NC) if e["role"] == "task" else
+                        ET.kit_task_blocks(e["task"], tt, m, e["kit"], e["statics"]) if e["role"] == "kit" else None)
+                if want is not None and blocks != want:
+                    out.append(f"{name} {m} t{t} is not its builder's")
+                if twin in V1 and e["role"] != "kit":
+                    v = [b for b in ET.parse_blocks(V1[twin]["blocks"][m][t]) if b.modality != "Coords"]
+                    if blocks != v:
+                        out.append(f"{name} {m} t{t} is not v1's {twin} less Coords")
+    cands = {}
+    for name, e in L.items():
+        if e["role"] == "candidate":
+            for m in e["targets"]:
+                cands.setdefault((e["task"], m), []).append(name)
+    groups = ([(e["task"], m) for e in L.values() if e["role"] == "task" and e["task"] != "date" for m in e["targets"]]
+              + [("bar2", m) for m in L["t.bar2"]["targets"]]
+              + [(n, m) for n, e in L.items() if e["role"] == "kit" for m in e["targets"]])
+    for key in groups:
+        if len(cands.get(key, [])) < 2:
+            out.append(f"{key}: {len(cands.get(key, []))} candidates")
+    for (grp, m), names in cands.items():
+        gl = L.get(nc_group_layout(L, grp))
+        if gl is None:
+            out.append(f"candidates for {grp}: no such layout")
+            continue
+        for c in names:
+            if L[c]["dates"] != gl["dates"]:
+                out.append(f"{c}: another target-date rule than {nc_group_layout(L, grp)}")
+            for t, spec in L[c]["blocks"][m].items():
+                blocks = ET.parse_blocks(spec)
+                prompt = {(b.modality, b.t) for b in ET.parse_blocks(gl["blocks"][m][t])[:-1]}
+                if any(b.modality == "Date" for b in blocks):
+                    out.append(f"{c} {m} t{t}: a date block")
+                extra = [f"{b.modality}@{b.t}" for b in blocks[:-1] if (b.modality, b.t) not in prompt]
+                if extra:
+                    out.append(f"{c} {m} t{t}: {extra}, which {nc_group_layout(L, grp)}'s prompt lacks")
+    for name, e in L.items():
+        if e["role"] != "kit":
+            continue
+        for m, by_t in e["blocks"].items():
+            for t, spec in by_t.items():
+                nod = ET.without_dates(ET.parse_blocks(spec))
+                if not any(ET.parse_blocks(L[c]["blocks"][m][t]) == nod for c in cands.get((name, m), [])):
+                    out.append(f"{name} {m} t{t}: without its date blocks, none of its candidates")
+    B = doc.get("baselines") or {}
+    if B.get("read_on") != E.NC_BASE_TAG or B.get("date") != "prior (Step 12)" or "lowest mean CE" not in B.get("rule", ""):
+        out.append(f"the baseline rule: {B}")
+    return out
+
+
+def y30():
+    """The nc layout file: frozen, equal to its sources, its candidates inside the rules."""
+    import copy
+    from eo.eval import temporal as ET
+    frozen = ET.FROZEN_LAYOUTS.get(ET.LAYOUTS_TAG_NC)
+    doc, v1 = _layouts_nc(), _layouts()
+    src = nc_layout_problems(doc, v1)
+    struct = ET.layout_problems(doc)
+    ok = frozen is not None and doc["sha256"] == frozen and not src and not struct
+    bad = copy.deepcopy({k: v for k, v in doc.items() if k != "sha256"})
+    L = bad["layouts"]
+
+    def mutated(fn):
+        d = copy.deepcopy(bad)
+        fn(d["layouts"])
+        return d
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / ET.layouts_path(ET.LAYOUTS_TAG_NC).name
+        p.write_text(json.dumps(mutated(lambda X: X["t.left_out"]["blocks"]["NDVI"].update(
+            {"1": X["t.left_out"]["blocks"]["NDVI"]["1"].replace("DEM@0 ", "DEM@1 ")})), indent=1) + "\n")
+        edited = frozen is not None and refused(ET.load_layouts, ET.LAYOUTS_TAG_NC, path=p)
+    coords = mutated(lambda X: X["t.left_out"]["blocks"]["S2L2A"].update(
+        {"0": "Coords@0 " + X["t.left_out"]["blocks"]["S2L2A"]["0"]}))
+    ndvi = mutated(lambda X: X["k.forecast.S2L2A"]["blocks"]["S2L2A"].update(
+        {"3": "NDVI@2 " + X["k.forecast.S2L2A"]["blocks"]["S2L2A"]["3"]}))
+
+    def swap(X):
+        s = X["k.left_out.S2L2A_S1GRD"]["blocks"]["S1GRD"]["2"].split()
+        i = s.index("S1GRD@0")
+        s[i - 1], s[i] = s[i], s[i - 1]
+        X["k.left_out.S2L2A_S1GRD"]["blocks"]["S1GRD"]["2"] = " ".join(s)
+    dated = mutated(lambda X: X["c.forecast.same_mod"]["blocks"]["NDVI"].update(
+        {"3": "Date@2 " + X["c.forecast.same_mod"]["blocks"]["NDVI"]["3"]}))
+    lacks = mutated(lambda X: X["c.k.forecast.S2L2A.same_mod"]["blocks"]["S2L2A"].update(
+        {"3": "NDVI@2 " + X["c.k.forecast.S2L2A.same_mod"]["blocks"]["S2L2A"]["3"]}))
+    fired = {"the file edited by one block, refused by its pinned hash": edited,
+             "a Coords block": any("outside the nc layout" in q for q in ET.layout_problems(coords)),
+             "an NDVI block in an S2L2A kit layout": any("outside its kit" in q for q in ET.layout_problems(ndvi)),
+             "two blocks of a kit layout swapped": any("k.left_out.S2L2A_S1GRD S1GRD t2 is not its builder's" in q
+                                                       for q in nc_layout_problems(mutated(swap), v1)),
+             "a date block in a candidate": any("c.forecast.same_mod NDVI t3: a date block" in q
+                                                for q in nc_layout_problems(dated, v1)),
+             "a candidate block its prompt lacks": any("prompt lacks" in q for q in nc_layout_problems(lacks, v1))}
+    roles = {}
+    for e in L.values():
+        roles[e["role"]] = roles.get(e["role"], 0) + 1
+    record("Y30 nc layouts", ok, f"temporal_layouts_{ET.LAYOUTS_TAG_NC}.json, {len(L)} layouts {roles}, sha "
+           f"{doc['sha256'][:12]} ({'frozen' if frozen else 'NOT FROZEN'}); vocab nc, no Coords; tasks task_blocks' "
+           f"(DEM the only static), kits kit_task_blocks'; v1's layouts less Coords where v1 has them; every target's "
+           f"candidates inside their prompts, without date blocks; each kit layout without dates one of its own "
+           f"candidates ({len(src)} problems, {len(struct)} structural{': ' + str((src + struct)[:3]) if src or struct else ''})",
+           all(fired.values()), ", ".join(f"{k}: {'caught' if v else 'MISSED'}" for k, v in fired.items()))
+
+
+_NC: dict = {}           # Step 14's models, apart from _FX (whose emptiness fx() reads as "not built yet")
+
+
+def nc_models() -> SimpleNamespace:
+    """The nc extended base as eval_temporal builds it (pretrain_init's `continue` hook), and the checkpoint it was
+    extended from as `--model source` loads it (strict, hash checked), on CPU at fp32; built once."""
+    if "models" not in _NC:
+        from eo.finetune.extend import assert_tied
+        from eo.finetune.init import strict_load
+        from eo.generate import conditional as G
+        from eo.scripts import eval_temporal as E
+        from eo.scripts.eval_forgetting import build_temporal
+        ext, _, _ = build_temporal(E.NC_TEMPORAL_CONFIG, None, device="cpu")
+        src, arm, sha = E.nc_source(E.NC_TEMPORAL_CONFIG)
+        if hashlib.sha256((Path(src) / "model.safetensors").read_bytes()).hexdigest() != sha:
+            raise RuntimeError(f"{src}: weights differ from extension.json's record")
+        source, _ = G.build_model(arm, None, device="cpu")
+        strict_load(source, Path(src))
+        assert_tied(source)
+        source.eval()
+        _NC["models"] = SimpleNamespace(ext=ext, source=source, src=src)
+    return _NC["models"]
+
+
+def y31():
+    """The scorer's paths on nc (Y31's docstring)."""
+    if not (EXT_NC / "extension.json").is_file():
+        skip("Y31 nc scorer", f"{EXT_NC} is missing: the nc base has not been extended")
+        return
+    from eo.data import temporal_vocab_nc as N
+    from eo.eval import temporal as ET
+    fx()                     # Y3's audit of every row read covers this check's reads too
+    M = nc_models()
+    temporal, index = ET.dev_temporal(VAL, vocab="nc")
+    L = _layouts_nc()["layouts"]
+    locs, _, _ = ET.step0_locations(index)
+    n = 4
+
+    def items(name, m, delta=0, shift=0, with_dates=True, k=n):
+        e, out = L[name], []
+        for i in range(k):
+            t = ET.target_date(e, i, m)
+            ts = ET.task_sequence(temporal, int(locs[i]), ET.layout_blocks(e, m, None if t is None else (t + shift) % 4,
+                                                                           with_dates))
+            out.append(ET.scored(ET.move_target(ts, delta) if delta else ts))
+        return out
+
+    units = [("c.left_out.statics_same_mod", "NDVI", 0), ("c.forecast.same_mod", "S2L2A", 0),
+             ("c.k.forecast.S1GRD.nostatics.same_mod", "S1GRD", 0), ("c.bar2.statics_near_all", "S1GRD", 0),
+             ("c.k.gap_fill.S2L2A_S1GRD.kit_all_s1", "S2L2A", 0), ("b.pair_cross", "S2L2A", 198)]
+    worst, flips, ctrl = 0.0, 0, []
+    for name, m, delta in units:
+        it = items(name, m, delta)
+        a = ET.score_target(M.ext, it, m, 4, dtype=None, device="cpu")
+        b = ET.score_target(M.source, it, m, 4, dtype=None, device="cpu")
+        worst = max(worst, float(np.abs(a["ce"] - b["ce"]).max()))
+        flips += int(np.abs(np.round((a["top1"] - b["top1"]) * 196)).sum())
+        if len(ctrl) < 2 and L[name]["dates"]["rule"] == "step0":         # a fixed date has no next one
+            c = ET.score_target(M.ext, items(name, m, delta, shift=1), m, 4, dtype=None, device="cpu")
+            ctrl.append(float(np.abs(c["ce"] - b["ce"]).mean()))
+    # Padding: items of two lengths in one batch score as each alone; v1's PAD in an nc model is refused.
+    mixed = items("c.bar2.one_near", "NDVI", k=2) + items("c.bar2.statics_near_all", "NDVI", k=2)
+    alone = np.concatenate([ET.score_target(M.ext, mixed[:2], "NDVI", 2, dtype=None, device="cpu")["ce"],
+                            ET.score_target(M.ext, mixed[2:], "NDVI", 2, dtype=None, device="cpu")["ce"]])
+    together = ET.score_target(M.ext, [mixed[0], mixed[2], mixed[1], mixed[3]], "NDVI", 4, dtype=None, device="cpu")["ce"]
+    pad_gap = float(np.abs(together[[0, 2, 1, 3]] - alone).max())
+    padded = ET.batches([mixed[0], mixed[2]], 2, N.PAD_ID)[0]
+    short = int(mixed[0]["input_ids"].shape[0])
+    pad_ok = bool((padded["input_ids"][0, short:] == N.PAD_ID).all()) and int(padded["attention_mask"][0, short:].sum()) == 0
+
+    def v1_pad():
+        from eo.eval import teacher_forced as TF
+        try:
+            TF.run_pass(M.ext, ET.batches([mixed[0], mixed[2]], 2, TV.PAD_ID), device="cpu", keep_tokens=False,
+                        per_row_target="NDVI", dtype=None)
+        except IndexError as e:
+            raise ValueError(str(e))
+    v1_pad_refused = refused(v1_pad)
+    other = {"a v1 model on nc sequences": refused(ET.check_layout, SimpleNamespace(config=SimpleNamespace(vocab_size=87664)),
+                                                   temporal),
+             "an nc model on v1 sequences": refused(ET.check_layout, M.ext, fx().T.TemporalLocations(
+                 fx().base, fx().index, fx().dev, fx().T.TemporalConfig(), 42))}
+    unmasked = [ET.task_sequence(temporal, int(locs[0]), ET.layout_blocks(L["c.forecast.same_mod"], "NDVI", 3)).full]
+    unmasked_refused = refused(ET.score_target, M.ext, unmasked, "NDVI", 1, dtype=None, device="cpu")
+
+    prof = L["t.profile"]
+    blocks = ET.layout_blocks(prof, "*", None)
+    seqs = [ET.task_sequence(temporal, int(locs[i]), blocks).full for i in range(2)]
+    pb = ET.score_blocks(M.ext, seqs, blocks, 1, dtype=None, device="cpu")
+    direct, step = np.empty_like(pb), np.empty_like(pb)
+    with torch.no_grad():
+        for i, s in enumerate(seqs):
+            lg = M.ext(input_ids=s["input_ids"][None], position_ids=s["position_ids"][None],
+                       attention_mask=s["attention_mask"][None], use_cache=False).logits[0, :-1].float()
+            c64 = torch.nn.functional.cross_entropy(lg, s["input_ids"][1:], reduction="none").double().numpy()
+            for k, (st, b) in enumerate(zip(ET.block_starts(blocks), blocks)):
+                body = c64[st:st + ET.block_width(b) - 2]
+                direct[i, k], step[i, k] = body.mean(), _token_tol(body, body).max()
+            del lg
+    prof_ratio = float((np.abs(pb - direct) / step).max())
+    misaligned = refused(ET.score_blocks, M.ext, seqs[:1], blocks[1:] + blocks[:1], 1, dtype=None, device="cpu")
+
+    de = L["t.date"]
+    ds = [ET.task_sequence(temporal, int(locs[i]), ET.layout_blocks(de, "Date", ET.target_date(de, i, "Date"))).full
+          for i in range(n)]
+    dr = ET.score_dates(M.ext, ds, 4, dtype=None, device="cpu")
+    with torch.no_grad():
+        x = torch.stack([s["input_ids"] for s in ds])
+        lg = M.ext(input_ids=x, position_ids=torch.stack([s["position_ids"] for s in ds]), use_cache=False).logits.float()
+        lsm = torch.log_softmax(lg[:, -4:-2], -1)
+        want_y = -lsm[:, 0].gather(-1, x[:, -3:-2]).squeeze(-1)
+        want_d = -lsm[:, 1].gather(-1, x[:, -2:-1]).squeeze(-1)
+        py = torch.softmax(lg[:, -4, N.YEAR_IDS], -1)
+    date_gap = max(float(np.abs(dr["ce_y"] - want_y.numpy()).max()), float(np.abs(dr["ce_d"] - want_d.numpy()).max()),
+                   float(np.abs(dr["p_year"] - py.numpy()).max()))
+    nc_ids = bool((x[:, -4] == N.BO_DATE).all() and (x[:, -1] == N.EO_DATE).all()
+                  and np.array_equal(dr["year"], x[:, -3].numpy() - N.YEAR_BASE))
+    source_refused = refused(ET.score_dates, M.source, ds, 4, dtype=None, device="cpu")
+    ok = worst <= REPRO_TOL and pad_gap <= REPRO_TOL and pad_ok and prof_ratio <= 1.0 and date_gap <= LOGIT_TOL and nc_ids
+    record("Y31 nc scorer", ok, f"CPU, fp32, Step 0's first {n} locations: on {len(units)} layouts without date blocks "
+           f"(tasks', kits' and the bar's candidates, the cross-date pair at offset 396) the nc extended base reads "
+           f"{Path(M.src).parent.name}/{Path(M.src).name}'s per-location CE within {worst:.1e} (tolerance {REPRO_TOL:g}), "
+           f"top-1 equal on all but {flips} tokens; two lengths in one batch, padded with PAD {N.PAD_ID}, score as each "
+           f"alone within {pad_gap:.1e}; the profile path within {prof_ratio:.2f} of an fp16 step of fp32 block means on "
+           f"two whole sequences; the date path at nc's date ids within {date_gap:.1e} of a direct log-softmax "
+           f"(Y {dr['ce_y'].mean():.2f}, D {dr['ce_d'].mean():.2f} nats on the untrained rows)",
+           min(ctrl) > 100 * REPRO_TOL and v1_pad_refused and all(other.values()) and unmasked_refused and misaligned
+           and source_refused,
+           f"the same units at the next target date: mean |dCE| {', '.join(f'{c:.3f}' for c in ctrl)}; v1's PAD in the nc "
+           f"model refused: {v1_pad_refused}; {', '.join(f'{k} refused: {v}' for k, v in other.items())}; labels left on "
+           f"every body refused: {unmasked_refused}; a profile off by one refused: {misaligned}; the date task on the "
+           f"source (no date rows) refused: {source_refused}")
+
+
+def y32():
+    """The wrong date on nc: Y21's checks with nc's date ids."""
+    from eo.data import temporal_vocab_nc as N
+    from eo.eval import temporal as ET
+    fx()
+    temporal, index = ET.dev_temporal(VAL, vocab="nc")
+    doc = _layouts_nc()
+    L, p = doc["layouts"], doc["probe"]
+    locs, _, _ = ET.step0_locations(index)
+    problems, n, changed = [], 0, {"target": set(), "all": set(), "year": set()}
+    for i in range(16):
+        for m in GROUP:
+            e = L[p["layout"]]
+            ts = ET.task_sequence(temporal, int(locs[i]), ET.layout_blocks(e, m, ET.target_date(e, i, m)))
+            for key, which, ds, ys in (("target", p["which"], p["day_shift"], p["year_shift"]),
+                                       ("all", "all", p["day_shift"], p["year_shift"]), ("year", "target", 0, -1)):
+                mv = ET.move_dates(ts, which, ds, ys)
+                problems += [f"loc {i} {m} {key}: {q}" for q in move_problems(ts, mv, which, ds, ys, V=N)]
+                changed[key].add(int((mv.full["input_ids"] != ts.full["input_ids"]).sum()))
+            n += 1
+    ids_nc = bool((ts.full["input_ids"] == N.BO_DATE).sum() == 4 and (ts.full["input_ids"] >= N.BEN_BASE).sum()
+                  == ((ts.full["input_ids"] >= N.BASE) & (ts.full["input_ids"] < N.TOTAL_VOCAB_SIZE)).sum())
+
+    def first_block(ts, which, ds, ys):
+        full = {k: v.clone() for k, v in ts.full.items()}
+        s = next(st for st, b in zip(ET.block_starts(ts.draw.blocks), ts.draw.blocks) if b.modality == "Date")
+        y, d = N.decode_date_block(full["input_ids"][s:s + 4].tolist())
+        full["input_ids"][s:s + 4] = full["labels"][s:s + 4] = torch.tensor(N.date_block(y, (d + ds) % N_DOY_BINS))
+        return ET._with(ts, full)
+
+    def and_position(ts, which, ds, ys):
+        return ET.move_target(ET.move_dates(ts, which, ds, ys), 1)
+
+    def tokens_only(ts, which, ds, ys):
+        mv = ET.move_dates(ts, which, ds, ys)
+        return ET._with(ts, dict(mv.full, labels=ts.full["labels"].clone()))
+
+    ts = ET.task_sequence(temporal, int(locs[3]), ET.layout_blocks(L[p["layout"]], "NDVI",
+                                                                   ET.target_date(L[p["layout"]], 3, "NDVI")))
+    caught = {fn.__name__: bool(move_problems(ts, fn(ts, "target", 36, 0), "target", 36, 0, V=N))
+              for fn in (first_block, and_position, tokens_only)}
+    date_ts = ET.task_sequence(temporal, int(locs[0]), ET.layout_blocks(L["t.date"], "Date", 0))
+    target_refused = refused(ET.move_dates, date_ts, "target", 36, 0)
+    nodate = ET.task_sequence(temporal, int(locs[0]), ET.layout_blocks(L[p["layout"]], "S2L2A", 0, with_dates=False))
+    nodate_refused = refused(ET.move_dates, nodate, "target", 36, 0)
+    record("Y32 nc wrong date", not problems and ids_nc and changed == {"target": {1}, "all": {4}, "year": {1}},
+           f"{n} nc left-out-season sequences (16 of Step 0's locations, every target): the probe changes exactly "
+           f"{sorted(changed['target'])} token, every date block moved {sorted(changed['all'])}, a year moved "
+           f"{sorted(changed['year'])}, at nc's date ids ({N.BASE}..{N.TOTAL_VOCAB_SIZE - 1}), in input_ids and labels, "
+           f"nothing else" + (f"; {problems[:3]}" if problems else ""),
+           all(caught.values()) and target_refused and nodate_refused,
+           f"broken movers flagged: {caught}; the date task's own target refused: {target_refused}; a sequence without "
+           f"date blocks refused: {nodate_refused}")
+
+
 CHECKS = {"Y1": y1, "Y2": y2, "Y3": y3, "Y4": y4, "Y5": y5, "Y6": y6, "Y7": y7, "Y8": y8, "Y9": y9, "Y10": y10,
           "Y11": y11, "Y12": y12, "Y13": y13, "Y14": y14, "Y15": y15, "Y16": y16, "Y17": y17, "Y18": y18,
           "Y19": y19, "Y20": y20, "Y21": y21, "Y22": y22, "Y23": y23, "Y24": y24, "Y25": y25, "Y26": y26,
-          "Y27": y27, "Y28": y28, "Y29": y29}
+          "Y27": y27, "Y28": y28, "Y29": y29, "Y30": y30, "Y31": y31, "Y32": y32}
 
 
 def main() -> int:

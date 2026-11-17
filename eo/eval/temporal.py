@@ -61,6 +61,16 @@ SCORING (A1 Step 7, 2026-11-09). Everything below the task builders.
     year by `year_shift`, nothing else changed; the target block moved in position (`move_target`),
     for the offset curve.
 
+THE COORDS-FREE LAYOUT (nc, 2026-11-17; docs/plans/a1_nc_stage.md, N5). The same tasks on the nc stage
+(eo/data/temporal_vocab_nc.py: DEM the only static, 81,296 ids, PAD 81,187). Every id a scorer reads
+comes from a layout: a TaskSequence carries its data's (`layout`), and the model's is read from its
+vocab_size (`layout_for_model`: nc at 81,188 or 81,296, else v1); `check_layout` refuses a model on
+another layout's sequences, which would score without raising (an nc BO is a Coords row in a v1
+model). `task_blocks(statics=STATICS_NC)` gives nc's task layouts, and `kit_task_blocks` a task under a
+modality kit: its layout filtered exactly as training filters a location's draw (kit_blocks). Its
+layout file is temporal_layouts_nc1.json (`vocab: nc`); `layout_problems` refuses a block outside the
+file's layout, so no Coords block can enter it. v1's file, scorers and defaults are unchanged.
+
 Runs in `.venv`; never imports terratorch.
 """
 from __future__ import annotations
@@ -75,8 +85,10 @@ import numpy as np
 import torch
 
 from eo.data import temporal_vocab as TV
-from eo.data.temporal_dataset import (DATE, GROUP_MODALITIES, KEYS, LULC, SEQUENCE_MODALITIES, STATICS, Block,
-                                      LocationDraw, TemporalLocations, width)
+from eo.data import temporal_vocab_nc as TVL
+from eo.data.temporal_dataset import (ALL_KIT, DATE, GROUP_MODALITIES, KEYS, LULC, SEQUENCE_MODALITIES, STATICS,
+                                      STATICS_NC, Block, LocationDraw, TemporalLocations, kit_modalities,
+                                      sequence_modalities, width)
 from eo.data.temporal_index import N_DATES, N_DOY_BINS, N_YEARS
 
 TASKS = ("left_out", "forecast", "gap_fill", "date")
@@ -89,8 +101,10 @@ def task_dates(task: str) -> Tuple[int, ...]:
     return (N_DATES - 1,) if task == "forecast" else tuple(range(N_DATES))
 
 
-def task_blocks(task: str, t: int, target: str, with_dates: bool = True) -> List[Block]:
-    """One task instance as a block list, the target block last (module docstring, DEFAULTS)."""
+def task_blocks(task: str, t: int, target: str, with_dates: bool = True,
+                statics: Sequence[str] = STATICS) -> List[Block]:
+    """One task instance as a block list, the target block last (module docstring, DEFAULTS). `statics` are
+    the layout's (v1's Coords and DEM by default; STATICS_NC, DEM alone, on nc)."""
     if task not in TASKS:
         raise ValueError(f"task {task!r} not in {TASKS}")
     if target not in TARGETS[task]:
@@ -99,7 +113,9 @@ def task_blocks(task: str, t: int, target: str, with_dates: bool = True) -> List
         raise ValueError(f"{task} is scored at dates {task_dates(task)}, not {t}")
     if task == "date" and not with_dates:
         raise ValueError("date estimation needs its date block: it is the target")
-    blocks = [Block(m, 0) for m in STATICS]
+    if tuple(statics) not in (STATICS, STATICS_NC):
+        raise ValueError(f"statics {tuple(statics)}: v1's {STATICS} or nc's {STATICS_NC}")
+    blocks = [Block(m, 0) for m in statics]
     if task == "date":
         return blocks + [Block(m, t) for m in GROUP_MODALITIES] + [Block(LULC, t), Block(DATE, t, True)]
     for k, u in enumerate(d for d in range(N_DATES) if d != t):
@@ -108,6 +124,26 @@ def task_blocks(task: str, t: int, target: str, with_dates: bool = True) -> List
     blocks += [Block(DATE, t, True)] if with_dates else []
     blocks += [Block("S1GRD", t)] if task == "gap_fill" else []
     return blocks + [Block(target, t)]
+
+
+KIT_TASKS = ("left_out", "forecast", "gap_fill")
+
+
+def kit_task_blocks(task: str, t: int, target: str, kit: str, keep_statics: bool = True,
+                    statics: Sequence[str] = STATICS_NC, with_dates: bool = True) -> List[Block]:
+    """A task under a modality kit (the subset histories of N5): task_blocks' layout filtered exactly as training
+    filters a location's draw (TemporalLocations.kit_blocks): the kit's group modalities at every date, LULC only
+    under `all`, the statics only when kept, every date block. Gap fill needs S1GRD at t, so its kit must hold
+    S1GRD; the target must be one of the kit's. The date task is not a kit task."""
+    if task not in KIT_TASKS:
+        raise ValueError(f"a kit task is one of {KIT_TASKS}, not {task!r}")
+    mods = kit_modalities(kit)
+    if target not in mods:
+        raise ValueError(f"target {target!r} is not in kit {kit!r} ({mods})")
+    if task == "gap_fill" and "S1GRD" not in mods:
+        raise ValueError(f"gap fill reads S1GRD at the target date: kit {kit!r} has none")
+    full = task_blocks(task, t, target, with_dates=with_dates, statics=statics)
+    return TemporalLocations.kit_blocks(full, tuple(statics), kit, keep_statics)
 
 
 def forced_draw(loc: int, blocks: Sequence[Block], mode: str = "task") -> LocationDraw:
@@ -137,6 +173,7 @@ class TaskSequence:
     full: Dict[str, torch.Tensor]       # the five keys, (L,), cut to the real length
     target: Tuple[int, int]             # [start, end) of the target block in `full`
     prompt: Dict[str, torch.Tensor]     # full[:start + 1]: every block before the target, and its BO
+    layout: str = "v1"                  # the id space it is written in: "v1" (temporal_vocab) or "nc"
 
     @property
     def target_tokens(self) -> Tuple[int, int]:
@@ -144,14 +181,43 @@ class TaskSequence:
         return self.target[0] + 1, self.target[1] - 1
 
 
+def layout_name(V) -> str:
+    """A temporal registry's name: temporal_vocab_nc's NAME, else v1 (temporal_vocab has none)."""
+    return getattr(V, "NAME", "v1")
+
+
+def layout_for_model(model):
+    """The temporal registry whose ids a model's logits index, by teacher_forced.layout_for_model's rule:
+    temporal_vocab_nc at nc's sizes (81,188 without the date rows, 81,296 with them), else temporal_vocab
+    (T360 at 87,556, T360-T at 87,664). Below a layout's TOTAL_VOCAB_SIZE a model has no date rows."""
+    from eo.data import eo_vocab_nc
+    from eo.eval.teacher_forced import layout_for_model as base_layout
+    return TVL.layout(TVL.NAME) if base_layout(model) is eo_vocab_nc else TV
+
+
+def check_layout(model, temporal: TemporalLocations) -> None:
+    """Refuse a model on another layout's sequences: they score WITHOUT raising (an nc BO id is a Coords
+    codebook row of a v1 model), as teacher_forced.check_layout refuses for single scenes."""
+    M = layout_for_model(model)
+    if M is not temporal.V:
+        raise ValueError(f"the sequences are written in the {layout_name(temporal.V)} layout and the model "
+                         f"({int(model.config.vocab_size)} rows) reads {layout_name(M)}: not scored")
+
+
 def task_sequence(temporal: TemporalLocations, loc: int, blocks: Sequence[Block],
                   target_index: int = -1) -> TaskSequence:
     """A block list as the training code assembles it, with the prompt cut at the target block
-    (default the last). Refuses a location outside `temporal`'s set (module docstring)."""
+    (default the last). Refuses a location outside `temporal`'s set (module docstring), and a block
+    the layout does not have (Coords on nc)."""
     loc = int(loc)
     if loc not in set(int(x) for x in temporal.location_ids):
         raise RuntimeError(f"location {loc} is not one of this TemporalLocations' locations")
     blocks = list(blocks)
+    V = temporal.V
+    name = layout_name(V)
+    bad = sorted({b.modality for b in blocks} - set(sequence_modalities(name)) - {DATE})
+    if bad:
+        raise ValueError(f"blocks {bad} do not exist in the {name} layout")
     k = target_index % len(blocks)
     draw = forced_draw(loc, blocks)
     seq = temporal.sequence(loc, 0, len(draw.dates), draw=draw)
@@ -160,10 +226,10 @@ def task_sequence(temporal: TemporalLocations, loc: int, blocks: Sequence[Block]
     start = sum(block_width(b) for b in blocks[:k])
     end = start + block_width(blocks[k])
     target = blocks[k]
-    bo = TV.BO_DATE if target.modality == DATE else TV.get_modality(target.modality).bo_id
+    bo = V.BO_DATE if target.modality == DATE else V.get_modality(target.modality).bo_id
     if int(full["input_ids"][start]) != bo or end > real:
         raise RuntimeError(f"the target block {target} does not start at {start} of {real} tokens")
-    return TaskSequence(draw, full, (start, end), {key: v[: start + 1].clone() for key, v in full.items()})
+    return TaskSequence(draw, full, (start, end), {key: v[: start + 1].clone() for key, v in full.items()}, name)
 
 
 def task_instances(tasks: Sequence[str] = TASKS) -> List[Tuple[str, int, str]]:
@@ -182,9 +248,11 @@ def batch(items: Sequence[TaskSequence], part: str = "prompt") -> Dict[str, torc
 
 # =========================================================================== Step 7: layouts as data
 LAYOUTS_TAG = "v1"
+LAYOUTS_TAG_NC = "nc1"         # the Coords-free stage's layouts (module docstring, THE COORDS-FREE LAYOUT)
 #: Frozen layout files: tag -> sha256 of the file's bytes (module docstring). None: still being drawn
 #: up, loaded only with allow_unfrozen=True, and every unit records its own layout's hash meanwhile.
-FROZEN_LAYOUTS: Dict[str, Optional[str]] = {"v1": "9a5dd8ef62208246ea3e717cba61e85141ad005952d22ad35d663fca611e1583"}
+FROZEN_LAYOUTS: Dict[str, Optional[str]] = {"v1": "9a5dd8ef62208246ea3e717cba61e85141ad005952d22ad35d663fca611e1583",
+                                            "nc1": "82c741cc7cf8853a92eacbf03fc38430f1a2d37c65fc09d4a51b249dc8a8edb1"}
 STEP0_SEED = 20261105          # t360_context.SEED: the permutation of dev that picks Step 0's locations
 STEP0_N = 256
 BLOCK_MODALITIES = SEQUENCE_MODALITIES + (DATE,)
@@ -222,18 +290,32 @@ def without_dates(blocks: Sequence[Block]) -> List[Block]:
 
 
 def layout_problems(doc: Dict) -> List[str]:
-    """Everything wrong with a layout file's structure. Empty = valid."""
+    """Everything wrong with a layout file's structure. Empty = valid. A file's `vocab` (v1 when absent) is
+    the layout its blocks are written for: a block that layout lacks (Coords on nc) is a problem, and so is
+    a kit entry (`kit`, `statics`) holding a block its kit filters out."""
     out = []
     for key in ("tag", "locations", "probe", "layouts"):
         if key not in doc:
             out.append(f"no {key!r}")
     if out:
         return out
+    vocab = doc.get("vocab", "v1")
+    if vocab not in ("v1", TVL.NAME):
+        return [f"vocab {vocab!r}: v1 or {TVL.NAME}"]
+    allowed = set(sequence_modalities(vocab)) | {DATE}
     for name, e in doc["layouts"].items():
         rule = e.get("dates", {}).get("rule")
         if rule not in ("step0", "fixed", "none"):
             out.append(f"{name}: date rule {rule!r}")
             continue
+        keep = None
+        if "kit" in e:
+            try:
+                keep = set(kit_modalities(e["kit"])) | {DATE} | ({LULC} if e["kit"] == ALL_KIT else set())
+            except ValueError as err:
+                out.append(f"{name}: {err}")
+                continue
+            keep |= set(STATICS_NC if vocab == TVL.NAME else STATICS) if e.get("statics") else set()
         for target, by_t in e.get("blocks", {}).items():
             if target not in e.get("targets", []):
                 out.append(f"{name}: blocks for {target!r}, not one of its targets")
@@ -243,6 +325,12 @@ def layout_problems(doc: Dict) -> List[str]:
                 except ValueError as err:
                     out.append(f"{name} {target} t{t}: {err}")
                     continue
+                outside = sorted({b.modality for b in blocks} - allowed)
+                if outside:
+                    out.append(f"{name} {target} t{t}: {outside} outside the {vocab} layout")
+                if keep is not None and {b.modality for b in blocks} - keep:
+                    out.append(f"{name} {target} t{t}: {sorted({b.modality for b in blocks} - keep)} outside its "
+                               f"kit {e['kit']} (statics {'kept' if e.get('statics') else 'dropped'})")
                 if rule == "none":
                     continue
                 last = blocks[-1] if blocks else None
@@ -308,14 +396,16 @@ def step0_locations(index, n: int = STEP0_N, seed: int = STEP0_SEED):
     return ids, np.asarray(dev["groups"], dtype=np.int64)[idx], [dev["locations"][k] for k in idx]
 
 
-def dev_temporal(root, seed: int = 42):
-    """val_clean's dev locations as a TemporalLocations (test side refused), and its index."""
+def dev_temporal(root, seed: int = 42, vocab: str = "v1"):
+    """val_clean's dev locations as a TemporalLocations (test side refused), and its index, in the `vocab`
+    layout's id space (v1, or nc: no Coords, DEM the only static)."""
     from eo.data.temporal_dataset import TemporalConfig, val_dev_location_ids
     from eo.data.temporal_index import load_temporal_index
     from eo.data.terramesh_token_dataset import TerraMeshTokenDataset
     index = load_temporal_index(root)
-    base = TerraMeshTokenDataset(root_dir=str(root), split="val", active_modalities=list(SEQUENCE_MODALITIES),
-                                 max_length=1048, modality_order="random", seed=seed, rows=None)
+    mods = list(SEQUENCE_MODALITIES) if vocab == "v1" else list(sequence_modalities(vocab))
+    base = TerraMeshTokenDataset(root_dir=str(root), split="val", active_modalities=mods,
+                                 max_length=1048, modality_order="random", seed=seed, rows=None, vocab=vocab)
     return TemporalLocations(base, index, val_dev_location_ids(index), TemporalConfig(), seed), index
 
 
@@ -329,7 +419,8 @@ def block_starts(blocks: Sequence[Block]) -> List[int]:
 
 
 def _with(ts: TaskSequence, full: Dict[str, torch.Tensor]) -> TaskSequence:
-    return TaskSequence(ts.draw, full, ts.target, {k: v[: ts.target[0] + 1].clone() for k, v in full.items()})
+    return TaskSequence(ts.draw, full, ts.target, {k: v[: ts.target[0] + 1].clone() for k, v in full.items()},
+                        ts.layout)
 
 
 def move_dates(ts: TaskSequence, which: str = "target", day_shift: int = 36, year_shift: int = 0) -> TaskSequence:
@@ -350,15 +441,16 @@ def move_dates(ts: TaskSequence, which: str = "target", day_shift: int = 36, yea
     picks = picks[-1:] if which == "target" else picks
     if not picks:
         raise ValueError(f"no date block to move ({which}) before the target {tgt}")
+    V = TVL.layout(ts.layout)
     full = {key: v.clone() for key, v in ts.full.items()}
     for i in picks:
         s, w = starts[i], block_width(blocks[i])
-        year, day = TV.decode_date_block(full["input_ids"][s:s + w].tolist())
+        year, day = V.decode_date_block(full["input_ids"][s:s + w].tolist())
         new_year = None if year is None else year + int(year_shift)
         if new_year is not None and not 0 <= new_year < N_YEARS:
             raise ValueError(f"year id {year} + {year_shift} leaves the 12 years")
-        new = torch.tensor(TV.date_block(0 if new_year is None else new_year, (day + int(day_shift)) % N_DOY_BINS,
-                                         new_year is not None), dtype=torch.long)
+        new = torch.tensor(V.date_block(0 if new_year is None else new_year, (day + int(day_shift)) % N_DOY_BINS,
+                                        new_year is not None), dtype=torch.long)
         full["input_ids"][s:s + w] = new
         full["labels"][s:s + w] = new
     return _with(ts, full)
@@ -385,11 +477,11 @@ def scored(ts: TaskSequence) -> Dict[str, torch.Tensor]:
 
 
 # =========================================================================== Step 7: scoring
-def _pad(item: Dict[str, torch.Tensor], length: int) -> Dict[str, torch.Tensor]:
+def _pad(item: Dict[str, torch.Tensor], length: int, pad_id: int = TV.PAD_ID) -> Dict[str, torch.Tensor]:
     n = int(item["input_ids"].shape[0])
     if n == length:
         return item
-    fill = {"input_ids": TV.PAD_ID, "attention_mask": 0, "labels": -100, "modality_ids": 0}
+    fill = {"input_ids": int(pad_id), "attention_mask": 0, "labels": -100, "modality_ids": 0}
     out = {k: torch.cat([v, torch.full((length - n,), fill[k], dtype=v.dtype)]) for k, v in item.items()
            if k != "position_ids"}
     p = item["position_ids"]
@@ -397,8 +489,9 @@ def _pad(item: Dict[str, torch.Tensor], length: int) -> Dict[str, torch.Tensor]:
     return out
 
 
-def batches(items: Sequence[Dict[str, torch.Tensor]], size: int) -> List[Dict[str, torch.Tensor]]:
-    """Items padded to a common length and collated with teacher_forced.trim_collate, `size` at a time."""
+def batches(items: Sequence[Dict[str, torch.Tensor]], size: int, pad_id: int = TV.PAD_ID) -> List[Dict[str, torch.Tensor]]:
+    """Items padded to a common length with `pad_id` (the layout's PAD: v1's 87,555 by default, nc's 81,187)
+    and collated with teacher_forced.trim_collate, `size` at a time."""
     from eo.eval.teacher_forced import trim_collate
     for it in items:
         if tuple(sorted(it)) != tuple(sorted(KEYS)):
@@ -407,17 +500,18 @@ def batches(items: Sequence[Dict[str, torch.Tensor]], size: int) -> List[Dict[st
     for k in range(0, len(items), int(size)):
         part = list(items[k:k + int(size)])
         L = max(int(x["input_ids"].shape[0]) for x in part)
-        out.append(trim_collate([_pad(x, L) for x in part]))
+        out.append(trim_collate([_pad(x, L, pad_id) for x in part]))
     return out
 
 
 def score_target(model, items: Sequence[Dict[str, torch.Tensor]], target: str, batch_size: int,
                  dtype=None, device: str = "cuda") -> Dict[str, np.ndarray]:
-    """Per item: mean CE and top-1 over the target's body, through run_pass (labels masked by `scored`)."""
+    """Per item: mean CE and top-1 over the target's body, through run_pass (labels masked by `scored`).
+    Padding takes the model's layout's PAD (layout_for_model)."""
     from eo.eval import teacher_forced as TF
     from eo.terramesh_tok.contract import TOKENS_PER_SAMPLE
-    res = TF.run_pass(model, batches(items, batch_size), device=device, keep_tokens=False,
-                      per_row_target=target, dtype=dtype)
+    res = TF.run_pass(model, batches(items, batch_size, layout_for_model(model).PAD_ID), device=device,
+                      keep_tokens=False, per_row_target=target, dtype=dtype)
     rows = res["rows"]
     n = rows["n"].astype(np.int64)
     if len(n) != len(items) or (n != TOKENS_PER_SAMPLE).any():
@@ -434,13 +528,14 @@ def score_blocks(model, items: Sequence[Dict[str, torch.Tensor]], blocks: Sequen
     L = {int(x["input_ids"].shape[0]) for x in items}
     if len(L) != 1:
         raise ValueError(f"block profiles need one length, got {sorted(L)}")
+    V = layout_for_model(model)
     starts = block_starts(blocks)
-    bos = [TV.BO_DATE if b.modality == DATE else TV.get_modality(b.modality).bo_id for b in blocks]
+    bos = [V.BO_DATE if b.modality == DATE else V.get_modality(b.modality).bo_id for b in blocks]
     for x in items:
         ids = x["input_ids"]
         if starts[-1] + block_width(blocks[-1]) != len(ids) or any(int(ids[s]) != bo for s, bo in zip(starts, bos)):
             raise RuntimeError("the block list does not describe these sequences")
-    res = TF.run_pass(model, batches(items, batch_size), device=device, keep_tokens=True, dtype=dtype)
+    res = TF.run_pass(model, batches(items, batch_size, V.PAD_ID), device=device, keep_tokens=True, dtype=dtype)
     ce = res["tokens"]["ce"].astype(np.float64)          # (N, L-1): column j is the CE of token j + 1
     lm = res["tokens"]["label_mod"]
     out = np.empty((len(items), len(blocks)))
@@ -460,15 +555,18 @@ def score_dates(model, items: Sequence[Dict[str, torch.Tensor]], batch_size: int
     the softmax mass on the 12 year rows and 73 day rows, and the model's distribution over each
     (`p_year` (N, 12), `p_day` (N, 73)), with the true year and day."""
     model.eval()
+    V = layout_for_model(model)
+    if int(model.config.vocab_size) < V.TOTAL_VOCAB_SIZE:
+        raise ValueError(f"a model of {int(model.config.vocab_size)} rows has no date rows: no date task")
     keys = ("ce_y", "ce_d", "rank_y", "rank_d", "mass_years", "mass_days", "year", "day", "p_year", "p_day")
     acc = {k: [] for k in keys}
-    years, days = torch.tensor(TV.YEAR_IDS), torch.tensor(TV.DAY_IDS)
+    years, days = torch.tensor(V.YEAR_IDS), torch.tensor(V.DAY_IDS)
     for k in range(0, len(items), int(batch_size)):
         part = items[k:k + int(batch_size)]
         x = torch.stack([it["input_ids"] for it in part]).to(device)
         if len({int(it["input_ids"].shape[0]) for it in part}) != 1:
             raise ValueError("date items of one length only")
-        if not (bool((x[:, -4] == TV.BO_DATE).all()) and bool((x[:, -1] == TV.EO_DATE).all())
+        if not (bool((x[:, -4] == V.BO_DATE).all()) and bool((x[:, -1] == V.EO_DATE).all())
                 and bool(torch.isin(x[:, -3], years.to(device)).all()) and bool(torch.isin(x[:, -2], days.to(device)).all())):
             raise RuntimeError("the date task's items must end with a date block holding its year")
         kw = {key: torch.stack([it[key] for it in part]).to(device) for key in ("attention_mask", "position_ids")}
@@ -484,7 +582,7 @@ def score_dates(model, items: Sequence[Dict[str, torch.Tensor]], batch_size: int
         acc["rank_y"].append(rank[:, 0]); acc["rank_d"].append(rank[:, 1])
         acc["mass_years"].append(lsm[:, 0, years.to(device)].exp().sum(-1))
         acc["mass_days"].append(lsm[:, 1, days.to(device)].exp().sum(-1))
-        acc["year"].append(lab[:, 0] - TV.YEAR_BASE); acc["day"].append(lab[:, 1] - TV.DAY_BASE)
+        acc["year"].append(lab[:, 0] - V.YEAR_BASE); acc["day"].append(lab[:, 1] - V.DAY_BASE)
         acc["p_year"].append(py); acc["p_day"].append(pd)
     return {k: torch.cat(v).cpu().numpy() for k, v in acc.items()}
 

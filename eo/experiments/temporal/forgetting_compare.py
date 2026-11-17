@@ -15,6 +15,11 @@ It refuses a pair that differs in precision, rows, token set or arm config, or i
 (label_mod). `--self-test` runs the base against itself (0 everywhere) and against a copy with one modality
 raised by 0.06, which must fail the margin.
 
+THE COORDS-FREE STAGE (2026-11-17, docs/plans/a1_nc_stage.md). Without --base, the base is the reading's own
+layout's: T360-T's at 87,664 ids, the nc stage's (BASES) at 81,296, scored with `--arm-config
+eo_terramesh/arm_b10ctrxnc_vanilla` (its 4,416 rows without Coords). Modality ids are v1's on both layouts, so
+NAMES holds; Coords is simply absent from an nc reading.
+
     python eo/experiments/temporal/forgetting_compare.py --reading <forgetting-root>/<tag>/<checkpoint> [--base DIR]
            [--out OUT.json]
 """
@@ -28,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 BASE = Path("/data/enric/reports/temporal/forgetting/t360t_base/extended_base")
+BASES = {87_664: BASE, 81_296: Path("/data/enric/reports/temporal/forgetting/b10cltrxnct_base/extended_base")}
 NAMES = {1: "S2L2A", 2: "S1GRD", 3: "S1RTC", 4: "DEM", 5: "NDVI", 6: "LULC", 7: "Coords"}   # eo_vocab.ID_TO_MODALITY
 MARGIN_ALL, MARGIN_MOD = 0.02, 0.05
 DRAWS, SEED = 10_000, 0
@@ -108,10 +114,15 @@ def show(rep, title):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--reading", type=Path)
-    ap.add_argument("--base", type=Path, default=BASE)
+    ap.add_argument("--base", type=Path, default=None, help="default: BASES by the reading's vocab (T360-T's at 87,664)")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
+    if a.base is None:
+        vocab = json.loads((a.reading / "forgetting.json").read_text())["vocab"] if a.reading else 87_664
+        if vocab not in BASES:
+            raise SystemExit(f"no base reading for a {vocab}-id model: pass --base")
+        a.base = BASES[vocab]
     doc_b, tok_b = load(a.base)
     if a.self_test:
         r0 = compare(doc_b, tok_b, doc_b, tok_b)

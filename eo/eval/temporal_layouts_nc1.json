@@ -1,0 +1,2120 @@
+{
+ "tag": "nc1",
+ "created": "2026-11-17",
+ "vocab": "nc",
+ "about": "A1 on the Coords-free base (docs/plans/a1_nc_stage.md, N5): every layout of the nc stage's readings, per target and target date, the target block last, written in the nc layout (no Coords; DEM the only static). Blocks are MODALITY@date-index of the location's four chronological dates; a date block keeps its year. Written by eo/scripts/eval_temporal.py layouts --layout-tag nc1; frozen by its hash (eo/eval/temporal.FROZEN_LAYOUTS).",
+ "locations": {
+  "rule": "step0",
+  "split": "temporal_rows_v1.json dev",
+  "n": 256,
+  "seed": 20261105,
+  "target_dates": "t = (i + j) % 4: location i of the n, j the target's index in (S2L2A, S1GRD, NDVI) or the layout's fixed j; forecast t = 3; the date task j = 0"
+ },
+ "probe": {
+  "layout": "t.left_out",
+  "which": "target",
+  "day_shift": 36,
+  "year_shift": 0,
+  "null_day_shift": 1,
+  "about": "v1's probe: the target's day bin moved by 36 of 73 (about half a year), its year kept; the null moves it by one bin"
+ },
+ "baselines": {
+  "rule": "per group (a task, a kit task, or bar2) and target: of the candidates (role candidate, `task` naming the group), the one with the lowest mean CE on the n dev locations, read on the extended base without date blocks (reading tag `read_on`); within 0.005 nats, the shorter layout. Applied by eval_temporal report to the base's units alone, so nothing a trained checkpoint reads enters the choice",
+  "read_on": "b10cltrxnct_base",
+  "date": "prior (Step 12)"
+ },
+ "layouts": {
+  "t.left_out": {
+   "about": "the left_out task on nc: Step 6's defaults, DEM the only static (temporal.task_blocks)",
+   "role": "task",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 S2L2A@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 S2L2A@1",
+     "2": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 S2L2A@2",
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 S1GRD@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 S1GRD@1",
+     "2": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 S1GRD@2",
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 NDVI@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 NDVI@1",
+     "2": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 NDVI@2",
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 NDVI@3"
+    }
+   },
+   "task": "left_out"
+  },
+  "t.forecast": {
+   "about": "the forecast task on nc: Step 6's defaults, DEM the only static (temporal.task_blocks)",
+   "role": "task",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "t.gap_fill": {
+   "about": "the gap_fill task on nc: Step 6's defaults, DEM the only static (temporal.task_blocks)",
+   "role": "task",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@0 S1GRD@0 NDVI@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@1 S1GRD@1 NDVI@1",
+     "2": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 S1GRD@3 NDVI@3 Date@2 S1GRD@2 NDVI@2",
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "t.date": {
+   "about": "the date task on nc: Step 6's defaults, DEM the only static (temporal.task_blocks)",
+   "role": "task",
+   "targets": [
+    "Date"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "Date": {
+     "0": "DEM@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@0",
+     "1": "DEM@0 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@1",
+     "2": "DEM@0 S2L2A@2 S1GRD@2 NDVI@2 LULC@2 Date@2",
+     "3": "DEM@0 S2L2A@3 S1GRD@3 NDVI@3 LULC@3 Date@3"
+    }
+   },
+   "task": "date"
+  },
+  "k.left_out.S2L2A": {
+   "about": "t.left_out with only S2L2A at every date, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 Date@1 S2L2A@1 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@0 S2L2A@0",
+     "1": "DEM@0 Date@0 S2L2A@0 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@1 S2L2A@1",
+     "2": "DEM@0 Date@0 S2L2A@0 Date@1 S2L2A@1 Date@3 S2L2A@3 Date@2 S2L2A@2",
+     "3": "DEM@0 Date@0 S2L2A@0 Date@1 S2L2A@1 Date@2 S2L2A@2 Date@3 S2L2A@3"
+    }
+   },
+   "task": "left_out",
+   "kit": "S2L2A",
+   "statics": true
+  },
+  "k.forecast.S2L2A": {
+   "about": "t.forecast with only S2L2A at every date, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 Date@0 S2L2A@0 Date@1 S2L2A@1 Date@2 S2L2A@2 Date@3 S2L2A@3"
+    }
+   },
+   "task": "forecast",
+   "kit": "S2L2A",
+   "statics": true
+  },
+  "k.left_out.S2L2A.nostatics": {
+   "about": "t.left_out with only S2L2A at every date and no statics, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Date@1 S2L2A@1 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@0 S2L2A@0",
+     "1": "Date@0 S2L2A@0 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@1 S2L2A@1",
+     "2": "Date@0 S2L2A@0 Date@1 S2L2A@1 Date@3 S2L2A@3 Date@2 S2L2A@2",
+     "3": "Date@0 S2L2A@0 Date@1 S2L2A@1 Date@2 S2L2A@2 Date@3 S2L2A@3"
+    }
+   },
+   "task": "left_out",
+   "kit": "S2L2A",
+   "statics": false
+  },
+  "k.forecast.S2L2A.nostatics": {
+   "about": "t.forecast with only S2L2A at every date and no statics, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "Date@0 S2L2A@0 Date@1 S2L2A@1 Date@2 S2L2A@2 Date@3 S2L2A@3"
+    }
+   },
+   "task": "forecast",
+   "kit": "S2L2A",
+   "statics": false
+  },
+  "k.left_out.S1GRD": {
+   "about": "t.left_out with only S1GRD at every date, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S1GRD": {
+     "0": "DEM@0 Date@1 S1GRD@1 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@0 S1GRD@0",
+     "1": "DEM@0 Date@0 S1GRD@0 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@1 S1GRD@1",
+     "2": "DEM@0 Date@0 S1GRD@0 Date@1 S1GRD@1 Date@3 S1GRD@3 Date@2 S1GRD@2",
+     "3": "DEM@0 Date@0 S1GRD@0 Date@1 S1GRD@1 Date@2 S1GRD@2 Date@3 S1GRD@3"
+    }
+   },
+   "task": "left_out",
+   "kit": "S1GRD",
+   "statics": true
+  },
+  "k.forecast.S1GRD": {
+   "about": "t.forecast with only S1GRD at every date, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S1GRD": {
+     "3": "DEM@0 Date@0 S1GRD@0 Date@1 S1GRD@1 Date@2 S1GRD@2 Date@3 S1GRD@3"
+    }
+   },
+   "task": "forecast",
+   "kit": "S1GRD",
+   "statics": true
+  },
+  "k.left_out.S1GRD.nostatics": {
+   "about": "t.left_out with only S1GRD at every date and no statics, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S1GRD": {
+     "0": "Date@1 S1GRD@1 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@0 S1GRD@0",
+     "1": "Date@0 S1GRD@0 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@1 S1GRD@1",
+     "2": "Date@0 S1GRD@0 Date@1 S1GRD@1 Date@3 S1GRD@3 Date@2 S1GRD@2",
+     "3": "Date@0 S1GRD@0 Date@1 S1GRD@1 Date@2 S1GRD@2 Date@3 S1GRD@3"
+    }
+   },
+   "task": "left_out",
+   "kit": "S1GRD",
+   "statics": false
+  },
+  "k.forecast.S1GRD.nostatics": {
+   "about": "t.forecast with only S1GRD at every date and no statics, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S1GRD": {
+     "3": "Date@0 S1GRD@0 Date@1 S1GRD@1 Date@2 S1GRD@2 Date@3 S1GRD@3"
+    }
+   },
+   "task": "forecast",
+   "kit": "S1GRD",
+   "statics": false
+  },
+  "k.left_out.S2L2A_S1GRD": {
+   "about": "t.left_out with only S2L2A+S1GRD at every date, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@0 S2L2A@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@1 S2L2A@1",
+     "2": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@3 S2L2A@3 S1GRD@3 Date@2 S2L2A@2",
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@0 S1GRD@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@1 S1GRD@1",
+     "2": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@3 S2L2A@3 S1GRD@3 Date@2 S1GRD@2",
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S1GRD@3"
+    }
+   },
+   "task": "left_out",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "k.forecast.S2L2A_S1GRD": {
+   "about": "t.forecast with only S2L2A+S1GRD at every date, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S1GRD@3"
+    }
+   },
+   "task": "forecast",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "k.gap_fill.S2L2A_S1GRD": {
+   "about": "t.gap_fill with only S2L2A+S1GRD at every date, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@0 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@1 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@3 S2L2A@3 S1GRD@3 Date@2 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S1GRD@3 S2L2A@3"
+    }
+   },
+   "task": "gap_fill",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "k.left_out.S2L2A_S1GRD.nostatics": {
+   "about": "t.left_out with only S2L2A+S1GRD at every date and no statics, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@0 S2L2A@0",
+     "1": "Date@0 S2L2A@0 S1GRD@0 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@1 S2L2A@1",
+     "2": "Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@3 S2L2A@3 S1GRD@3 Date@2 S2L2A@2",
+     "3": "Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@0 S1GRD@0",
+     "1": "Date@0 S2L2A@0 S1GRD@0 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@1 S1GRD@1",
+     "2": "Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@3 S2L2A@3 S1GRD@3 Date@2 S1GRD@2",
+     "3": "Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S1GRD@3"
+    }
+   },
+   "task": "left_out",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "k.forecast.S2L2A_S1GRD.nostatics": {
+   "about": "t.forecast with only S2L2A+S1GRD at every date and no statics, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S1GRD@3"
+    }
+   },
+   "task": "forecast",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "k.gap_fill.S2L2A_S1GRD.nostatics": {
+   "about": "t.gap_fill with only S2L2A+S1GRD at every date and no statics, filtered as training filters a draw (temporal.kit_task_blocks)",
+   "role": "kit",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@0 S1GRD@0 S2L2A@0",
+     "1": "Date@0 S2L2A@0 S1GRD@0 Date@2 S2L2A@2 S1GRD@2 Date@3 S2L2A@3 S1GRD@3 Date@1 S1GRD@1 S2L2A@1",
+     "2": "Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@3 S2L2A@3 S1GRD@3 Date@2 S1GRD@2 S2L2A@2",
+     "3": "Date@0 S2L2A@0 S1GRD@0 Date@1 S2L2A@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 Date@3 S1GRD@3 S2L2A@3"
+    }
+   },
+   "task": "gap_fill",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "t.bar2": {
+   "about": "two dates: DEM, the near date's group (all three, LULC), then the target's group",
+   "role": "reading",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@0 S2L2A@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S2L2A@1",
+     "2": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2",
+     "3": "DEM@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 LULC@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@0 S1GRD@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 S1GRD@1",
+     "2": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S1GRD@2",
+     "3": "DEM@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 LULC@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@0 NDVI@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@1 NDVI@1",
+     "2": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 NDVI@2",
+     "3": "DEM@0 Date@2 S2L2A@2 S1GRD@2 NDVI@2 LULC@2 Date@3 NDVI@3"
+    }
+   }
+  },
+  "t.ctx_a": {
+   "about": "DEM and the same modality at the other three dates, chronological groups, LULC in the first",
+   "role": "reading",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 Date@1 S2L2A@1 LULC@1 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@0 S2L2A@0",
+     "1": "DEM@0 Date@0 S2L2A@0 LULC@0 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@1 S2L2A@1",
+     "2": "DEM@0 Date@0 S2L2A@0 LULC@0 Date@1 S2L2A@1 Date@3 S2L2A@3 Date@2 S2L2A@2",
+     "3": "DEM@0 Date@0 S2L2A@0 LULC@0 Date@1 S2L2A@1 Date@2 S2L2A@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 Date@1 S1GRD@1 LULC@1 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@0 S1GRD@0",
+     "1": "DEM@0 Date@0 S1GRD@0 LULC@0 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@1 S1GRD@1",
+     "2": "DEM@0 Date@0 S1GRD@0 LULC@0 Date@1 S1GRD@1 Date@3 S1GRD@3 Date@2 S1GRD@2",
+     "3": "DEM@0 Date@0 S1GRD@0 LULC@0 Date@1 S1GRD@1 Date@2 S1GRD@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 Date@1 NDVI@1 LULC@1 Date@2 NDVI@2 Date@3 NDVI@3 Date@0 NDVI@0",
+     "1": "DEM@0 Date@0 NDVI@0 LULC@0 Date@2 NDVI@2 Date@3 NDVI@3 Date@1 NDVI@1",
+     "2": "DEM@0 Date@0 NDVI@0 LULC@0 Date@1 NDVI@1 Date@3 NDVI@3 Date@2 NDVI@2",
+     "3": "DEM@0 Date@0 NDVI@0 LULC@0 Date@1 NDVI@1 Date@2 NDVI@2 Date@3 NDVI@3"
+    }
+   }
+  },
+  "t.ctx_b": {
+   "about": "t.ctx_a with the other two modalities added to the near date's group",
+   "role": "reading",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@0 S2L2A@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S2L2A@2 Date@3 S2L2A@3 Date@1 S2L2A@1",
+     "2": "DEM@0 Date@0 S2L2A@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S2L2A@3 Date@2 S2L2A@2",
+     "3": "DEM@0 Date@0 S2L2A@0 LULC@0 Date@1 S2L2A@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@0 S1GRD@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 S1GRD@2 Date@3 S1GRD@3 Date@1 S1GRD@1",
+     "2": "DEM@0 Date@0 S1GRD@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 S1GRD@3 Date@2 S1GRD@2",
+     "3": "DEM@0 Date@0 S1GRD@0 LULC@0 Date@1 S1GRD@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 LULC@1 Date@2 NDVI@2 Date@3 NDVI@3 Date@0 NDVI@0",
+     "1": "DEM@0 Date@0 S2L2A@0 S1GRD@0 NDVI@0 LULC@0 Date@2 NDVI@2 Date@3 NDVI@3 Date@1 NDVI@1",
+     "2": "DEM@0 Date@0 NDVI@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@3 NDVI@3 Date@2 NDVI@2",
+     "3": "DEM@0 Date@0 NDVI@0 LULC@0 Date@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 NDVI@3"
+    }
+   }
+  },
+  "t.profile": {
+   "about": "one full chronological sequence with a date block first in every group (LULC after date 0's): the block profile",
+   "role": "reading",
+   "targets": [
+    "*"
+   ],
+   "dates": {
+    "rule": "none"
+   },
+   "blocks": {
+    "*": {
+     "*": "DEM@0 Date@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3"
+    }
+   }
+  },
+  "t.profile_drop0": {
+   "about": "t.profile without date 0's group (its date block, S2L2A, S1GRD, NDVI); LULC stays",
+   "role": "reading",
+   "targets": [
+    "*"
+   ],
+   "dates": {
+    "rule": "none"
+   },
+   "blocks": {
+    "*": {
+     "*": "DEM@0 LULC@0 Date@1 S2L2A@1 S1GRD@1 NDVI@1 Date@2 S2L2A@2 S1GRD@2 NDVI@2 Date@3 S2L2A@3 S1GRD@3 NDVI@3"
+    }
+   }
+  },
+  "t.lattice": {
+   "about": "the cross-date pair with the target's date block between (lattice positions)",
+   "role": "reading",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 Date@0 S2L2A@0",
+     "1": "S2L2A@0 Date@1 S2L2A@1",
+     "2": "S2L2A@1 Date@2 S2L2A@2",
+     "3": "S2L2A@2 Date@3 S2L2A@3"
+    }
+   }
+  },
+  "t.lattice_each": {
+   "about": "the cross-date pair with a date block before each block",
+   "role": "reading",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "Date@1 S2L2A@1 Date@0 S2L2A@0",
+     "1": "Date@0 S2L2A@0 Date@1 S2L2A@1",
+     "2": "Date@1 S2L2A@1 Date@2 S2L2A@2",
+     "3": "Date@2 S2L2A@2 Date@3 S2L2A@3"
+    }
+   }
+  },
+  "b.pair_cross": {
+   "about": "S2L2A at the near date -> S2L2A at t, no date blocks: the lattice's reference and, with the target moved by 198(k-1), the base's offset curve",
+   "role": "pair",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@1",
+     "2": "S2L2A@1 S2L2A@2",
+     "3": "S2L2A@2 S2L2A@3"
+    }
+   }
+  },
+  "b.pair_cross_none": {
+   "about": "S2L2A alone (the cross-date pair's no-source reference)",
+   "role": "pair",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": 0
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@0",
+     "1": "S2L2A@1",
+     "2": "S2L2A@2",
+     "3": "S2L2A@3"
+    }
+   }
+  },
+  "c.left_out.same_mod": {
+   "about": "the base's left_out candidate `same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "left_out"
+  },
+  "c.left_out.one_near": {
+   "about": "the base's left_out candidate `one_near`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@1",
+     "2": "S2L2A@1 S2L2A@2",
+     "3": "S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@1",
+     "2": "S1GRD@1 S1GRD@2",
+     "3": "S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@1 NDVI@0",
+     "1": "NDVI@0 NDVI@1",
+     "2": "NDVI@1 NDVI@2",
+     "3": "NDVI@2 NDVI@3"
+    }
+   },
+   "task": "left_out"
+  },
+  "c.left_out.statics_same_mod": {
+   "about": "the base's left_out candidate `statics_same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@0 LULC@0 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@0 LULC@0 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 LULC@1 S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "DEM@0 LULC@0 S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "DEM@0 LULC@0 S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "DEM@0 LULC@0 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "DEM@0 LULC@0 NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "DEM@0 LULC@0 NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "DEM@0 LULC@0 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "left_out"
+  },
+  "c.left_out.statics_near_all": {
+   "about": "the base's left_out candidate `statics_near_all`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1",
+     "2": "DEM@0 LULC@0 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2",
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 S1GRD@1",
+     "2": "DEM@0 LULC@0 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@2",
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 NDVI@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 NDVI@1",
+     "2": "DEM@0 LULC@0 S2L2A@1 S1GRD@1 NDVI@1 NDVI@2",
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "left_out"
+  },
+  "c.left_out.statics_near_others_same_mod": {
+   "about": "the base's left_out candidate `statics_near_others_same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S1GRD@1 NDVI@1 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 LULC@0 S1GRD@0 NDVI@0 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@0 LULC@0 S1GRD@1 NDVI@1 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@0 LULC@0 S1GRD@2 NDVI@2 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 LULC@1 S2L2A@1 NDVI@1 S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 NDVI@0 S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "DEM@0 LULC@0 S2L2A@1 NDVI@1 S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "DEM@0 LULC@0 S2L2A@2 NDVI@2 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "DEM@0 LULC@0 S2L2A@1 S1GRD@1 NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "left_out"
+  },
+  "c.forecast.same_mod": {
+   "about": "the base's forecast candidate `same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.forecast.one_near": {
+   "about": "the base's forecast candidate `one_near`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.forecast.statics_same_mod": {
+   "about": "the base's forecast candidate `statics_same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 LULC@0 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 LULC@0 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "DEM@0 LULC@0 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.forecast.statics_near_all": {
+   "about": "the base's forecast candidate `statics_near_all`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.forecast.statics_near_others_same_mod": {
+   "about": "the base's forecast candidate `statics_near_others_same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 LULC@0 S1GRD@2 NDVI@2 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 LULC@0 S2L2A@2 NDVI@2 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "forecast"
+  },
+  "c.gap_fill.s1": {
+   "about": "the base's gap-fill candidate `s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S1GRD@0 S2L2A@0",
+     "1": "S1GRD@1 S2L2A@1",
+     "2": "S1GRD@2 S2L2A@2",
+     "3": "S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "S1GRD@0 NDVI@0",
+     "1": "S1GRD@1 NDVI@1",
+     "2": "S1GRD@2 NDVI@2",
+     "3": "S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.statics_s1": {
+   "about": "the base's gap-fill candidate `statics_s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 LULC@0 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 LULC@0 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 LULC@0 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 S1GRD@0 NDVI@0",
+     "1": "DEM@0 LULC@0 S1GRD@1 NDVI@1",
+     "2": "DEM@0 LULC@0 S1GRD@2 NDVI@2",
+     "3": "DEM@0 LULC@0 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.same_mod_s1": {
+   "about": "the base's gap-fill candidate `same_mod_s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@2 S2L2A@3 S1GRD@0 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@2 S2L2A@3 S1GRD@1 S2L2A@1",
+     "2": "S2L2A@0 S2L2A@1 S2L2A@3 S1GRD@2 S2L2A@2",
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "NDVI@1 NDVI@2 NDVI@3 S1GRD@0 NDVI@0",
+     "1": "NDVI@0 NDVI@2 NDVI@3 S1GRD@1 NDVI@1",
+     "2": "NDVI@0 NDVI@1 NDVI@3 S1GRD@2 NDVI@2",
+     "3": "NDVI@0 NDVI@1 NDVI@2 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.statics_same_mod_s1": {
+   "about": "the base's gap-fill candidate `statics_same_mod_s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S2L2A@2 S2L2A@3 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S2L2A@2 S2L2A@3 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 LULC@0 S2L2A@0 S2L2A@1 S2L2A@3 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 LULC@0 S2L2A@0 S2L2A@1 S2L2A@2 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 NDVI@1 NDVI@2 NDVI@3 S1GRD@0 NDVI@0",
+     "1": "DEM@0 LULC@0 NDVI@0 NDVI@2 NDVI@3 S1GRD@1 NDVI@1",
+     "2": "DEM@0 LULC@0 NDVI@0 NDVI@1 NDVI@3 S1GRD@2 NDVI@2",
+     "3": "DEM@0 LULC@0 NDVI@0 NDVI@1 NDVI@2 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.statics_s1_same_mod": {
+   "about": "the base's gap-fill candidate `statics_s1_same_mod`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S1GRD@0 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 LULC@0 S1GRD@1 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@0 LULC@0 S1GRD@2 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@0 LULC@0 S1GRD@3 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 S1GRD@0 NDVI@1 NDVI@2 NDVI@3 NDVI@0",
+     "1": "DEM@0 LULC@0 S1GRD@1 NDVI@0 NDVI@2 NDVI@3 NDVI@1",
+     "2": "DEM@0 LULC@0 S1GRD@2 NDVI@0 NDVI@1 NDVI@3 NDVI@2",
+     "3": "DEM@0 LULC@0 S1GRD@3 NDVI@0 NDVI@1 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.gap_fill.statics_near_all_s1": {
+   "about": "the base's gap-fill candidate `statics_near_all_s1`, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 LULC@0 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 S2L2A@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@0 NDVI@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 S1GRD@1 NDVI@1",
+     "2": "DEM@0 LULC@0 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@2 NDVI@2",
+     "3": "DEM@0 LULC@0 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3 NDVI@3"
+    }
+   },
+   "task": "gap_fill"
+  },
+  "c.bar2.one_near": {
+   "about": "the base's candidate `one_near` on t.bar2's date pair, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@1",
+     "2": "S2L2A@1 S2L2A@2",
+     "3": "S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@1",
+     "2": "S1GRD@1 S1GRD@2",
+     "3": "S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "NDVI@1 NDVI@0",
+     "1": "NDVI@0 NDVI@1",
+     "2": "NDVI@1 NDVI@2",
+     "3": "NDVI@2 NDVI@3"
+    }
+   },
+   "task": "bar2"
+  },
+  "c.bar2.near_all": {
+   "about": "the base's candidate `near_all` on t.bar2's date pair, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S1GRD@1 NDVI@1 S2L2A@0",
+     "1": "S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1",
+     "2": "S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2",
+     "3": "S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S2L2A@1 S1GRD@1 NDVI@1 S1GRD@0",
+     "1": "S2L2A@0 S1GRD@0 NDVI@0 S1GRD@1",
+     "2": "S2L2A@1 S1GRD@1 NDVI@1 S1GRD@2",
+     "3": "S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "S2L2A@1 S1GRD@1 NDVI@1 NDVI@0",
+     "1": "S2L2A@0 S1GRD@0 NDVI@0 NDVI@1",
+     "2": "S2L2A@1 S1GRD@1 NDVI@1 NDVI@2",
+     "3": "S2L2A@2 S1GRD@2 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "bar2"
+  },
+  "c.bar2.statics_one_near": {
+   "about": "the base's candidate `statics_one_near` on t.bar2's date pair, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S2L2A@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S2L2A@1",
+     "2": "DEM@0 LULC@1 S2L2A@1 S2L2A@2",
+     "3": "DEM@0 LULC@2 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 LULC@1 S1GRD@1 S1GRD@0",
+     "1": "DEM@0 LULC@0 S1GRD@0 S1GRD@1",
+     "2": "DEM@0 LULC@1 S1GRD@1 S1GRD@2",
+     "3": "DEM@0 LULC@2 S1GRD@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 NDVI@1 NDVI@0",
+     "1": "DEM@0 LULC@0 NDVI@0 NDVI@1",
+     "2": "DEM@0 LULC@1 NDVI@1 NDVI@2",
+     "3": "DEM@0 LULC@2 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "bar2"
+  },
+  "c.bar2.statics_near_all": {
+   "about": "the base's candidate `statics_near_all` on t.bar2's date pair, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD",
+    "NDVI"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 S2L2A@1",
+     "2": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 S2L2A@2",
+     "3": "DEM@0 LULC@2 S2L2A@2 S1GRD@2 NDVI@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 S1GRD@1",
+     "2": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 S1GRD@2",
+     "3": "DEM@0 LULC@2 S2L2A@2 S1GRD@2 NDVI@2 S1GRD@3"
+    },
+    "NDVI": {
+     "0": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 NDVI@0",
+     "1": "DEM@0 LULC@0 S2L2A@0 S1GRD@0 NDVI@0 NDVI@1",
+     "2": "DEM@0 LULC@1 S2L2A@1 S1GRD@1 NDVI@1 NDVI@2",
+     "3": "DEM@0 LULC@2 S2L2A@2 S1GRD@2 NDVI@2 NDVI@3"
+    }
+   },
+   "task": "bar2"
+  },
+  "c.k.left_out.S2L2A.same_mod": {
+   "about": "the base's candidate `same_mod` for k.left_out.S2L2A, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@0 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@0 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    }
+   },
+   "task": "k.left_out.S2L2A",
+   "kit": "S2L2A",
+   "statics": true
+  },
+  "c.k.left_out.S2L2A.one_near": {
+   "about": "the base's candidate `one_near` for k.left_out.S2L2A, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S2L2A@1 S2L2A@0",
+     "1": "DEM@0 S2L2A@0 S2L2A@1",
+     "2": "DEM@0 S2L2A@1 S2L2A@2",
+     "3": "DEM@0 S2L2A@2 S2L2A@3"
+    }
+   },
+   "task": "k.left_out.S2L2A",
+   "kit": "S2L2A",
+   "statics": true
+  },
+  "c.k.forecast.S2L2A.same_mod": {
+   "about": "the base's candidate `same_mod` for k.forecast.S2L2A, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    }
+   },
+   "task": "k.forecast.S2L2A",
+   "kit": "S2L2A",
+   "statics": true
+  },
+  "c.k.forecast.S2L2A.one_near": {
+   "about": "the base's candidate `one_near` for k.forecast.S2L2A, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 S2L2A@2 S2L2A@3"
+    }
+   },
+   "task": "k.forecast.S2L2A",
+   "kit": "S2L2A",
+   "statics": true
+  },
+  "c.k.left_out.S2L2A.nostatics.same_mod": {
+   "about": "the base's candidate `same_mod` for k.left_out.S2L2A.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    }
+   },
+   "task": "k.left_out.S2L2A.nostatics",
+   "kit": "S2L2A",
+   "statics": false
+  },
+  "c.k.left_out.S2L2A.nostatics.one_near": {
+   "about": "the base's candidate `one_near` for k.left_out.S2L2A.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@1",
+     "2": "S2L2A@1 S2L2A@2",
+     "3": "S2L2A@2 S2L2A@3"
+    }
+   },
+   "task": "k.left_out.S2L2A.nostatics",
+   "kit": "S2L2A",
+   "statics": false
+  },
+  "c.k.forecast.S2L2A.nostatics.same_mod": {
+   "about": "the base's candidate `same_mod` for k.forecast.S2L2A.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    }
+   },
+   "task": "k.forecast.S2L2A.nostatics",
+   "kit": "S2L2A",
+   "statics": false
+  },
+  "c.k.forecast.S2L2A.nostatics.one_near": {
+   "about": "the base's candidate `one_near` for k.forecast.S2L2A.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@2 S2L2A@3"
+    }
+   },
+   "task": "k.forecast.S2L2A.nostatics",
+   "kit": "S2L2A",
+   "statics": false
+  },
+  "c.k.left_out.S1GRD.same_mod": {
+   "about": "the base's candidate `same_mod` for k.left_out.S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S1GRD": {
+     "0": "DEM@0 S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "DEM@0 S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "DEM@0 S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "DEM@0 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S1GRD",
+   "kit": "S1GRD",
+   "statics": true
+  },
+  "c.k.left_out.S1GRD.one_near": {
+   "about": "the base's candidate `one_near` for k.left_out.S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S1GRD": {
+     "0": "DEM@0 S1GRD@1 S1GRD@0",
+     "1": "DEM@0 S1GRD@0 S1GRD@1",
+     "2": "DEM@0 S1GRD@1 S1GRD@2",
+     "3": "DEM@0 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S1GRD",
+   "kit": "S1GRD",
+   "statics": true
+  },
+  "c.k.forecast.S1GRD.same_mod": {
+   "about": "the base's candidate `same_mod` for k.forecast.S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S1GRD": {
+     "3": "DEM@0 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S1GRD",
+   "kit": "S1GRD",
+   "statics": true
+  },
+  "c.k.forecast.S1GRD.one_near": {
+   "about": "the base's candidate `one_near` for k.forecast.S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S1GRD": {
+     "3": "DEM@0 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S1GRD",
+   "kit": "S1GRD",
+   "statics": true
+  },
+  "c.k.left_out.S1GRD.nostatics.same_mod": {
+   "about": "the base's candidate `same_mod` for k.left_out.S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S1GRD.nostatics",
+   "kit": "S1GRD",
+   "statics": false
+  },
+  "c.k.left_out.S1GRD.nostatics.one_near": {
+   "about": "the base's candidate `one_near` for k.left_out.S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@1",
+     "2": "S1GRD@1 S1GRD@2",
+     "3": "S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S1GRD.nostatics",
+   "kit": "S1GRD",
+   "statics": false
+  },
+  "c.k.forecast.S1GRD.nostatics.same_mod": {
+   "about": "the base's candidate `same_mod` for k.forecast.S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S1GRD": {
+     "3": "S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S1GRD.nostatics",
+   "kit": "S1GRD",
+   "statics": false
+  },
+  "c.k.forecast.S1GRD.nostatics.one_near": {
+   "about": "the base's candidate `one_near` for k.forecast.S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S1GRD": {
+     "3": "S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S1GRD.nostatics",
+   "kit": "S1GRD",
+   "statics": false
+  },
+  "c.k.left_out.S2L2A_S1GRD.same_mod": {
+   "about": "the base's candidate `same_mod` for k.left_out.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "DEM@0 S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "DEM@0 S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "DEM@0 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "DEM@0 S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "DEM@0 S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "DEM@0 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.left_out.S2L2A_S1GRD.one_near": {
+   "about": "the base's candidate `one_near` for k.left_out.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S2L2A@1 S2L2A@0",
+     "1": "DEM@0 S2L2A@0 S2L2A@1",
+     "2": "DEM@0 S2L2A@1 S2L2A@2",
+     "3": "DEM@0 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 S1GRD@1 S1GRD@0",
+     "1": "DEM@0 S1GRD@0 S1GRD@1",
+     "2": "DEM@0 S1GRD@1 S1GRD@2",
+     "3": "DEM@0 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.left_out.S2L2A_S1GRD.near_kit": {
+   "about": "the base's candidate `near_kit` for k.left_out.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S2L2A@1 S1GRD@1 S2L2A@0",
+     "1": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1",
+     "2": "DEM@0 S2L2A@1 S1GRD@1 S2L2A@2",
+     "3": "DEM@0 S2L2A@2 S1GRD@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 S2L2A@1 S1GRD@1 S1GRD@0",
+     "1": "DEM@0 S2L2A@0 S1GRD@0 S1GRD@1",
+     "2": "DEM@0 S2L2A@1 S1GRD@1 S1GRD@2",
+     "3": "DEM@0 S2L2A@2 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.left_out.S2L2A_S1GRD.kit_all": {
+   "about": "the base's candidate `kit_all` for k.left_out.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S2L2A@0",
+     "1": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S2L2A@1",
+     "2": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@3 S1GRD@3 S2L2A@2",
+     "3": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "DEM@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S1GRD@0",
+     "1": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S1GRD@1",
+     "2": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@3 S1GRD@3 S1GRD@2",
+     "3": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.forecast.S2L2A_S1GRD.same_mod": {
+   "about": "the base's candidate `same_mod` for k.forecast.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.forecast.S2L2A_S1GRD.one_near": {
+   "about": "the base's candidate `one_near` for k.forecast.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.forecast.S2L2A_S1GRD.near_kit": {
+   "about": "the base's candidate `near_kit` for k.forecast.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 S2L2A@2 S1GRD@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 S2L2A@2 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.forecast.S2L2A_S1GRD.kit_all": {
+   "about": "the base's candidate `kit_all` for k.forecast.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.gap_fill.S2L2A_S1GRD.s1": {
+   "about": "the base's candidate `s1` for k.gap_fill.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 S1GRD@3 S2L2A@3"
+    }
+   },
+   "task": "k.gap_fill.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.gap_fill.S2L2A_S1GRD.same_mod_s1": {
+   "about": "the base's candidate `same_mod_s1` for k.gap_fill.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S2L2A@1 S2L2A@2 S2L2A@3 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 S2L2A@0 S2L2A@2 S2L2A@3 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 S2L2A@0 S2L2A@1 S2L2A@3 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 S2L2A@0 S2L2A@1 S2L2A@2 S1GRD@3 S2L2A@3"
+    }
+   },
+   "task": "k.gap_fill.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.gap_fill.S2L2A_S1GRD.kit_all_s1": {
+   "about": "the base's candidate `kit_all_s1` for k.gap_fill.S2L2A_S1GRD, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "DEM@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S1GRD@0 S2L2A@0",
+     "1": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S1GRD@1 S2L2A@1",
+     "2": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@3 S1GRD@3 S1GRD@2 S2L2A@2",
+     "3": "DEM@0 S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S1GRD@3 S2L2A@3"
+    }
+   },
+   "task": "k.gap_fill.S2L2A_S1GRD",
+   "kit": "S2L2A+S1GRD",
+   "statics": true
+  },
+  "c.k.left_out.S2L2A_S1GRD.nostatics.same_mod": {
+   "about": "the base's candidate `same_mod` for k.left_out.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@2 S2L2A@3 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@2 S2L2A@3 S2L2A@1",
+     "2": "S2L2A@0 S2L2A@1 S2L2A@3 S2L2A@2",
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@2 S1GRD@3 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@2 S1GRD@3 S1GRD@1",
+     "2": "S1GRD@0 S1GRD@1 S1GRD@3 S1GRD@2",
+     "3": "S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.left_out.S2L2A_S1GRD.nostatics.one_near": {
+   "about": "the base's candidate `one_near` for k.left_out.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@1",
+     "2": "S2L2A@1 S2L2A@2",
+     "3": "S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S1GRD@1 S1GRD@0",
+     "1": "S1GRD@0 S1GRD@1",
+     "2": "S1GRD@1 S1GRD@2",
+     "3": "S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.left_out.S2L2A_S1GRD.nostatics.near_kit": {
+   "about": "the base's candidate `near_kit` for k.left_out.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S1GRD@1 S2L2A@0",
+     "1": "S2L2A@0 S1GRD@0 S2L2A@1",
+     "2": "S2L2A@1 S1GRD@1 S2L2A@2",
+     "3": "S2L2A@2 S1GRD@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S2L2A@1 S1GRD@1 S1GRD@0",
+     "1": "S2L2A@0 S1GRD@0 S1GRD@1",
+     "2": "S2L2A@1 S1GRD@1 S1GRD@2",
+     "3": "S2L2A@2 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.left_out.S2L2A_S1GRD.nostatics.kit_all": {
+   "about": "the base's candidate `kit_all` for k.left_out.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S2L2A@0",
+     "1": "S2L2A@0 S1GRD@0 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S2L2A@1",
+     "2": "S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@3 S1GRD@3 S2L2A@2",
+     "3": "S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "0": "S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S1GRD@0",
+     "1": "S2L2A@0 S1GRD@0 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S1GRD@1",
+     "2": "S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@3 S1GRD@3 S1GRD@2",
+     "3": "S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.left_out.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.forecast.S2L2A_S1GRD.nostatics.same_mod": {
+   "about": "the base's candidate `same_mod` for k.forecast.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "S1GRD@0 S1GRD@1 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.forecast.S2L2A_S1GRD.nostatics.one_near": {
+   "about": "the base's candidate `one_near` for k.forecast.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.forecast.S2L2A_S1GRD.nostatics.near_kit": {
+   "about": "the base's candidate `near_kit` for k.forecast.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@2 S1GRD@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "S2L2A@2 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.forecast.S2L2A_S1GRD.nostatics.kit_all": {
+   "about": "the base's candidate `kit_all` for k.forecast.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A",
+    "S1GRD"
+   ],
+   "dates": {
+    "rule": "fixed",
+    "t": 3
+   },
+   "blocks": {
+    "S2L2A": {
+     "3": "S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3"
+    },
+    "S1GRD": {
+     "3": "S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S1GRD@3"
+    }
+   },
+   "task": "k.forecast.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.gap_fill.S2L2A_S1GRD.nostatics.s1": {
+   "about": "the base's candidate `s1` for k.gap_fill.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S1GRD@0 S2L2A@0",
+     "1": "S1GRD@1 S2L2A@1",
+     "2": "S1GRD@2 S2L2A@2",
+     "3": "S1GRD@3 S2L2A@3"
+    }
+   },
+   "task": "k.gap_fill.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.gap_fill.S2L2A_S1GRD.nostatics.same_mod_s1": {
+   "about": "the base's candidate `same_mod_s1` for k.gap_fill.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S2L2A@2 S2L2A@3 S1GRD@0 S2L2A@0",
+     "1": "S2L2A@0 S2L2A@2 S2L2A@3 S1GRD@1 S2L2A@1",
+     "2": "S2L2A@0 S2L2A@1 S2L2A@3 S1GRD@2 S2L2A@2",
+     "3": "S2L2A@0 S2L2A@1 S2L2A@2 S1GRD@3 S2L2A@3"
+    }
+   },
+   "task": "k.gap_fill.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  },
+  "c.k.gap_fill.S2L2A_S1GRD.nostatics.kit_all_s1": {
+   "about": "the base's candidate `kit_all_s1` for k.gap_fill.S2L2A_S1GRD.nostatics, no date blocks",
+   "role": "candidate",
+   "targets": [
+    "S2L2A"
+   ],
+   "dates": {
+    "rule": "step0",
+    "j": "target"
+   },
+   "blocks": {
+    "S2L2A": {
+     "0": "S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S1GRD@0 S2L2A@0",
+     "1": "S2L2A@0 S1GRD@0 S2L2A@2 S1GRD@2 S2L2A@3 S1GRD@3 S1GRD@1 S2L2A@1",
+     "2": "S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@3 S1GRD@3 S1GRD@2 S2L2A@2",
+     "3": "S2L2A@0 S1GRD@0 S2L2A@1 S1GRD@1 S2L2A@2 S1GRD@2 S1GRD@3 S2L2A@3"
+    }
+   },
+   "task": "k.gap_fill.S2L2A_S1GRD.nostatics",
+   "kit": "S2L2A+S1GRD",
+   "statics": false
+  }
+ }
+}
