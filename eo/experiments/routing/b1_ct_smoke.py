@@ -46,6 +46,12 @@ controller read the update's top-1 body mean with a deadband, and the rule is R-
   (S1 pooled by positions) beside a predicted table, e.g. A10c-s2's own gain-optimal table at 1.8 from its first
   passes at 1650: S2L2A 1, S1 3, DEM 1, NDVI 3, LULC 1 (Paper B plan, B2).
 
+THE CONFIDENCE TERM (B1 Step 7b, 2026-11-17; Enric: "Build arms B and D and launch them. Use all we have learned from
+the previous results in B1 to inform them if necessary"). When the header's compute target has `confidence` > 0, the
+term is there to make the soft target bind the hard mean, so the smoke reads R-hold-hard on the hard mean (recounted)
+whatever the measure, by the thresholds above (fixed 2026-11-15). Description beside it: the body positions' mean
+router entropy (nats) over the read window and its path.
+
 Writes /data/enric/reports/b1/smoke/<tag>.{json,txt}. Runs in `.venv`, CPU, seconds.
 """
 from __future__ import annotations
@@ -151,8 +157,10 @@ def read(classes, steps, counts, soft, ct, hdr, rng) -> dict:
                        "price_read_range": [float(p_ct[sel].min()), float(p_ct[sel].max())] if sel.any() else None,
                        "soft_path": {int(s): round(float(v), 4) for s, v in zip(s_ct[::10], m_ct[::10])},
                        "price_path": {int(s): round(float(v), 5) for s, v in zip(s_ct[::10], p_ct[::10])}}
-        if block.get("measure", "soft") == "hard":
-            # R-hold-hard (B1 Step 6): the hard mean recounted from the counts, not the trainer's record
+        conf = float(block.get("confidence", 0.0) or 0.0)
+        if block.get("measure", "soft") == "hard" or conf > 0:
+            # R-hold-hard (B1 Step 6): the hard mean recounted from the counts, not the trainer's record; under the
+            # confidence term too (B1 Step 7b, 2026-11-17), whose purpose is that the hard mean follows the target
             band = float(block.get("deadband", 0.0))
             gap = hard - tgt
             hsel = (steps >= a) & (steps <= b)
@@ -169,6 +177,11 @@ def read(classes, steps, counts, soft, ct, hdr, rng) -> dict:
                 "changes_read": int((np.abs(np.diff(hard[hsel])) > 0.02).sum()),
                 "recorded_equals_recount": bool(rec) and all(rec),
                 "hard_path": {int(s): round(float(v), 4) for s, v in zip(steps[::10], hard[::10])}}
+            e_ct = np.array([float(ct[s].get("entropy", np.nan)) for s in s_ct])
+            if np.isfinite(e_ct).any():
+                out["hold_hard"]["confidence"] = conf
+                out["hold_hard"]["entropy_read_mean"] = float(np.nanmean(e_ct[sel])) if sel.any() else None
+                out["hold_hard"]["entropy_path"] = {int(s): round(float(v), 4) for s, v in zip(s_ct[::10], e_ct[::10])}
     a, b = WIN["read"]
     sel = (steps >= a) & (steps <= b)
     out["slot_depths_read"] = {}
@@ -230,6 +243,9 @@ def text(tag, src, res, v, ctl_tag=None, ctl=None) -> str:
                  f"(rule: at most {HOLD_HARD_MAX}); {g['in_band_read']} of {g['n_read']} read updates inside the band, "
                  f"{g['changes_read']} changes of the hard mean; the trainer's record equals the recount = "
                  f"{g['recorded_equals_recount']}")
+        if "entropy_read_mean" in g:
+            L.append(f"    confidence {g['confidence']}: body router entropy over the read window {g['entropy_read_mean']:.4f} "
+                     f"nats (log 3 = 1.0986); every 10 updates: {g['entropy_path']}")
         L.append(f"    hard mean every 10 updates: {g['hard_path']}")
     if res.get("slot_depths_read"):
         L.append("  slot hard depths over the read window: " + ", ".join(
@@ -278,6 +294,18 @@ def synthetic_hard(series, start=1651, per=200, record_offset=0.0):
     return classes, steps, counts, soft, ct, hdr
 
 
+def synthetic_conf(series, confidence=0.1, soft_series=None):
+    """A soft-measure run under the confidence term (B1 Step 7b): its hard mean follows `series`, its soft mean
+    `soft_series` (the target, as the soft controller holds it, by default), each row with an entropy."""
+    classes, steps, counts, soft, ct, hdr = synthetic_hard(series)
+    sm = np.full(len(series), 1.8) if soft_series is None else np.asarray(soft_series)
+    for i, s in enumerate(steps):
+        ct[int(s)].update({"soft_mean": float(sm[i]), "measure": "soft", "in_band": False, "entropy": 0.2,
+                           "confidence": confidence})
+    hdr["compute_target"].update({"measure": "soft", "deadband": 0.0, "confidence": confidence})
+    return classes, steps, counts, soft, ct, hdr
+
+
 def self_test() -> int:
     rng = np.random.default_rng(0)
     ok = True
@@ -290,7 +318,17 @@ def self_test() -> int:
     h_cycle = read(*synthetic_hard(np.where((t // 5) % 2 == 0, 1.6, 2.0)), rng)
     h_low = read(*synthetic_hard(np.full(200, 1.7)), rng)
     h_rec = read(*synthetic_hard(np.full(200, 1.8), record_offset=0.01), rng)
+    c_held = read(*synthetic_conf(1.8 + 0.02 * np.sin(2 * np.pi * t / 17)), rng)
+    c_flat = read(*synthetic_conf(np.full(200, 1.01)), rng)            # the soft mean held, the hard one at depth 1
+    c_none = read(*synthetic_conf(np.full(200, 1.01), confidence=0.0), rng)
     checks = [
+        ("confidence: a soft run at 0.1 whose hard mean holds 1.8 +- 0.02 holds R-hold-hard",
+         "hold_hard" in c_held and c_held["hold_hard"]["holds"] and verdict(c_held, None)["R-hold-hard"] == "holds"
+         and abs(c_held["hold_hard"]["entropy_read_mean"] - 0.2) < 1e-12),
+        ("confidence: the soft mean held while the hard mean sits at depth 1 does not hold",
+         "hold_hard" in c_flat and not c_flat["hold_hard"]["holds"] and c_flat["hold"]["holds"]),
+        ("confidence: at 0 the same run is read by R-hold (the soft rule), as Step 6.5 was",
+         "hold_hard" not in c_none and verdict(c_none, None)["R-hold"] == "holds"),
         ("hard: a hard mean holding 1.8 +- 0.02 holds R-hold-hard, its record equal to the recount",
          h_held["hold_hard"]["holds"] and h_held["hold_hard"]["recorded_equals_recount"]
          and verdict(h_held, None)["R-hold-hard"] == "holds"),

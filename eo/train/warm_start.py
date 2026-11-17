@@ -51,7 +51,8 @@ REQUIRED = ("pytorch_model.bin", "optimizer.pt", "scheduler.pt", "rng_state.pth"
 ALLOWED_DIFF = {"mor.rand_router"}
 COMPUTE_DIFF = {"mor.token.balancing", "mor.token.compute.target", "mor.token.compute.gain",
                 "mor.token.compute.proportional", "mor.token.compute.price_init",
-                "mor.token.compute.measure", "mor.token.compute.deadband"}     # the last two since 2026-11-16 (B1 Step 6)
+                "mor.token.compute.measure", "mor.token.compute.deadband",     # these two since 2026-11-16 (B1 Step 6)
+                "mor.token.compute.confidence"}                                  # since 2026-11-17 (B1 Step 7b)
 RECORD = "warm_start.json"
 
 

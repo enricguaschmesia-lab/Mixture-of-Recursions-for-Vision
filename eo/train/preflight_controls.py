@@ -982,6 +982,16 @@ def main(argv=None) -> int:
                                               "price_init": 0.0, "lam": 0.01, "e_last": -0.05, "global_step": step}))
         return d
 
+    def ct_ckpt_v2(name, step=20, **blk_over):
+        """A compute_target.json as written before 2026-11-17 (version 2: no confidence)."""
+        d = ct_ckpt(name, step=step, **blk_over)
+        f = d / f"checkpoint-{step}" / CTm.FILE
+        doc = json.loads(f.read_text())
+        doc.pop("confidence", None)
+        doc["version"] = 2
+        f.write_text(json.dumps(doc))
+        return d
+
     def ct_resume(run, config):
         return dict(env=GOOD_ENV, run_dir=run, resuming=True, allow_existing=True, config=config)
 
@@ -1015,13 +1025,26 @@ def main(argv=None) -> int:
         ("compute: resume, the file's measure is soft", ct_resume(ct_ckpt("other_measure", measure="soft"), ct_ok)),
         ("compute: resume, the file's deadband is 0",  ct_resume(ct_ckpt("other_band", deadband=0.0), ct_ok)),
         ("compute: resume, a version-1 file, hard run", ct_resume(ct_ckpt_v1("v1_hard"), ct_ok)),
+        # B1 Step 7b (2026-11-17): the confidence term
+        ("compute: confidence -0.01",                  dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_soft, "confidence": -0.01}))),
+        ("compute: confidence 10.5",                   dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_soft, "confidence": 10.5}))),
+        ("compute: a misspelt confidence (confidance)", dict(env=GOOD_ENV, config=ct_cfg(mor__token__compute={**ct_soft, "confidance": 0.1}))),
+        ("compute: resume, the file's confidence is 0.1", ct_resume(ct_ckpt("other_conf", confidence=0.1), ct_ok)),
+        ("compute: resume, a version-2 file, run at 0.1", ct_resume(ct_ckpt_v2("v2_conf", measure="soft", deadband=0.0),
+                                                                    ct_cfg(mor__token__compute={**ct_soft, "confidence": 0.1}))),
     ]]
+    ct_conf_ok = ct_cfg(mor__token__compute={**ct_soft, "confidence": 0.1})
     ci_pos += [(label, "compute target", res) for label, res in [
         ("compute: a good block, a new run",           _results(env=GOOD_ENV, config=ct_ok)),
         ("compute: resumed with its own file",         _results(**ct_resume(ct_ckpt("good"), ct_ok))),
         ("compute: n/a on a balancing run",            _results(env=GOOD_ENV, overrides=NO_COORDS)),
         ("compute: the soft measure, a new run",       _results(env=GOOD_ENV, config=ct_soft_ok)),
         ("compute: a version-1 file, soft run",        _results(**ct_resume(ct_ckpt_v1("v1_soft"), ct_soft_ok))),
+        # B1 Step 7b (2026-11-17): the confidence term
+        ("compute: confidence 0.1, a new run",         _results(env=GOOD_ENV, config=ct_conf_ok)),
+        ("compute: confidence 0.1, resumed with its own file", _results(**ct_resume(
+            ct_ckpt("good_conf", measure="soft", deadband=0.0, confidence=0.1), ct_conf_ok))),
+        ("compute: a version-2 file, run without confidence", _results(**ct_resume(ct_ckpt_v2("v2_ok"), ct_ok))),
     ] + [
         (f"compute: {arm} as shipped (replays only)", _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml",
                                                                run_dir=ct_ckpt(f"ship_{arm}", **{
@@ -1033,7 +1056,8 @@ def main(argv=None) -> int:
                     "arm_a10cs2ct18h_mor")
     ] + [
         (f"compute: {arm} as shipped, a new run (arm B)", _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml"))
-        for arm in ("arm_a10cb3trncct18_mor", "arm_a10cb3trs2ncct18_mor")
+        for arm in ("arm_a10cb3trncct18_mor", "arm_a10cb3trs2ncct18_mor",
+                    "arm_a10cb3trncct18c_mor", "arm_a10cb3trs2ncct18c_mor")   # the last two: B1 Step 7b, 2026-11-17
     ]]
 
     print("\nnegative controls (each must FIRE):")

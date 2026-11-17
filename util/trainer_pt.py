@@ -349,7 +349,9 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                     hdr["compute_target"] = dict(ct["block"], rule="eo/train/compute_target.py: ct.price = the price the "
                                                  "update trained under, ct.soft_mean and ct.hard_mean = its body positions' "
                                                  "soft and top-1 means, ct.measure = the one the controller read, "
-                                                 "ct.in_band = its gap was inside the deadband, ct.next = the price after it")
+                                                 "ct.in_band = its gap was inside the deadband, ct.next = the price after it, "
+                                                 "ct.entropy = its body positions' mean router entropy in nats, priced "
+                                                 "at ct.confidence (B1 Step 7b, 2026-11-17)")
                 f.write(_json.dumps({"header": hdr}) + "\n")
                 d["started"] = True
             row = {"step": int(self.state.global_step), "counts": acc.tolist()}
@@ -381,19 +383,27 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
         if problems:
             raise ValueError("compute target: " + "; ".join(problems))
         self._ct = {"block": block, "state": CT.initial_state(block), "sum": None, "cnt": None, "term": None,
-                    "last": None, "log": [0.0, 0.0, 0]}
+                    "conf_term": None, "ent_sum": None, "ent_cnt": None, "last": None, "log": [0.0, 0.0, 0, 0.0]}
 
     def _ct_term(self):
-        """This micro-batch's priced term: price * its body positions' soft mean / accumulation steps."""
+        """This micro-batch's priced term: price * its body positions' soft mean / accumulation steps, plus, with
+        `confidence` > 0 (B1 Step 7b, 2026-11-17), confidence * their mean router entropy / accumulation steps."""
         from eo.train import compute_target as CT
         ct = self._ct
         term, ct["term"] = ct["term"], None
+        conf_term, ct["conf_term"] = ct["conf_term"], None
         if term is None:
             raise RuntimeError("compute target: no soft depth from this micro-batch's forward")
         # The LM loss of a micro-batch is already its share of the update (num_items_in_batch) when the model takes
         # loss kwargs, and training_step divides total_loss by the accumulation steps itself when it does not.
         div = self.args.gradient_accumulation_steps if self.model_accepts_loss_kwargs else 1
-        return CT.price(ct["block"], ct["state"]) * term / div
+        out = CT.price(ct["block"], ct["state"]) * term / div
+        conf = float(ct["block"]["confidence"])
+        if conf > 0:
+            if conf_term is None or not conf_term.requires_grad:
+                raise RuntimeError("compute target: confidence > 0 but this micro-batch left no entropy with its graph")
+            out = out + conf * conf_term / div
+        return out
 
     def _ct_update(self, skipped: bool):
         """After an optimizer step: the update's soft and hard body means over all its micro-batches, and the
@@ -409,17 +419,20 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
             raise RuntimeError("compute target: an update ended with no depth counts accumulated")
         m_soft = float(ct["sum"] / ct["cnt"])
         m_hard = CT.hard_body_mean(acc)
+        m_ent = float(ct["ent_sum"] / ct["ent_cnt"]) if ct["ent_sum"] is not None else float("nan")
         blk = ct["block"]
         m = m_hard if blk["measure"] == "hard" else m_soft
         used = CT.price(blk, ct["state"])
         if not skipped:
             ct["state"] = CT.step(blk, ct["state"], m)
         ct["last"] = {"price": used, "soft_mean": m_soft, "hard_mean": m_hard, "measure": blk["measure"],
-                      "in_band": CT.gap(blk, m) == 0.0, "next": CT.price(blk, ct["state"]), "skipped": bool(skipped)}
-        ct["sum"] = ct["cnt"] = None
+                      "in_band": CT.gap(blk, m) == 0.0, "next": CT.price(blk, ct["state"]), "skipped": bool(skipped),
+                      "entropy": round(m_ent, 6), "confidence": float(blk["confidence"])}
+        ct["sum"] = ct["cnt"] = ct["ent_sum"] = ct["ent_cnt"] = None
         ct["log"][0] += m_soft
         ct["log"][1] += m_hard
         ct["log"][2] += 1
+        ct["log"][3] += m_ent
 
     def _ct_load(self, checkpoint):
         """On a resume: the controller saved with the checkpoint, refused if absent or under other settings. A
@@ -1405,7 +1418,7 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
             layer = eo_depth["layer"]
             layer.eo_n_classes = len(eo_depth["classes"])
             layer.eo_position_class = self._eo_position_class(modality_ids, inputs["attention_mask"])
-            layer.eo_depth_counts = layer.eo_soft_by_class = layer.eo_soft_depth = None
+            layer.eo_depth_counts = layer.eo_soft_by_class = layer.eo_soft_depth = layer.eo_router_entropy = None
             try:
                 outputs = model(**inputs)
             finally:
@@ -1426,6 +1439,14 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                 ct["term"] = s / n.clamp(min=1.0)
                 ct["sum"] = s.detach().double() if ct["sum"] is None else ct["sum"] + s.detach().double()
                 ct["cnt"] = n.detach().double() if ct["cnt"] is None else ct["cnt"] + n.detach().double()
+                # B1 Step 7b: the body positions' router entropy, priced when confidence > 0, else only logged
+                en, layer.eo_router_entropy = layer.eo_router_entropy, None
+                if en is None:
+                    raise RuntimeError("compute target: the MoR layer left no router entropy on a training forward")
+                es, ec = en
+                ct["conf_term"] = es / ec.clamp(min=1.0)
+                ct["ent_sum"] = es.detach().double() if ct["ent_sum"] is None else ct["ent_sum"] + es.detach().double()
+                ct["ent_cnt"] = ec.detach().double() if ct["ent_cnt"] is None else ct["ent_cnt"] + ec.detach().double()
         else:
             outputs = model(**inputs)
 
@@ -1553,7 +1574,8 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                     if ct["log"][2]:
                         logs["ct_soft_depth"] = round(ct["log"][0] / ct["log"][2], 4)
                         logs["ct_hard_depth"] = round(ct["log"][1] / ct["log"][2], 4)
-                    ct["log"] = [0.0, 0.0, 0]
+                        logs["ct_router_entropy"] = round(ct["log"][3] / ct["log"][2], 4)
+                    ct["log"] = [0.0, 0.0, 0, 0.0]
             
             # ⚠ The per-modality drain used to sit here. It now lives in
             # PerModalityLossMixin.log(), which self.log(logs, start_time)

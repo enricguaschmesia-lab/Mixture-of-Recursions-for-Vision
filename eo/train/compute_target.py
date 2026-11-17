@@ -45,6 +45,18 @@ mean per pass), so a DEADBAND: when |e_t| <= deadband the gap counts as zero (th
 proportional part is zero), and outside it the rule above applies to the full gap. 0 <= deadband < 0.1 (half a
 slot); arm B uses 0.05, a quarter of a slot, so a whole-modality 1.8 sits inside it.
 
+A CONFIDENCE TERM (`confidence`, added 2026-11-17; Enric: "Build arms B and D and launch them", with what B1 learnt;
+B1 plan Step 7b, option (b) of Step 5). Under the soft measure the router met a 1.8 target from step 0 by spreading its
+probabilities while every top-1 choice fell to depth 1 (hard 1.008, Step 6.5), and under the hard measure near-uniform
+choices flipped in whole groups and cycled (Step 6.4). Both because the probabilities stay diffuse. So, optionally,
+the loss also gains
+
+    confidence * mean over body positions of  H(p) = - sum_d p_d log p_d      (nats; 0 <= H <= log Nr)
+
+which sharpens each position's choice, so that the soft mean the controller holds is the compute. It is part of the
+arm (in the state file's identity: a resume may not change it). Optional: absent means 0, nothing is added and the
+forward and loss are those of a run without it.
+
 THE PRICE IS TRAINER STATE, not a weight: <checkpoint>/compute_target.json, written at every save and read back
 on a resume. A resume without it is refused, because a price restarted at its initial value would be a silent
 transient (bal_warmup_step's unsaved counter restarts the same way). A replay from another run's checkpoint gets
@@ -63,13 +75,18 @@ from typing import Dict, Optional
 FILE = "compute_target.json"
 MODE = "compute"
 KEYS = ("target", "gain", "proportional", "price_init", "measure", "deadband")
-NUMBERS = ("target", "gain", "proportional", "price_init", "deadband")
+#: Keys a block may leave out, with the value their absence means (B1 Step 7b, 2026-11-17).
+OPTIONAL = {"confidence": 0.0}
+NUMBERS = ("target", "gain", "proportional", "price_init", "deadband", "confidence")
+CONFIDENCE_MAX = 10.0       # inclusive: a coefficient on a mean entropy of at most log Nr nats
 MEASURES = ("soft", "hard")
 DEADBAND_MAX = 0.1          # exclusive: half an image slot (each slot is 0.2 of the body mean per pass)
 #: The fields a resume must not change (a schedule key may; these define the arm).
-IDENTITY = KEYS
+IDENTITY = KEYS + tuple(OPTIONAL)
 #: What a version-1 file (2026-11-15, before `measure` and `deadband` existed) was written under.
 V1_DEFAULTS = {"measure": "soft", "deadband": 0.0}
+#: What a version-1 or -2 file (before `confidence`, 2026-11-17) was written under.
+V2_DEFAULTS = {"confidence": 0.0}
 
 
 def _get(node, key, default=None):
@@ -84,7 +101,8 @@ def _get(node, key, default=None):
 def read_block(cfg) -> Optional[Dict[str, float]]:
     """The compute target's settings, or None when `mor.token.balancing` is not `compute`. Raises ValueError.
 
-    `cfg` is the run's DictConfig or the plain dict preflight composes. The block must hold exactly KEYS.
+    `cfg` is the run's DictConfig or the plain dict preflight composes. The block must hold exactly KEYS, and may
+    hold OPTIONAL's keys (absent = their value there).
     """
     mor = _get(cfg, "mor") or {}
     tok = _get(mor, "token") or {}
@@ -101,9 +119,13 @@ def read_block(cfg) -> Optional[Dict[str, float]]:
     except ImportError:
         pass
     blk = dict(blk)
-    extra, missing = sorted(set(blk) - set(KEYS)), [k for k in KEYS if k not in blk]
+    extra, missing = sorted(set(blk) - set(KEYS) - set(OPTIONAL)), [k for k in KEYS if k not in blk]
     if extra or missing:
-        raise ValueError(f"mor.token.compute must hold exactly {list(KEYS)}: unknown {extra}, missing {missing}")
+        raise ValueError(f"mor.token.compute must hold exactly {list(KEYS)}, and optionally {list(OPTIONAL)}: "
+                         f"unknown {extra}, missing {missing}")
+    for k, v in OPTIONAL.items():
+        if blk.get(k) is None:
+            blk[k] = v
     out = {}
     for k in NUMBERS:
         v = blk[k]
@@ -126,6 +148,9 @@ def read_block(cfg) -> Optional[Dict[str, float]]:
         raise ValueError(f"mor.token.compute.gain {out['gain']} must be positive (the integral part)")
     if out["proportional"] < 0:
         raise ValueError(f"mor.token.compute.proportional {out['proportional']} must not be negative")
+    if not 0.0 <= out["confidence"] <= CONFIDENCE_MAX:
+        raise ValueError(f"mor.token.compute.confidence {out['confidence']} must lie in [0, {CONFIDENCE_MAX}] "
+                         f"(a coefficient on the body positions' mean router entropy, in nats)")
     return out
 
 
@@ -152,6 +177,11 @@ def config_problems(cfg, n_gpus: int = 1) -> list:
     if int(n_gpus) != 1:
         p.append(f"--gpus {n_gpus}: the price is computed on one process (it is not reduced across ranks)")
     return p
+
+
+def _val(block: Dict[str, float], key: str):
+    """A block's value for `key`, an OPTIONAL key's default when a hand-built block leaves it out."""
+    return block[key] if key in block else OPTIONAL[key]
 
 
 def initial_state(block: Dict[str, float]) -> Dict[str, float]:
@@ -197,7 +227,7 @@ def write_state(ckpt_dir, block: Dict[str, float], state: Dict[str, float], glob
                 origin: str) -> Path:
     """<ckpt_dir>/compute_target.json: the settings, the controller and the step it belongs to."""
     p = Path(ckpt_dir) / FILE
-    doc = {"version": 2, **{k: float(block[k]) for k in NUMBERS}, "measure": str(block["measure"]),
+    doc = {"version": 3, **{k: float(_val(block, k)) for k in NUMBERS}, "measure": str(block["measure"]),
            "lam": float(state["lam"]), "e_last": float(state["e_last"]), "price_next": price(block, state),
            "global_step": int(global_step), "origin": str(origin)}
     p.write_text(json.dumps(doc, indent=1) + "\n")
@@ -227,13 +257,15 @@ def read_state(ckpt_dir, block: Dict[str, float]) -> Dict[str, float]:
     doc = json.loads(p.read_text())
     if int(doc.get("version", 1)) == 1:          # written before `measure` and `deadband`: soft, no band
         doc = {**V1_DEFAULTS, **doc}
+    if int(doc.get("version", 1)) <= 2:          # written before `confidence` (2026-11-17): none
+        doc = {**V2_DEFAULTS, **doc}
 
     def differs(k):
-        a, b = doc.get(k), block[k]
+        a, b = doc.get(k), _val(block, k)
         if a is None:
             return True
         return a != b if k == "measure" else float(a) != float(b)
-    bad = {k: (doc.get(k), block[k]) for k in IDENTITY if differs(k)}
+    bad = {k: (doc.get(k), _val(block, k)) for k in IDENTITY if differs(k)}
     if bad:
         raise RuntimeError(f"{p} was written under other settings: "
                            + ", ".join(f"{k} {a!r} -> {b!r}" for k, (a, b) in bad.items()))

@@ -69,6 +69,12 @@ class MoRLlamaDecoderLayer(nn.Module):
         # (MoRTrainer._eo_depth_setup). Plain attributes, as above: the forward pass reads none of them.
         self.eo_soft_by_class = None    # (eo_n_classes,) float64, no grad
         self.eo_soft_depth = None       # (sum over body positions, count), "compute" only
+        # EO (B1 Step 7b, 2026-11-17): under "compute", the body positions' router entropy -sum_d p_d log p_d (nats),
+        # as (sum, count), WITH its graph when mor.token.compute.confidence > 0 (the trainer prices it), else a
+        # no-grad reading for the logs. A plain attribute, as above: the forward pass reads none of it.
+        self.eo_router_entropy = None
+        _blk = self.cfg.mor.token.get("compute", None) if self.cfg.mor.token.get("balancing", None) == "compute" else None
+        self.eo_confidence = float((_blk.get("confidence", 0.0) if _blk is not None else 0.0) or 0.0)
 
     def reset_parameters(self):
         for block in self.block_list:
@@ -297,6 +303,12 @@ class MoRLlamaDecoderLayer(nn.Module):
                 if priced:
                     body = ((cls >= 1) & (cls <= self.eo_n_classes - 3)).to(soft.dtype)
                     self.eo_soft_depth = ((soft * body).sum(), body.sum())
+                    # B1 Step 7b: the router's entropy per position from its own logits (alpha is 1.0 under
+                    # "compute"), in fp32 through log_softmax so a vanishing probability never takes a log of 0
+                    with torch.set_grad_enabled(self.eo_confidence > 0 and torch.is_grad_enabled()):
+                        logp = F.log_softmax(router_weights.float(), dim=-1)
+                        ent = -(logp.exp() * logp).sum(-1)
+                        self.eo_router_entropy = ((ent * body).sum(), body.sum())
 
         for index, block in enumerate(self.block_list): 
                         

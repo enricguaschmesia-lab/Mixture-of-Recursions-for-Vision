@@ -1,0 +1,33 @@
+# @package _global_
+#
+# ARM A10c-b3-tr-NC-ct18c — the Coords-free 1 + 3 + 1 train cell's learned router under the COMPUTE TARGET at 1.8 passes WITH A
+# CONFIDENCE TERM, seed 42. Paper B's factorial (Paper B plan, B2): arm B from step 0, and arm D from a warm copy of
+# the cell's random-router checkpoint-990 (eo/train/warm_start.py). B1 plan, Step 7b (2026-11-17; Enric: "Build arms
+# B and D and launch them. Use all we have learned from the previous results in B1 to inform them if necessary").
+#
+# ┌── THE DIFF FROM A10c-b3-tr-NC-ct18 (arm_a10cb3trncct18_mor), IN FULL ──────────────────┐
+# │                               ct18 (soft, as built)    ct18c (this)                                │
+# │   mor.token.compute.confidence  (absent = 0)            0.1                                         │
+# │ Nothing else; and from arm A (balancing loss 0.1) only the compute block. W34s asserts it.         │
+# └────────────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+# WHY. B1's smokes found the router's probabilities stay diffuse, so the soft mean the controller holds is not the
+# compute: from step 0 the soft target 1.8 held the soft mean to 1e-4 while every top-1 choice fell to depth 1 (hard
+# 1.008, Step 6.5), and the hard measure cycled because near-uniform choices flip in whole groups (Step 6.4). The
+# confidence term adds 0.1 x the body positions' mean router entropy (nats) to the loss, so each choice sharpens and
+# the soft target binds the hard compute (option (b) of Step 5). 0.1 is the balancing loss's coefficient, the router
+# regulariser it stands in for; the smoke's rule (Step 7b) allows one retry at 1.0 if the hard mean does not track.
+#
+#   arm B (RCP, course project; Enric's yes of 2026-11-17):
+#     jobs/train.sh mor10cb3trncct18c eo_terramesh/arm_a10cb3trncct18c_mor mor10cb3trncct18c_<ts>
+#     with -e TERRAMESH_TRAIN_TOK_ROOT=$G/tm_train/root
+#   arm D: eo.train.warm_start from A10cR-b3-tr-NC's checkpoint-990 with --target-config this file, then --resume
+
+defaults:
+  - arm_a10cb3trncct18_mor
+  - _self_
+
+mor:
+  token:
+    compute:
+      confidence: 0.1

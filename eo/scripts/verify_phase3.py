@@ -1974,19 +1974,23 @@ def w31_depth_shares() -> bool:
 #: overlay -> (parent, target, measure, deadband). Since 2026-11-16 (B1 Step 6) the smokes read the soft mean with no
 #: band, as they ran; the hard replay reads the top-1 body mean with a deadband of 0.05 (Enric's first choice, which
 #: failed its smokes); arm B reads the soft mean as built (Enric's second choice, "Soft as built (c)").
-CT_SMOKES = {"eo_terramesh/arm_a10cs2ct18_mor": ("eo_terramesh/arm_a10cs2_mor", 1.8, "soft", 0.0),
-             "eo_terramesh/arm_a10cs2ct20_mor": ("eo_terramesh/arm_a10cs2_mor", 2.0, "soft", 0.0),
-             "eo_terramesh/arm_a10cct18_mor": (ARM_A10C, 1.8, "soft", 0.0),
-             "eo_terramesh/arm_a10cct20_mor": (ARM_A10C, 2.0, "soft", 0.0),
+CT_SMOKES = {"eo_terramesh/arm_a10cs2ct18_mor": ("eo_terramesh/arm_a10cs2_mor", 1.8, "soft", 0.0, 0.0),
+             "eo_terramesh/arm_a10cs2ct20_mor": ("eo_terramesh/arm_a10cs2_mor", 2.0, "soft", 0.0, 0.0),
+             "eo_terramesh/arm_a10cct18_mor": (ARM_A10C, 1.8, "soft", 0.0, 0.0),
+             "eo_terramesh/arm_a10cct20_mor": (ARM_A10C, 2.0, "soft", 0.0, 0.0),
              # B1 Step 6's replay of the hard measure, from A10c-s2's checkpoint-1650
-             "eo_terramesh/arm_a10cs2ct18h_mor": ("eo_terramesh/arm_a10cs2_mor", 1.8, "hard", 0.05),
-             # the factorial's arm B (and arm D's warm-start target), v1 like arm A (Enric, 2026-11-15); the soft target as
-             # built (Enric, 2026-11-16: "Soft as built (c)", after the hard measure cycled and rang in B1 Step 6)
-             "eo_terramesh/arm_a10cb3trncct18_mor": ("eo_terramesh/arm_a10cb3trnc_mor", 1.8, "soft", 0.0),
-             "eo_terramesh/arm_a10cb3trs2ncct18_mor": ("eo_terramesh/arm_a10cb3trs2nc_mor", 1.8, "soft", 0.0)}
+             "eo_terramesh/arm_a10cs2ct18h_mor": ("eo_terramesh/arm_a10cs2_mor", 1.8, "hard", 0.05, 0.0),
+             # the factorial's arm B as first built, v1 like arm A (Enric, 2026-11-15); the soft target as built (Enric,
+             # 2026-11-16: "Soft as built (c)", after the hard measure cycled and rang in B1 Step 6)
+             "eo_terramesh/arm_a10cb3trncct18_mor": ("eo_terramesh/arm_a10cb3trnc_mor", 1.8, "soft", 0.0, 0.0),
+             "eo_terramesh/arm_a10cb3trs2ncct18_mor": ("eo_terramesh/arm_a10cb3trs2nc_mor", 1.8, "soft", 0.0, 0.0),
+             # arms B and D as launched (B1 Step 7b, 2026-11-17): the same with the confidence term at 0.1
+             "eo_terramesh/arm_a10cb3trncct18c_mor": ("eo_terramesh/arm_a10cb3trnc_mor", 1.8, "soft", 0.0, 0.1),
+             "eo_terramesh/arm_a10cb3trs2ncct18c_mor": ("eo_terramesh/arm_a10cb3trs2nc_mor", 1.8, "soft", 0.0, 0.1)}
 CT_DIFF_KEYS = {"mor.token.balancing", "mor.token.compute.target", "mor.token.compute.gain",
                 "mor.token.compute.proportional", "mor.token.compute.price_init",
                 "mor.token.compute.measure", "mor.token.compute.deadband"}
+CT_CONF_KEY = "mor.token.compute.confidence"     # optional, absent = 0 (B1 Step 7b, 2026-11-17)
 
 
 def _ct_proportional(block, means, states) -> bool:
@@ -2025,19 +2029,28 @@ def w34s_compute_target() -> bool:
     import torch
     from eo.train import compute_target as CT
     ok = True
-    for arm, (parent, target, measure, band) in CT_SMOKES.items():
+    for arm, (parent, target, measure, band, conf) in CT_SMOKES.items():
         a, p = _compose(arm), _compose(parent)
         diff = _arm_diff(p, a)
         blk = CT.read_block(a)
         want = {"target": target, "gain": 0.01, "proportional": 0.5, "price_init": 0.0, "measure": measure,
-                "deadband": band}
-        good = diff == CT_DIFF_KEYS and blk == want
+                "deadband": band, "confidence": conf}
+        want_diff = CT_DIFF_KEYS | ({CT_CONF_KEY} if conf else set())
+        good = diff == want_diff and blk == want
         print(f"    {arm.split('/')[1]} vs {parent.split('/')[1]}: differs in exactly the compute keys, target "
               f"{blk['target'] if blk else None}, {blk['measure'] if blk else None} mean, deadband "
-              f"{blk['deadband'] if blk else None} = {good}")
-        if diff != CT_DIFF_KEYS:
+              f"{blk['deadband'] if blk else None}, confidence {blk['confidence'] if blk else None} = {good}")
+        if diff != want_diff:
             print(f"      measured: {sorted(diff)}")
         ok &= good
+    # B1 Step 7b (2026-11-17): arms B and D as launched differ from the soft target as built in the confidence alone
+    cf_ok = True
+    for s in ("", "s2"):
+        dc = _arm_diff(_compose(f"eo_terramesh/arm_a10cb3tr{s}ncct18_mor"),
+                       _compose(f"eo_terramesh/arm_a10cb3tr{s}ncct18c_mor"))
+        cf_ok &= dc == {CT_CONF_KEY}
+    print(f"    arm B's ct18c overlays differ from ct18 in the confidence alone, both seeds = {cf_ok}")
+    ok &= cf_ok
     twins = _arm_diff(_compose("eo_terramesh/arm_a10cs2ct18_mor"), _compose("eo_terramesh/arm_a10cs2ct20_mor"))
     t_ok = twins == {"mor.token.compute.target"}
     print(f"    the 1.8 and 2.0 twins differ in the target alone = {t_ok}")
@@ -2143,8 +2156,55 @@ def w34s_compute_target() -> bool:
         print(f"      {err}")
         v1_ok = False
     print(f"    a version-1 file is read as what it was written under, soft with no band = {v1_ok}")
+
+    # B1 Step 7b (2026-11-17): the confidence term's settings and its place in the state file's identity
+    def blk_of(**kw):
+        b = {"target": 1.8, "gain": 0.01, "proportional": 0.5, "price_init": 0.0, "measure": "soft", "deadband": 0.0}
+        b.update(kw)
+        return {"mor": {"token": {"balancing": "compute", "compute": b}}, "recursive": {"num_recursion": 3}}
+    absent_ok = CT.read_block(blk_of())["confidence"] == 0.0 and CT.read_block(blk_of(confidence=0.1))["confidence"] == 0.1
+
+    def bad_block(**kw):
+        try:
+            CT.read_block(blk_of(**kw))
+            return False
+        except ValueError:
+            return True
+    c13, c14, c15 = bad_block(confidence=-0.01), bad_block(confidence=10.5), bad_block(confidence="0.1")
+    c16 = bad_block(confidance=0.1)
+    print(f"    confidence absent reads 0, and 0.1 reads 0.1 = {absent_ok}; controls refused: -0.01 = {c13}, 10.5 = {c14}, "
+          f"a string = {c15}, a misspelt key = {c16}")
+    cblk = dict(blk, confidence=0.1)
+    zblk = dict(blk, confidence=0.0)
+    e = Path(tempfile.mkdtemp())
+    (e / "trainer_state.json").write_text(json.dumps({"global_step": 1650}))
+    CT.write_state(e, cblk, hstates[-1], 1650, origin="W34 confidence")
+    doc = json.loads((e / CT.FILE).read_text())
+    cs_ok = doc["version"] == 3 and doc["confidence"] == 0.1 and CT.read_state(e, cblk) == hstates[-1]
+    print(f"    a version-3 file records the confidence and round-trips = {cs_ok}")
+    try:
+        CT.read_state(e, zblk)
+        c17 = False
+    except RuntimeError:
+        c17 = True
+    print(f"    control: a file written under confidence 0.1, in a run without it, is refused = {c17}")
+    doc2 = {k: v for k, v in doc.items() if k != "confidence"}
+    doc2["version"] = 2
+    (e / CT.FILE).write_text(json.dumps(doc2))
+    try:
+        v2_ok = CT.read_state(e, zblk) == hstates[-1]
+    except RuntimeError as err:
+        print(f"      {err}")
+        v2_ok = False
+    try:
+        CT.read_state(e, cblk)
+        c18 = False
+    except RuntimeError:
+        c18 = True
+    print(f"    a version-2 file reads as confidence 0 = {v2_ok}; control: it is refused in a run at 0.1 = {c18}")
     return bool(ok and t_ok and h_ok and c1 and r_ok and c2 and c3 and b_ok and held and moved and c8 and m_ok and c9
-                and s_ok and c4 and c5 and c6 and c7 and c10 and c11 and c12 and v1_ok)
+                and s_ok and c4 and c5 and c6 and c7 and c10 and c11 and c12 and v1_ok
+                and absent_ok and c13 and c14 and c15 and c16 and cs_ok and c17 and v2_ok and c18)
 
 
 def _w34_rows(f):
@@ -2279,6 +2339,107 @@ def w34_compute_target() -> bool:
     print(f"    control: a random router leaves no soft depth, and config_problems refuses it = {c2}")
     del rmodel
     ok1 = m_ok and c1 and k_ok and g_ok and f_ok and e_ok and c2
+
+    # ---- Part 1b (B1 Step 7b, 2026-11-17): the confidence term, in the layer and in the trainer's term ----
+    torch.manual_seed(0)
+    model, _ = G.build_model(ARM, None, device="cpu")
+    model.train()
+    layer = find_mor_layers(model)[0]
+    cap = {}
+    h = layer.mor_router.register_forward_hook(lambda _m, _i, o: cap.__setitem__("logits", o.detach().clone()))
+
+    def fwd_c(conf, grad=True):
+        layer.eo_confidence = conf
+        layer.cfg.mor.token.balancing = "compute"
+        layer.eo_position_class, layer.eo_n_classes = cls, n_mod + 3
+        layer.eo_depth_counts = layer.eo_soft_by_class = layer.eo_soft_depth = layer.eo_router_entropy = None
+        with torch.set_grad_enabled(grad):
+            o = model(**batch, num_items_in_batch=n_items)
+        layer.eo_position_class = None
+        return o, layer.eo_router_entropy
+
+    _, en = fwd_c(0.1)
+    lp = torch.log_softmax(cap["logits"].float(), -1)
+    H = -(lp.exp() * lp).sum(-1)
+    ref_es, ref_en = float(H[body].sum()), int(body.sum())
+    ce_ok = math.isclose(float(en[0]), ref_es, rel_tol=1e-6) and int(en[1]) == ref_en and bool(en[0].requires_grad)
+    print(f"    Part 1b: the body entropy = a recount from the router's logits on {ref_en} positions, with its graph at "
+          f"confidence 0.1: {float(en[0]):.4f} vs {ref_es:.4f} = {ce_ok}  (mean {ref_es / ref_en:.4f} nats; log 3 = "
+          f"{math.log(3):.4f})")
+    # the control is judged on the sum the check compares: an untrained router is uniform to ~1e-4 nats, so a MEAN with
+    # padding and delimiters in moves by less than any tolerance, while the sum gains their positions
+    wide_es = float(H[cls >= 0].sum())
+    cw = not math.isclose(wide_es, float(en[0]), rel_tol=1e-6)
+    print(f"    control: with padding and delimiters in, the sum is {wide_es:.4f} against {float(en[0]):.4f} = {cw}")
+    _, en0 = fwd_c(0.0)
+    cz_ok = en0 is not None and not en0[0].requires_grad and math.isclose(float(en0[0]), ref_es, rel_tol=1e-6)
+    print(f"    at confidence 0 the same entropy is read without a graph (for the logs only) = {cz_ok}")
+    rp = [q for n, q in layer.named_parameters() if "mor_router" in n]
+    # an untrained router sits at the entropy's maximum (1.0985 of 1.0986 nats), where a step either way can only
+    # lower it; so the router's output layer is scaled x50 first (its logits then spread, the entropy well below the
+    # maximum), the steps are read there, and the weights are put back
+    last = layer.mor_router.router[-1].weight
+    w_saved = last.detach().clone()
+    with torch.no_grad():
+        last.mul_(50.0)
+
+    DH = 1e-3     # the first-order change each step is sized for, in nats
+
+    def step_and_read(sign):
+        """A gradient step of the router's parameters down (sign +1) or up (-1) the mean body entropy, sized so that
+        to first order it moves the entropy by DH (eta = DH / |g|^2), read on the same batch (the layer's input does
+        not depend on its router, so the entropy is a smooth function of these parameters), then put back.
+        Returns (entropy before, entropy after)."""
+        saved = [q.detach().clone() for q in rp]
+        model.zero_grad(set_to_none=True)
+        _, e0 = fwd_c(0.1)
+        m0 = e0[0] / e0[1]
+        m0.backward()
+        g2 = sum(float((q.grad.double() ** 2).sum()) for q in rp)
+        with torch.no_grad():
+            for q in rp:
+                q -= sign * (DH / g2) * q.grad
+            _, e1 = fwd_c(0.1, grad=False)
+            m1 = float(e1[0] / e1[1])
+            for q, s in zip(rp, saved):
+                q.copy_(s)
+        return float(m0), m1
+    a0, a1 = step_and_read(+1.0)
+    b0, b1 = step_and_read(-1.0)
+    with torch.no_grad():
+        last.copy_(w_saved)
+    # each step moves the entropy the way its gradient says, by DH to within a factor of 2 (first order)
+    sh_ok = a0 < 1.05 and -2 * DH < a1 - a0 < -0.5 * DH
+    cs = 0.5 * DH < b1 - b0 < 2 * DH
+    print(f"    from a router spread x50 (entropy {a0:.4f} nats), a gradient step down the entropy lowers it by "
+          f"{a0 - a1:.2e} (first order {DH:.0e}) = {sh_ok}; control: a step up raises it by {b1 - b0:.2e} = {cs}")
+    h.remove()
+    model.zero_grad(set_to_none=True)
+    layer.eo_confidence = 0.0
+    del model
+    from types import SimpleNamespace
+    from util.trainer_pt import MoRTrainer
+    blk0 = CT.read_block(_compose(ARM))
+    blk1 = dict(blk0, confidence=0.1)
+    st0 = {"lam": 0.03, "e_last": 0.02}
+    term = torch.tensor(1.9, requires_grad=True)
+    ent = torch.tensor(0.7, requires_grad=True)
+
+    def stub(b, conf_term):
+        return SimpleNamespace(_ct={"block": b, "state": st0, "term": term, "conf_term": conf_term},
+                               args=SimpleNamespace(gradient_accumulation_steps=4), model_accepts_loss_kwargs=True)
+    pr = CT.price(blk0, st0)
+    t0, t1 = MoRTrainer._ct_term(stub(blk0, ent)), MoRTrainer._ct_term(stub(blk1, ent))
+    tt_ok = (float(t0) == float(pr * term / 4)
+             and math.isclose(float(t1), float(pr * term / 4 + 0.1 * ent / 4), rel_tol=1e-7) and t1.requires_grad)
+    try:
+        MoRTrainer._ct_term(stub(blk1, ent.detach()))
+        ct_ = False
+    except RuntimeError:
+        ct_ = True
+    print(f"    the trainer's term: price x soft / steps at confidence 0 (the entropy ignored), plus 0.1 x entropy / "
+          f"steps at 0.1 = {tt_ok}; control: an entropy without its graph at 0.1 is refused = {ct_}")
+    ok1b = bool(ce_ok and cw and cz_ok and sh_ok and cs and tt_ok and ct_)
 
     # ---- Part 2 ----
     import gc
@@ -2421,7 +2582,53 @@ def w34_compute_target() -> bool:
         print(f"    Part 3: pretrain.py rc {rc_h}, depth_shares.jsonl present {fh.is_file()}: see {root_h}")
         return False
     shutil.rmtree(root_h, ignore_errors=True)
-    return bool(ok1 and first and chain and cons and c3 and s_ok and r_ok and c4 and c5 and h_ok and c6)
+
+    # ---- Part 4 (B1 Step 7b, 2026-11-17): the confidence term through pretrain.py ----
+    CONF = ["+mor.token.compute.confidence=0.1"]
+    cblk = CT.read_block(_compose(ARM, CONF))
+    root_c = base / f"w34c_{stamp}"
+    rc_c, log_c = _pretrain(ARM, f"gate_w34/w34c_{stamp}", over + CONF + [f"hydra.run.dir={root_c}/hydra"], env)
+    root_c.mkdir(parents=True, exist_ok=True)
+    (root_c / f"pretrain_{int(time.time())}.log").write_text(log_c)
+    fc = root_c / "depth_shares.jsonl"
+    if rc_c != 0 or not fc.is_file():
+        print(f"    Part 4: pretrain.py rc {rc_c}, depth_shares.jsonl present {fc.is_file()}: see {root_c}")
+        return False
+    hdc, rc_rows = _w34_rows(fc)
+    st_c, chain_c, rec_c = CT.initial_state(cblk), cblk["confidence"] == 0.1, True
+    for s in (1, 2, 3):
+        r = rc_rows.get(s, {}).get("ct")
+        if r is None:
+            chain_c = False
+            break
+        rec_c &= (r.get("confidence") == 0.1 and isinstance(r.get("entropy"), float)
+                  and 0.0 <= r["entropy"] <= math.log(3) + 1e-6)
+        chain_c &= r["price"] == CT.price(cblk, st_c)
+        st_c = CT.step(cblk, st_c, r["soft_mean"])
+        chain_c &= r["next"] == CT.price(cblk, st_c)
+    hdr_ok = hdc.get("compute_target", {}).get("confidence") == 0.1
+    print(f"    Part 4 (confidence 0.1, 3 updates): every row records its entropy (nats, within [0, log 3]) and the "
+          f"confidence, the header names it, and the controller chains by the rule = {bool(rec_c and chain_c and hdr_ok)}  "
+          f"(entropy {[rc_rows[s]['ct']['entropy'] for s in sorted(rc_rows)]})")
+    ck2c = root_c / "checkpoint-2"
+    try:
+        f3 = json.loads((ck2c / CT.FILE).read_text())
+        s3_ok = f3["version"] == 3 and f3["confidence"] == 0.1 and CT.read_state(ck2c, cblk) is not None
+    except (OSError, RuntimeError, KeyError) as e:
+        print(f"    {e}")
+        s3_ok = False
+    print(f"    checkpoint-2's {CT.FILE} is version 3 and records confidence 0.1 = {s3_ok}")
+    d = base / f"w34c_{stamp}_noconf"
+    d.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(ck2c, d / "checkpoint-2")
+    rc_x, log_x = _pretrain(ARM, f"gate_w34/w34c_{stamp}_noconf",
+                            over + ["resume_from_checkpoint=true", f"hydra.run.dir={d}/hydra"], env)
+    c7 = rc_x != 0 and "other settings" in log_x
+    print(f"    control: resuming it without the confidence term is refused (rc {rc_x}) = {c7}")
+    for q in base.glob(f"w34c_{stamp}*"):
+        shutil.rmtree(q, ignore_errors=True)
+    ok4 = bool(rec_c and chain_c and hdr_ok and s3_ok and c7)
+    return bool(ok1 and ok1b and first and chain and cons and c3 and s_ok and r_ok and c4 and c5 and h_ok and c6 and ok4)
 
 
 # ---- W35: the warm start (Paper B intervention 4; B1, 2026-11-15; eo/train/warm_start.py) ------------------------
