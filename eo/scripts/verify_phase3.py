@@ -828,6 +828,10 @@ NC_INIT_DIFFS = (
 )
 INIT_FAMILIES["smollm_nc"] = dict(v=ARM_B10CLTRXNC, v1=ARM_B10CLTRXNC1, variant="smollm", rows=NC_ROWS,
                                   extra=["multimodal.split=val"])     # train tokens live on g49 only
+#: B10cL0-tr-NC (Enric, 2026-11-18; A0.3): SmolLM-135M's body from step 0 WITHOUT stage 1, stopped at 3,300 on the
+#: 33,000-step schedule. B10cL-tr-x10-NC's stage 2 with from_stage1 null and stop_steps 3,300 (W38).
+ARM_B10CL0TRXNC = "eo_terramesh/arm_b10cl0trxnc_vanilla"
+B10CL0_STOP = 3300
 
 #: T360 (2026-10-25): B10c's recipe at the SmolLM-360M shape on the TRAIN split, batch 1024.
 ARM_T360 = "eo_terramesh/arm_t360_vanilla"
@@ -3055,6 +3059,143 @@ def w33_nc_stages() -> bool:
     return _stages(INIT_FAMILIES["smollm_nc"])
 
 
+def w38_no_stage1() -> bool:
+    """B10cL0-tr-NC (Enric, 2026-11-18; A0.3): SmolLM-135M's body from step 0, no stage 1, 3,300 steps.
+
+      1. The overlay differs from B10cL-tr-x10-NC's stage 2 in exactly from_stage1 and stop_steps, and from
+         B10c-tr-x10-NC (random init) in the pretrain_init block and stop_steps; its block reads (freeze_body false,
+         from_stage1 null) on stage 1's own conversion. CONTROL: a stray learning rate is caught.
+      2. Its LR at every step to 3,300 is random init's (warmup 165, flat 3e-3, no decay), and 3,300 is a multiple
+         of save_steps and eval_steps (HF saves only there). CONTROL: a naive 3,300-step run (num_train_steps 3,300)
+         decays inside the window.
+      3. Through pretrain.py (2 steps, batch 1, val tokens; CPU at fp32 unless one card is visible): the record has
+         no from_stage1 and no handoff, loaded the conversion itself, trains all 149,427,648 parameters (the hook
+         already refuses a load whose tensors differ from the file); after 2 steps every body tensor and the table
+         moved, and the optimizer holds every tensor. CONTROL: the same command with the body frozen moves none of
+         the body, so the 'body trains' check can fail.
+    """
+    import json
+    import shutil
+    import time
+    import torch
+    from omegaconf import OmegaConf
+    from util.env import load_dotenv
+    from eo.train import clevr_init as CI
+
+    ok = True
+    # 1. Config.
+    pairs = ((ARM_B10CLTRXNC, {"pretrain_init.from_stage1", "stop_steps"}),
+             (ARM_B10CTRXNC, PRETRAIN_INIT_KEYS | {"stop_steps"}))
+    for ref, keys in pairs:
+        diff = _arm_diff(_compose(ref), _compose(ARM_B10CL0TRXNC))
+        p_ok = diff == keys
+        print(f"    {ARM_B10CL0TRXNC.split('/')[1]} vs {ref.split('/')[1]}: differs in exactly {sorted(keys)} = {p_ok}")
+        if not p_ok:
+            print(f"      measured: {sorted(diff)}")
+        ok &= p_ok
+    c_stray = all(_arm_diff(_compose(ref), _compose(ARM_B10CL0TRXNC, ["learning_rate=0.001"])) != keys
+                  for ref, keys in pairs)
+    cfg = _compose(ARM_B10CL0TRXNC)
+    plan = CI.read_block(OmegaConf.to_container(cfg.pretrain_init, resolve=True))
+    conv1 = Path(str(_compose(ARM_B10CLTRXNC1).pretrain_init.conversion))
+    f = _flat(cfg)
+    b_ok = (plan["freeze_body"] is False and plan["from_stage1"] is None and plan["lora"] is None
+            and plan["variant"] == "smollm" and plan["conversion"] == conv1
+            and int(f["stop_steps"]) == B10CL0_STOP and int(f["num_train_steps"]) == 33000)
+    print(f"    block: variant {plan['variant']}, freeze_body {plan['freeze_body']}, from_stage1 {plan['from_stage1']}, "
+          f"stage 1's conversion ({conv1.parent.name}/{conv1.name}); stop {f['stop_steps']} of {f['num_train_steps']} "
+          f"= {b_ok}")
+    print(f"    control: a stray learning_rate is caught against both references = {c_stray}")
+    ok &= b_ok
+
+    # 2. Schedule over the window, and the stop meets a save and an eval.
+    steps = list(range(0, B10CL0_STOP + 1, 15)) + [B10CL0_STOP]
+    lr0, lrr = _lr_schedule(cfg, steps), _lr_schedule(_compose(ARM_B10CTRXNC), steps)
+    peak = float(f["learning_rate"])
+    s_ok = (all(abs(lr0[s] - lrr[s]) < 1e-15 for s in steps) and abs(lr0[B10CL0_STOP] - peak) < 1e-12
+            and B10CL0_STOP % int(f["save_steps"]) == 0 and B10CL0_STOP % int(f["eval_steps"]) == 0)
+    lrn = _lr_schedule(_compose(ARM_B10CL0TRXNC, ["num_train_steps=3300"]), [1650])
+    c_naive = lrn[1650] < peak - 1e-9
+    print(f"    LR at {len(steps)} steps in 0-{B10CL0_STOP} equals random init's, {lr0[B10CL0_STOP]:g} at the stop; "
+          f"{B10CL0_STOP} divides by save {f['save_steps']} and eval {f['eval_steps']} = {s_ok}")
+    print(f"    control: num_train_steps 3,300 decays inside the window ({lrn[1650]:.3g} at 1,650) = {c_naive}")
+    ok &= s_ok
+
+    # 3. Through pretrain.py.
+    load_dotenv()
+    SAVE_DIR = os.environ.get("MOR_SAVE_DIR", "")
+    if not SAVE_DIR.startswith("/data/"):
+        print(f"    MOR_SAVE_DIR {SAVE_DIR!r} is not under /data: refusing to write checkpoints")
+        return False
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    on_gpu = vis.strip() != "" and "," not in vis
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false")
+    common = ["wandb=false", "num_train_steps=2", "stop_steps=2", "num_warmup_steps=0",
+              "lr_scheduler_kwargs.num_decay_steps=0", "save_steps=2", "eval_on_start=false",
+              "eval_steps=1000", "fixed_eval_steps=null", "fixed_save_steps=null", "total_batch_size=1",
+              "per_device_train_batch_size=1", "logging_steps=1", "dataloader_num_workers=0",
+              "multimodal.split=val"]
+    if not on_gpu:
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        common.append("precision=fp32")
+    print(f"    device: {'GPU ' + vis if on_gpu else 'CPU (fp32; no single card visible)'}")
+    rel = f"gate_w38/{time.strftime('%Y%m%d_%H%M%S')}"
+    root = Path(SAVE_DIR) / "pretrain" / rel
+
+    def run(name, extra):
+        out = f"{rel}/{name}"
+        rc, log = _pretrain(ARM_B10CL0TRXNC, out, common + [f"hydra.run.dir={root}/hydra/{name}"] + extra, env)
+        (root / f"{name}.log").parent.mkdir(parents=True, exist_ok=True)
+        (root / f"{name}.log").write_text(log)
+        return rc, log, Path(SAVE_DIR) / "pretrain" / out
+
+    CI.verify_conversion(plan["conversion"], "smollm", NC_ROWS)
+    s0 = CI._state(plan["conversion"])
+    body = [k for k in s0 if k not in CI.EMBED_KEYS]
+    table = [k for k in s0 if k in CI.EMBED_KEYS]
+
+    rc, log, d = run("no_stage1", [])
+    ck = d / "checkpoint-2"
+    if rc != 0 or not ck.is_dir():
+        print(f"    run FAILED (exit {rc}); log {root / 'no_stage1.log'}")
+        print("      " + "\n      ".join(log.strip().splitlines()[-8:]))
+        return False
+    rec = json.loads((d / CI.RECORD).read_text())
+    sc = CI._state(ck)
+    moved = sum(not torch.equal(sc[k], s0[k]) for k in body)
+    t_moved = all(not torch.equal(sc[k], s0[k]) for k in table)
+    n_opt = len(torch.load(ck / "optimizer.pt", map_location="cpu", weights_only=True)["state"])
+    losses = [h["loss"] for h in json.loads((ck / "trainer_state.json").read_text())["log_history"] if "loss" in h]
+    r_ok = (rec["from_stage1"] is None and rec["handoff"] is None and rec["freeze_body"] is False
+            and rec["loaded_from"] == str(plan["conversion"])
+            and rec["trainable_params"] == rec["total_params"] == 149_427_648)
+    m_ok = moved == len(body) and t_moved and n_opt == len(sc) and len(losses) == 2 and all(np.isfinite(losses))
+    print(f"    record: from_stage1 {rec['from_stage1']}, handoff {rec['handoff']}, loaded from the conversion, "
+          f"{rec['trainable_params']:,} of {rec['total_params']:,} trainable = {r_ok}")
+    print(f"    after 2 steps: {moved} of {len(body)} body tensors and the table moved, {n_opt} optimizer tensors, "
+          f"losses {[round(x, 3) for x in losses]} = {m_ok}")
+    ok &= r_ok and m_ok
+
+    # CONTROL: the same command with the body frozen.
+    rc_b, log_b, d_b = run("frozen_control", ["pretrain_init.freeze_body=true"])
+    ck_b = d_b / "checkpoint-2"
+    if rc_b != 0 or not ck_b.is_dir():
+        print(f"    control run FAILED (exit {rc_b}); log {root / 'frozen_control.log'}")
+        return False
+    sb = CI._state(ck_b)
+    moved_b = sum(not torch.equal(sb[k], s0[k]) for k in body)
+    c_frozen = moved_b == 0
+    print(f"    control: with the body frozen {moved_b} of {len(body)} body tensors moved, so the check fails "
+          f"= {c_frozen}")
+
+    passed = bool(ok and c_stray and c_naive and c_frozen)
+    if passed:
+        shutil.rmtree(root)
+    else:
+        print(f"    (kept for inspection: {root})")
+    return passed
+
+
 def w30_drop_modalities() -> bool:
     """eval_checkpoint.py --drop-modalities (wave 1, A0.1): the check lives in eo/scripts/gate_drop_modalities.py,
     runnable alone; its docstring lists every part and control."""
@@ -4465,6 +4606,7 @@ def main() -> int:
         ("W34s the compute target: overlays, rule, saved price [B1]", w34s_compute_target),
         ("W32  the init comparison: nc arms as intended [2026-11-14]", w32_init_comparison_arms),
         ("W33  stage 1 freezes, handoff, stage 2      [init comparison, nc]", w33_nc_stages),
+        ("W38  SmolLM's body from step 0, no stage 1  [A0.3, 2026-11-18]", w38_no_stage1),
         ("W36  the eval path scores nc, refuses a mismatch [init comparison]", w36_nc_eval),
         ("W19  CLEVR-init arms differ only as intended [CLEVR init]", w19_clevr_init_arms),
         ("W20  stage 1 freezes, handoff, stage 2      [CLEVR init]", w20_clevr_stages),

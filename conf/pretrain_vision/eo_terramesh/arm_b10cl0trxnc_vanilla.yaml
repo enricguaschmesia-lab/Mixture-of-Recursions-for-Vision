@@ -1,0 +1,26 @@
+# @package _global_
+#
+# ARM B10cL0-tr-NC — SmolLM-135M's body trained from step 0 WITHOUT stage 1, Coords-free, on the train split
+# (Enric, 2026-11-18; A0.3). B10cL-tr-x10-NC's stage 2 (arm_b10cltrxnc_vanilla) with the body and the table taken
+# straight from the conversion: the table starts where stage 1 started it (B10c's seed-42 table, the conversion's),
+# untrained. Does SmolLM's early lead need stage 1? Read against the first 3,300 steps of B10c-tr-x10-NC (random
+# init) and of B10cL-tr-x10-NC's stage 2, at equal steps; steps, scenes, FLOPs and schedule all equal random init's.
+#
+# ┌── THE DIFF FROM B10cL-tr-x10-NC's STAGE 2 (arm_b10cltrxnc_vanilla), IN FULL ────────────────────────┐
+# │   pretrain_init.from_stage1     ??? -> null (no stage 1: clevr_init's (freeze_body false, null)     │
+# │                                 path, "no stage 1 (body trains from the conversion)")               │
+# │   stop_steps                    33,000 -> 3,300 (a multiple of save_steps 330 and eval_steps 165)   │
+# │ Nothing else: num_train_steps stays 33,000, so the LR at steps 0-3,300 is the 33,000-step schedule's│
+# │ (warmup 165, then flat 3e-3, no decay), as in both runs' first 3,300 steps. The same seed 42, data  │
+# │ order, bf16, batch 256 (16 x 16), evals (165 + 16 early) and saves (330 + 19 early).                │
+# │ From B10c-tr-x10-NC it differs in pretrain_init and stop_steps alone. W38 asserts both.             │
+# └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+#   launch (RCP, course):  submit_w1.sh b10cl0trxnc   (CODE=code_w1d)
+defaults:
+  - arm_b10cltrxnc_vanilla
+  - _self_
+
+pretrain_init:
+  from_stage1: null
+stop_steps: 3300

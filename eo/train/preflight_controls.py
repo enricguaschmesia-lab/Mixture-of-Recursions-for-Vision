@@ -719,6 +719,36 @@ def main(argv=None) -> int:
         else:
             print(f"\n({label}: the shipped-config positives skipped, no conversion on this machine)")
 
+    # --- B10cL0-tr-NC (2026-11-18, A0.3): SmolLM's body from step 0 without stage 1, (freeze_body false, from_stage1
+    # null) on purpose. Each of these would train happily: a CLEVR or a v1-sized conversion under it, and a resume
+    # whose run directory is a stage 2's, a stage 1's or has no record. ---
+    l0_cfg = eo_cfg / "arm_b10cl0trxnc_vanilla.yaml"
+    conv_llm_nc = _fake_conversion(tmp / "ci_conv_llm_nc", variant="smollm", vocab_size=81188)
+    conv_clevr_nc = _fake_conversion(tmp / "ci_conv_clevr_nc", variant="clevr", vocab_size=81188)
+    l0_rec = {"variant": "smollm", "freeze_body": False, "from_stage1": None}
+    l0 = lambda **ov: ci(l0_cfg, conversion=ov.pop("conversion", conv_llm_nc), **ov)   # noqa: E731
+    l0_run = lambda name, **rec: _fake_stage1(tmp / name, conv_llm_nc, step=660, last=33000, move_body=True,  # noqa: E731
+                                              record={**l0_rec, **rec}).parent
+    (tmp / "ci_l0_none").mkdir()
+    cases += [(label, "pretrain init", kw) for label, kw in [
+        ("no stage 1: on a CLEVR conversion",          l0(conversion=conv_clevr_nc)),
+        ("no stage 1: an LLM conversion at v1's 87,556", l0(conversion=conv_llm)),
+        ("no stage 1: resume of a stage 2's run",      l0(run_dir=l0_run("ci_l0_s2", from_stage1=str(llm_s1)),
+                                                         resuming=True)),
+        ("no stage 1: resume of a stage 1's run",      l0(run_dir=l0_run("ci_l0_s1", freeze_body=True), resuming=True)),
+        ("no stage 1: resume, run dir has no record",  l0(run_dir=tmp / "ci_l0_none", resuming=True)),
+    ]]
+    ci_pos += [
+        ("no stage 1: a new run on an LLM nc conversion", "pretrain init", _results(**l0())),
+        ("no stage 1: resume as itself",               "pretrain init", _results(**l0(run_dir=l0_run("ci_l0_own"),
+                                                                                       resuming=True))),
+    ]
+    if (Path("/data/enric/weights/smollm_init/b10c_nc_v1/smollm_body") / "conversion.json").is_file():
+        ci_pos.append(("no stage 1: arm_b10cl0trxnc_vanilla as shipped", "pretrain init",
+                       _results(env=GOOD_ENV, config=l0_cfg)))
+    else:
+        print("\n(no stage 1: the shipped-config positive skipped, no nc conversion on this machine)")
+
     # --- the temporal stage (A1 Step 5, 2026-11-08). T360-T continues T360 from its extended base
     # (pretrain_init variant `continue`), reads whole four-date locations through a location index
     # on every root, and records the settings that define its data so that a resume cannot change
