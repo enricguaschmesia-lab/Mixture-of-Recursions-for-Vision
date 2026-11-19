@@ -34,6 +34,29 @@ GTX Titan X refuses with CUBLAS_STATUS_NOT_SUPPORTED, 2026-11-18). Pick it by na
   Z3  Scorer = torchmetrics' MulticlassJaccardIndex(average="macro", ignore_index) on synthetic maps
       with void, a class predicted but absent, a class absent from both, and a task with no void
                                      | a scorer that counts void (void as a scored class) disagrees
+  Z6  Splits (A2 Step 2.2; eo/geobench/sources.py, views.py): GEO-Bench-2's PASTIS and CloudSen12 as
+      stored (PASTIS 1,200 / 482 / 496, CloudSen12 4,000 / 535 / 975), ids unique and disjoint; PASTIS
+      train inside PASTIS-R folds 1-3, val = fold 4, test = fold 5, by patch id; every patch's dates and
+      48 train/val masks equal PASTIS-R's; the view index: rows numbered once, each view in its sample's
+      split, 8 dihedral variants of each training crop and 1 elsewhere, CloudSen12's val/test crops the
+      3 x 3 plan, PASTIS frames (p1 in July-August, p7 at int(j T / 7)) with dates read at their index
+                                     | a duplicated patch (one train row copied into val) is refused; a
+                                       view moved to another split is refused; another patch's mask
+                                       differs
+  Z7  Inputs (A2 Steps 2.3-2.5; eo/geobench/s2.py): bands land in contract order (PASTIS's ten, B01/B09
+      imputed; CloudSen12's first twelve of fourteen); one bilinear interpolation 128 -> 224; dihedral
+      variants are the 8 distinct elements and the same function cuts inputs and maps; the imputation
+      read (eval.json): the true-band path reproduces the stored BEN tokens exactly and TerraMesh's to
+      1e-4, and the chosen method's 10-band round trip is within 10% of the true bands' on both; the
+      contract read (contract_*.json): rule 2.4 as fixed does not fail the set (it fails only if the JSD
+      is above 2 x BEN's 0.084 AND the round trip above 1.5 x TerraMesh's recorded 0.156), and the
+      TerraMesh reference re-run there equals the recorded one; the token roots agree with the contract
+      read's own encodings on the rows both hold; and
+      (GPU) each arm's stored validation map tokens equal the harness's own path (eo.maps.harness.tokens)
+                                     | wrong band order, raw DN and x10^4 are each worse than production
+                                       by > 1.5x and above the limit; B01/B09 exchanged loses the
+                                       imputation; a two-step resample differs; map tokens one view off
+                                       differ
 """
 from __future__ import annotations
 
@@ -292,6 +315,289 @@ def z2_floor() -> None:
     record("Z2 control: crops stitched one pixel off", m < 1.0, f"CloudSen12 val, crops stitched at offset -1: {m:.4f}")
 
 
+# ---------------------------------------------------------------- Z6
+
+STEP2 = Path("/data/enric/reports/a2_seg/step2")
+
+
+def split_problems(task: str, t) -> list[str]:
+    """What is wrong with a split table (PASTIS: patch_id; CloudSen12: id) against the stored counts,
+    uniqueness, disjointness and, for PASTIS, PASTIS-R's folds."""
+    from eo.geobench import sources as Src
+    key = "patch_id" if task == "pastis" else "id"
+    out = []
+    counts = t.split.value_counts().to_dict()
+    if counts != Src.COUNTS[task]:
+        out.append(f"counts {counts} != {Src.COUNTS[task]}")
+    if not t[key].is_unique:
+        out.append(f"{int(t[key].duplicated().sum())} duplicated ids")
+    ids = {s: set(t[key][t.split == s]) for s in ("train", "val", "test")}
+    for a, b in (("train", "val"), ("train", "test"), ("val", "test")):
+        if ids[a] & ids[b]:
+            out.append(f"{len(ids[a] & ids[b])} ids in both {a} and {b}")
+    if task == "pastis":
+        folds = Src.pastis_r_fold_ids()
+        f = {k: {i for i, v in folds.items() if v in k} for k in ((1, 2, 3), (4,), (5,))}
+        if not ids["train"] <= f[(1, 2, 3)]:
+            out.append("train not inside folds 1-3")
+        if ids["val"] != f[(4,)]:
+            out.append("val != fold 4")
+        if ids["test"] != f[(5,)]:
+            out.append("test != fold 5")
+    return out
+
+
+def view_problems(task: str, idx: dict, t) -> list[str]:
+    from eo.geobench import sources as Src, views as Vw
+    from eo.maps import tiling
+    v, x = idx["views"], idx["inputs"]
+    out = []
+    if not (v.view.values == np.arange(len(v))).all():
+        out.append("views not numbered 0..n-1")
+    split_of = t.set_index("idx").split
+    if (v.sample_idx.map(split_of) != v.split).any():
+        out.append(f"{int((v.sample_idx.map(split_of) != v.split).sum())} views not in their sample's split")
+    per = v.groupby(["split", "sample_idx", "y0", "x0"]).k.apply(lambda s: tuple(sorted(s)))
+    for s, want in (("train", tuple(range(8))), ("val", (0,)), ("test", (0,))):
+        got = set(per.loc[s]) if s in per.index.get_level_values(0) else set()
+        if got != {want}:
+            out.append(f"{s}: dihedral variants per crop {sorted(got)[:3]} != {want}")
+    if task == "cloudsen12":
+        plan = sorted((y, x0) for (y, x0, _) in tiling.plan("cloudsen12", 512, "crop224"))
+        g = v[v.split != "train"].groupby("sample_idx").apply(lambda d: sorted(zip(d.y0, d.x0)))
+        if not all(p == plan for p in g):
+            out.append("val/test crops are not the 3 x 3 plan")
+        if ((v.y0 < 0) | (v.x0 < 0) | (v.y0 + v["size"] > 512) | (v.x0 + v["size"] > 512)).any():
+            out.append("a crop outside its tile")
+        n_train = v[v.split == "train"].groupby("sample_idx").size()
+        if set(n_train) != {Vw.N_RANDOM_CROPS * 8}:
+            out.append("not 9 crops x 8 variants per training tile")
+    else:
+        if not (x.row.values == np.arange(len(x))).all():
+            out.append("inputs not numbered 0..n-1")
+        if set(x.groupby("view").size()) != {8}:
+            out.append("not 8 frames per view")
+        dates = t.set_index("idx").dates
+        xv = x.merge(v[["view", "sample_idx"]], on="view")
+        bad = sum(int(dates[r.sample_idx][r.t]) != r.date for r in xv.itertuples())
+        if bad:
+            out.append(f"{bad} input dates differ from the patch's date at t")
+        p1 = xv[xv.frame == "p1"]
+        if not p1.date.astype(str).str[4:6].isin(["07", "08"]).all():
+            out.append("a p1 frame outside July-August")
+        p7 = xv[xv.frame.str.startswith("p7")]
+        want = p7.apply(lambda r: Src.pastis_frames_p7(len(dates[r.sample_idx]))[int(r.frame[3:])], axis=1)
+        if (want.values != p7.t.values).any():
+            out.append("p7 frame indices differ from int(j T / 7)")
+    return out
+
+
+def z6() -> None:
+    from eo.geobench import sources as Src, views as Vw
+    try:
+        tp, tc = Src.pastis_table(), Src.cloudsen12_table()
+    except Exception as e:                                         # data not on disk yet
+        skip("Z6", f"GEO-Bench-2 tortillas unreadable: {e}")
+        return
+    for task, t in (("pastis", tp), ("cloudsen12", tc)):
+        p = split_problems(task, t)
+        record(f"Z6 splits {task}", not p, f"{t.split.value_counts().to_dict()}; problems: {p or 'none'}"
+               + ("; train inside folds 1-3, val = fold 4, test = fold 5" if task == "pastis" and not p else ""))
+        bad = t.copy()
+        dup = bad[bad.split == "train"].iloc[:1].assign(split="val")
+        import pandas as pd
+        bad = pd.concat([bad, dup], ignore_index=True)
+        pc = split_problems(task, bad)
+        record(f"Z6 control: a duplicated {task} patch", bool(pc), f"refused with {pc}")
+    # PASTIS data against PASTIS-R: every date list, 48 train/val masks
+    rdates = {}
+    meta = json.loads((Src.PASTIS_R / "metadata.geojson").read_text())
+    for ft in meta["features"]:
+        d = ft["properties"]["dates-S2"]
+        d = json.loads(d.replace("'", '"')) if isinstance(d, str) else d
+        rdates[int(ft["properties"]["ID_PATCH"])] = [int(d[k]) for k in sorted(d, key=int)]
+    nd = sum(list(map(int, d)) != rdates[int(p)] for p, d in zip(tp.patch_id, tp.dates))
+    tv = tp[tp.split.isin(["train", "val"])]
+    pick = tv.iloc[np.sort(np.random.default_rng(6).choice(len(tv), 48, replace=False))]
+    masks = {int(r.patch_id): Src.pastis_sample(r.idx, ("semantic",))["semantic"] for r in pick.itertuples()}
+    nm = sum(not np.array_equal(m, np.load(Src.PASTIS_R / "ANNOTATIONS" / f"TARGET_{p}.npy")[0]) for p, m in masks.items())
+    record("Z6 PASTIS = PASTIS-R", nd == 0 and nm == 0,
+           f"dates differ on {nd} of {len(tp)} patches; masks differ on {nm} of 48 train/val patches"
+           + (f" (the full read: {STEP2 / 'splits.json'})" if (STEP2 / "splits.json").exists() else ""))
+    ids = list(masks)
+    nm_ctrl = sum(not np.array_equal(masks[ids[i]], np.load(Src.PASTIS_R / "ANNOTATIONS" / f"TARGET_{ids[(i + 1) % len(ids)]}.npy")[0])
+                  for i in range(len(ids)))
+    record("Z6 control: another patch's mask", nm_ctrl == len(ids), f"{nm_ctrl} of {len(ids)} differ")
+    for task, t in (("pastis", tp), ("cloudsen12", tc)):
+        try:
+            idx = Vw.load(task)
+        except FileNotFoundError:
+            skip(f"Z6 views {task}", "views.parquet not written yet")
+            continue
+        fresh = Vw.build(task)
+        same = all(fresh[k].reset_index(drop=True).equals(idx[k]) for k in ("views", "inputs"))
+        p = view_problems(task, idx, t)
+        record(f"Z6 views {task}", not p and same,
+               f"{len(idx['views'])} views, {len(idx['inputs'])} inputs; stored = rebuilt: {same}; problems: {p or 'none'}")
+        bad = {k: d.copy() for k, d in idx.items()}
+        j = bad["views"].index[bad["views"].split == "val"][0]
+        bad["views"].loc[j, "split"] = "train"
+        pc = view_problems(task, bad, t)
+        record(f"Z6 control: a {task} view moved to another split", bool(pc), f"refused with {pc[:2]}")
+
+
+# ---------------------------------------------------------------- Z7
+
+def z7() -> None:
+    import torch.nn.functional as F
+    from eo.geobench import s2 as G
+    from eo.terramesh_tok import contract as C
+    # bands: a synthetic frame where each band holds its own number
+    code = {b: 100.0 * (i + 1) for i, b in enumerate(C.BAND_ORDER["S2L2A"])}
+    x10 = torch.stack([torch.full((2, 8, 8), code[b]) for b in G.PASTIS_BANDS], 1)
+    y = G.assemble_pastis(x10, "copy")
+    want = [code["B02"] if b == "B01" else code["B8A"] if b == "B09" else code[b] for b in G.ORDER]
+    got = y[0, :, 0, 0].tolist()
+    x14 = torch.stack([torch.full((2, 8, 8), code[b]) for b in G.ORDER] + [torch.full((2, 8, 8), 7.0)] * 2, 1)
+    c12, _ = G.cloudsen12_physical(x14, "cpu")
+    ok = got == want and c12[0, :, 0, 0].tolist() == [code[b] for b in G.ORDER]
+    record("Z7 band order", ok, f"PASTIS's ten in contract positions, B01 <- B02 and B09 <- B8A under copy: "
+           f"{got == want}; CloudSen12's first 12 of 14 in contract order, AOT/WVP dropped: "
+           f"{c12[0, :, 0, 0].tolist() == [code[b] for b in G.ORDER]}")
+    rev = G.pastis_input(x10, "copy", "cpu", standardize_=False, band_perm=list(range(12))[::-1])
+    record("Z7 control: reversed bands", rev[0, :, 0, 0].tolist() != want, "the reversed order is not the contract's")
+    # one bilinear interpolation
+    fr = torch.rand(3, 10, 128, 128) * 4000
+    z = G.pastis_input(fr, "copy", "cpu")
+    ref = G.standardize(F.interpolate(G.assemble_pastis(fr, "copy"), size=(224, 224), mode="bilinear", align_corners=False))
+    two = G.standardize(F.interpolate(F.interpolate(G.assemble_pastis(fr, "copy"), size=(256, 256), mode="bilinear",
+                                                    align_corners=False), size=(224, 224), mode="bilinear", align_corners=False))
+    record("Z7 resampling", bool(torch.equal(z, ref)) and z.shape[-1] == C.CROP,
+           f"pastis_input = one bilinear 128 -> {C.CROP} then v1 stats, exactly")
+    record("Z7 control: two-step resample", float((two - ref).abs().max()) > 1e-3,
+           f"128 -> 256 -> 224 differs by up to {float((two - ref).abs().max()):.3f} in z")
+    # dihedral: 8 distinct transforms, k=0 the identity, numpy = torch
+    a = np.random.default_rng(0).integers(0, 9, (5, 7, 7))
+    outs = [G.dihedral(a, k) for k in range(8)]
+    distinct = len({o.tobytes() for o in outs}) == 8
+    same_t = all(np.array_equal(G.dihedral(torch.as_tensor(a), k).numpy(), outs[k]) for k in range(8))
+    record("Z7 dihedral", distinct and np.array_equal(outs[0], a) and same_t,
+           f"8 distinct: {distinct}; k=0 identity; numpy = torch: {same_t}; inputs and maps both cut with "
+           "eo/geobench/s2.dihedral (tokenize_geobench.build_inputs, tokenize_maps.view_labels)")
+
+    # the imputation read
+    ev = STEP2 / "impute" / "eval.json"
+    if ev.exists():
+        e = json.loads(ev.read_text())
+        m = G.CHOSEN_IMPUTATION or "linear"
+        det = []
+        ok = True
+        for s in ("BEN", "TerraMesh"):
+            tr, ch = e[s]["true"]["roundtrip_10"]["rmse_z_ml7"]["median"], e[s][m]["roundtrip_10"]["rmse_z_ml7"]["median"]
+            # BEN exactly; TerraMesh's stored val_clean tokens were written by another run (tokenize_clean),
+            # where ~1 token in 1e4-1e5 flips at an FSQ boundary (CLAUDE.md: cross-card ~1e-4)
+            ok &= e[s]["identity_vs_stored"] >= (1.0 if s == "BEN" else 0.9999) and ch <= 1.10 * tr
+            det.append(f"{s}: identity {e[s]['identity_vs_stored']:.6f}, {m} {ch:.4f} vs true {tr:.4f}, "
+                       f"agreement {e[s][m]['token_agreement_mean']:.3f} (mean fill {e[s]['mean']['token_agreement_mean']:.3f})")
+        record(f"Z7 imputation ({m})", ok, "; ".join(det))
+        ctl = [(s, e[s]["linear_swapped"]) for s in ("BEN", "TerraMesh")]
+        okc = all(c["token_agreement_mean"] < 0.5 * e[s][m]["token_agreement_mean"]
+                  and c["roundtrip_10"]["rmse_z_ml7"]["median"] > 1.5 * e[s]["true"]["roundtrip_10"]["rmse_z_ml7"]["median"]
+                  for s, c in ctl)
+        record("Z7 control: B01/B09 exchanged", okc, "; ".join(
+            f"{s}: agreement {c['token_agreement_mean']:.3f}, ml7 {c['roundtrip_10']['rmse_z_ml7']['median']:.4f}" for s, c in ctl))
+    else:
+        skip("Z7 imputation", f"{ev} missing")
+
+    # the contract read
+    for task in ("cloudsen12", "pastis"):
+        f = STEP2 / "contract" / f"contract_{task}.json"
+        if not f.exists():
+            skip(f"Z7 round trip {task}", f"{f} missing")
+            continue
+        r = json.loads(f.read_text())
+        ref = r["references"]
+        lim, jlim = ref["rt_limit"], ref["jsd_limit"]
+        rt = r[task]["roundtrip"]
+        p = rt["production"]["rmse_z_ml7"]["median"]
+        j = r[task]["usage"][f"jsd_{task}_vs_terramesh"]
+        # rule 2.4, fixed: an input set fails only if BOTH its JSD > 2 x BEN's AND its round trip > 1.5 x TerraMesh's
+        fails = j > jlim and p > lim
+        rerun_ok = abs(r["terramesh_rerun"]["rmse_z_ml7"]["median"] - ref["terramesh_rt_ml7_median"]) < 0.01
+        record(f"Z7 round trip and rule 2.4 {task}", not fails and rerun_ok,
+               f"rmse_z_ml7 {p:.4f} (limit {lim:.4f}, above: {p > lim}; in range {rt['production']['rmse_z_in']['median']:.4f} "
+               f"on {rt['production']['frac_in_range']['median']:.3f} of pixels); JSD {j:.4f} at n {r[task]['usage']['n']} "
+               f"(limit {jlim:.4f}, above: {j > jlim}); fails the rule: {fails}; TerraMesh re-run "
+               f"{r['terramesh_rerun']['rmse_z_ml7']['median']:.4f} = recorded {ref['terramesh_rt_ml7_median']:.4f}: {rerun_ok}")
+        cs = {k: v["rmse_z_ml7"]["median"] for k, v in rt.items() if k.startswith("ctrl_")}
+        record(f"Z7 control: {task} broken inputs", all(v > 1.5 * p and v > lim for v in cs.values()),
+               ", ".join(f"{k[5:]} {v:.4f}" for k, v in cs.items()) + f" against production {p:.4f}")
+    # token roots against the contract read's own encodings
+    from eo.geobench import views as Vw
+    for task, ref_f, sel in (("cloudsen12", "cloudsen12_train_first_crop_tokens.npy", None),
+                             ("pastis", f"pastis_train_p1_k0_tokens_{G.CHOSEN_IMPUTATION}.npy", None)):
+        rp = STEP2 / "contract" / ref_f
+        tp = Vw.TOK_ROOT[task] / C.tok_dir_name("S2L2A")
+        if not rp.exists() or not (tp / "present.npy").exists():
+            skip(f"Z7 token root {task}", "contract tokens or token root missing")
+            continue
+        idx = Vw.load(task)
+        v, x = idx["views"], idx["inputs"]
+        if task == "cloudsen12":
+            rows = np.array(json.loads((STEP2 / "contract" / "cloudsen12_train_first_crop_views.json").read_text()))
+        else:
+            xv = x.merge(v, on="view")
+            rows = xv[(xv.frame == "p1") & (xv.split == "train") & (xv.k == 0)].sort_values("row").row.values
+        pres = np.load(tp / "present.npy")
+        toks = np.load(tp / "tokens.npy", mmap_mode="r")
+        ref = np.load(rp)
+        have = pres[rows]
+        if not have.any():
+            skip(f"Z7 token root {task}", "no overlapping rows tokenized yet")
+            continue
+        eq = (np.asarray(toks[rows[have]]) == ref[have]).mean()
+        record(f"Z7 token root {task}", eq == 1.0, f"{int(have.sum())} rows: stored tokens = the contract read's encodings: {eq:.6f}")
+        shifted = (np.asarray(toks[rows[have]][1:]) == ref[have][:-1]).mean()
+        record(f"Z7 control: {task} rows one off", shifted < 0.5, f"agreement {shifted:.4f}")
+
+
+def z7_maps(expect_gpu: str | None) -> None:
+    """Each arm's stored validation map tokens = the harness's own render-and-encode path."""
+    if not torch.cuda.is_available():
+        skip("Z7 maps", "no GPU visible")
+        return
+    name = torch.cuda.get_device_name(0)
+    if expect_gpu and expect_gpu not in name:
+        raise SystemExit(f"expected {expect_gpu}, CUDA returned {name}")
+    from eo.geobench import views as Vw
+    from eo.maps import frozen, harness as H
+    for task, ds in (("pastis", "pastis"), ("cloudsen12", "cloudsen12")):
+        v = Vw.load(task)["views"]
+        rows = v[v.split == "val"].view.values
+        for arm in frozen.ARMS:
+            d = Vw.TOK_ROOT[task] / f"MAP_{arm}"
+            if not (d / "metadata.json").exists():
+                skip(f"Z7 maps {task}/{arm}", "not tokenized yet")
+                continue
+            meta = json.loads((d / "metadata.json").read_text())
+            pres = np.load(d / "present.npy")
+            if not pres[rows].all():
+                skip(f"Z7 maps {task}/{arm}", "val not fully tokenized")
+                continue
+            if meta["gpu"] != name:
+                skip(f"Z7 maps {task}/{arm}", f"written on {meta['gpu']}, this card is {name}")
+                continue
+            tok = frozen.load(arm)
+            ref = H.tokens(tok, ds, "val", cache=False).reshape(len(rows), -1)
+            mine = np.asarray(np.load(d / "tokens.npy", mmap_mode="r")[rows]).astype(np.int64)
+            record(f"Z7 maps {task}/{arm}", np.array_equal(mine, ref),
+                   f"{len(rows)} val maps: stored = harness, mismatching tokens {(mine != ref).mean():.2e}")
+            off = (mine[1:] == ref[:-1]).mean()
+            record(f"Z7 control: {task}/{arm} maps one view off", off < 0.9, f"agreement {off:.4f}")
+            del tok
+            torch.cuda.empty_cache()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default=None)
@@ -299,9 +605,10 @@ def main():
     ap.add_argument("--expect-gpu", default=None)
     ap.add_argument("--out", default=None, help="write the results as JSON")
     a = ap.parse_args()
-    checks = {"Z1": z1, "Z3": z3, "Z2floor": z2_floor}
+    checks = {"Z1": z1, "Z3": z3, "Z2floor": z2_floor, "Z6": z6, "Z7": z7}
     if not a.skip_gpu:
         checks["Z2"] = lambda: z2(a.expect_gpu)
+        checks["Z7maps"] = lambda: z7_maps(a.expect_gpu)
     t0 = time.time()
     for k, fn in checks.items():
         if a.only and k not in a.only.split(","):
