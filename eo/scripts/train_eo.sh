@@ -90,6 +90,7 @@ fi
 
 PHASE_DIR="phase3"
 [[ "$CONFIG" == eo_ben/* ]] && PHASE_DIR="phase6"      # every BEN run, the from-scratch reference included
+[[ "$CONFIG" == eo_seg/* ]] && PHASE_DIR="a2_seg"      # A2's segmentation fine-tunes
 if [[ -n "$INIT_FROM" ]]; then
   if [[ $RESUME -eq 1 ]]; then
     echo "ERROR: --init-from and --resume do not combine: a fine-tune is rerun, not resumed." >&2; exit 2
@@ -97,7 +98,7 @@ if [[ -n "$INIT_FROM" ]]; then
   [[ -d "$INIT_FROM" ]] || { echo "ERROR: --init-from $INIT_FROM is not a directory." >&2; exit 2; }
   INIT_FROM="$(cd "$INIT_FROM" && pwd)"
   HYDRA_ARGS+=("finetune.init_from=$INIT_FROM")
-  PHASE_DIR="phase6"
+  [[ "$CONFIG" == eo_seg/* ]] || PHASE_DIR="phase6"
 fi
 
 # --- 1. .env, without overriding anything already exported -------------------

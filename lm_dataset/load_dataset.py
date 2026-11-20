@@ -41,6 +41,10 @@ MULTIMODAL_DATASETS = {
     "terramesh_temporal": {
         "root_dir": TERRAMESH_TOK_ROOT,
     },
+    # A2: GEO-Bench-2 inputs -> an RGB map block (eo/data/seg_dataset.py). Its root is `seg.root`.
+    "geobench_seg": {
+        "root_dir": None,
+    },
 }
 
 
@@ -188,6 +192,9 @@ def load_eval_dataset_from_config(cfg):
         return _build_ben(cfg, want="eval")
     if dataset_name == ["terramesh_temporal"]:
         return _build_temporal(cfg, want="eval")
+    if dataset_name == ["geobench_seg"]:
+        from eo.data.seg_dataset import build as build_seg
+        return build_seg(cfg, want="eval")
     if len(dataset_name) != 1 or dataset_name[0] != "terramesh_multimodal":
         return None
     mm_cfg = cfg.get("multimodal", {})
@@ -217,6 +224,9 @@ def load_dataset_from_config(cfg):
             return _build_ben(cfg, want="train")
         if ds_name == "terramesh_temporal":
             return _build_temporal(cfg, want="train")
+        if ds_name == "geobench_seg":
+            from eo.data.seg_dataset import build as build_seg
+            return build_seg(cfg, want="train")
 
         active_modalities = list(mm_cfg.get("active_modalities", ["tok_rgb@256"]))
         modality_order = mm_cfg.get("modality_order", "fixed")

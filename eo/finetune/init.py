@@ -83,13 +83,32 @@ def strict_load(model, ckpt_dir: Path) -> Dict:
     return {"tensors": len(state), "missing_allowed": sorted(set(missing) & allowed)}
 
 
+def frozen_rows(cfg) -> int:
+    """How many leading vocabulary rows LoRA and head freeze: the pretraining vocabulary. BEN: ben_vocab.BASE
+    (87,556). A2's segmentation (dataset geobench_seg): the temporal base the map rows were appended to,
+    derived from the model's size (eo/data/map_vocab.py), so the map rows, and only they, train."""
+    if cfg.get("dataset") == "geobench_seg":
+        from eo.data import map_vocab as MV
+        return MV.for_total(int(cfg.model_config.vocab_size)).base_vocab
+    from eo.data import ben_vocab as BV
+    return BV.BASE
+
+
+def expected_vocab(cfg) -> int:
+    if cfg.get("dataset") == "geobench_seg":
+        from eo.data import map_vocab as MV
+        return MV.TOTAL_VOCAB_SIZE
+    from eo.data import ben_vocab as BV
+    return BV.TOTAL_VOCAB_SIZE
+
+
 def init_from(model, cfg) -> Dict:
     """pretrain.py's hook: strict-load the extended checkpoint, then apply the regime."""
-    from eo.data import ben_vocab as BV
     ft = cfg.finetune
     vocab = int(model.config.vocab_size)
-    if vocab != BV.TOTAL_VOCAB_SIZE:
-        raise RuntimeError(f"model built at vocab {vocab}, BEN registry is {BV.TOTAL_VOCAB_SIZE}")
+    if vocab != expected_vocab(cfg):
+        raise RuntimeError(f"model built at vocab {vocab}, the {cfg.get('dataset')} registry is {expected_vocab(cfg)}")
+    n_old = frozen_rows(cfg)
     if ft.regime == "scratch":
         # L4's reference: the same architecture, randomly initialized, nothing loaded.
         if ft.get("init_from"):
@@ -112,9 +131,9 @@ def init_from(model, cfg) -> Dict:
                 "LoRA on a recursive/MoR model: the shared block's adapter must be shared "
                 "across recursion steps and verified as the same tensor (PHASE6_PLAN §4.6). "
                 "Only the vanilla arm (B10) is wired so far.")
-        report["lora"] = LR.apply_lora(model, int(ft.lora.r), float(ft.lora.alpha), BV.BASE)
+        report["lora"] = LR.apply_lora(model, int(ft.lora.r), float(ft.lora.alpha), n_old)
     elif ft.regime == "head":
-        report["head"] = LR.apply_head(model, BV.BASE)
+        report["head"] = LR.apply_head(model, n_old)
     elif ft.regime == "full":
         for p in model.parameters():
             p.requires_grad_(True)
@@ -140,11 +159,11 @@ def build_finetuned(config_name: str, checkpoint: Optional[str], device: str = "
         strict_load(model, Path(str(ft.init_from)))
         X.assert_tied(model)
     else:
-        from eo.data import ben_vocab as BV
+        n_old = frozen_rows(cfg)
         if ft.regime == "lora":
-            LR.apply_lora(model, int(ft.lora.r), float(ft.lora.alpha), BV.BASE)
+            LR.apply_lora(model, int(ft.lora.r), float(ft.lora.alpha), n_old)
         elif ft.regime == "head":
-            LR.apply_head(model, BV.BASE)
+            LR.apply_head(model, n_old)
         strict_load(model, Path(checkpoint))
         if ft.regime not in ("lora", "head"):
             X.assert_tied(model)

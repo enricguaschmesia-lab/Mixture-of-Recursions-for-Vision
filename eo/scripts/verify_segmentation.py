@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""A2's segmentation gate (`a2seg` env). Z1-Z3 land with Step 1; Z4-Z12 with Steps 2-3.
+"""A2's segmentation gate (`a2seg` env). Z1-Z3 land with Step 1; Z6-Z7 with Step 2; Z4, Z5, Z8-Z12 with Step 3.
 
 Same discipline as verify_phase3.py and verify_temporal.py: every check ships with a deliberately broken
 control that proves it can fail. A check whose artifact does not exist yet is SKIPPED, never passed.
@@ -57,6 +57,22 @@ GTX Titan X refuses with CUBLAS_STATUS_NOT_SUPPORTED, 2026-11-18). Pick it by na
                                        by > 1.5x and above the limit; B01/B09 exchanged loses the
                                        imputation; a two-step resample differs; map tokens one view off
                                        differ
+  Step 3 (2026-11-19). The model and data checks run in `.venv` (eo/scripts/verify_seg_model.py, called as a
+  subprocess and merged here; --skip-model leaves them out): Z4 map rows and the extension's identity, Z5's
+  sequences, Z8 KV cache, Z9 wrong input, Z10 LoRA through pretrain.py, Z12 overlays; its docstring lists each
+  check and control. Here, in a2seg:
+  Z5  dates: PASTIS-7's date blocks hold the day bins of PASTIS-R's own dates at int(j T / 7); shuffled_dates
+      holds the same days in another order;
+      (GPU) dihedral map = dihedral image: each training view's stored map tokens, decoded, match dihedral_k of
+      the patch's own mask best among the 8 variants (pixel accuracy, void excluded), every arm
+                                     | dates of the next frame (a loader's off-by-one) are flagged; the map
+                                       against dihedral_{k+1} loses
+  Z11 Tiling: CloudSen12's 3 x 3 crops stitched back give a constant field one class and a random field
+      itself; val views are the plan's crops in its order; and the TRUE map tokens through eo/eval/seg.score
+      (the generated-map path) reproduce each frozen arm's Step 1 ceiling (step3/ceiling/, written by
+      eval_seg.py score --ceiling)
+                                     | a tile offset by one pixel does not come back; two crops swapped are
+                                       flagged
 """
 from __future__ import annotations
 
@@ -598,17 +614,173 @@ def z7_maps(expect_gpu: str | None) -> None:
             torch.cuda.empty_cache()
 
 
+# ---------------------------------------------------------------- Step 3 (Z4, Z5, Z8-Z12)
+STEP3_CEILING = Path("/data/enric/reports/a2_seg/step3/ceiling")
+
+
+def z5_dates() -> None:
+    """PASTIS-7's date blocks hold each frame's day bin, read independently from PASTIS-R's metadata."""
+    from eo.data import seg_dataset as SD
+    from eo.geobench import sources as Src
+
+    def read(ds, v):
+        s = ds.sequence(int(v))
+        ids = s["input_ids"]
+        bo = (ids == ds.V.BO_DATE).nonzero().flatten()
+        return [ds.V.decode_date_block(ids[b:b + 3].tolist())[1] for b in bo]
+
+    def want(pid):
+        d = Src.pastis_r_dates(int(pid))
+        return [SD.day_bin(d[t]) for t in Src.pastis_frames_p7(len(d))]
+
+    ds = SD.SegDataset(SD.SegSpec("pastis", "aligned", "p7", "val"))
+    vw = ds.views.iloc[::12]
+    bad = [int(r.sample_id) for r in vw.itertuples() if read(ds, r.view) != want(r.sample_id)]
+    record("Z5 dates from metadata", not bad, f"{len(vw)} fold-4 views: date blocks = PASTIS-R's dates at "
+           f"int(j T / 7), day bins; wrong {bad[:3]}")
+
+    class FromLoader(SD.SegDataset):        # the control: dates of the next frame, as a loader's off-by-one
+        def _load(self):
+            super()._load()
+            self.in_dates = np.roll(self.in_dates, -1, axis=1)
+    dc = FromLoader(SD.SegSpec("pastis", "aligned", "p7", "val"))
+    badc = sum(read(dc, r.view) != want(r.sample_id) for r in vw.itertuples())
+    record("Z5 control: dates taken from another frame", badc > len(vw) // 2, f"{badc} of {len(vw)} views flagged")
+    sh = [read(ds.__class__(SD.SegSpec("pastis", "aligned", "p7", "val", variant="shuffled_dates")), r.view)
+          for r in vw.iloc[:5].itertuples()]
+    record("Z5 shuffled_dates variant", all(sorted(a) == sorted(want(r.sample_id)) and a != want(r.sample_id)
+                                            for a, r in zip(sh, vw.iloc[:5].itertuples())),
+           "the same days, in another order, on 5 views")
+
+
+def z5_dihedral(expect_gpu: str | None) -> None:
+    """Dihedral map = dihedral image: each training view's stored map tokens decode to dihedral_k of the patch's
+    own mask (PASTIS-R's, through eo/maps' training set), for every arm."""
+    if not torch.cuda.is_available():
+        skip("Z5 dihedral", "no GPU visible")
+        return
+    name = torch.cuda.get_device_name(0)
+    if expect_gpu and expect_gpu not in name:
+        raise SystemExit(f"expected {expect_gpu}, CUDA returned {name}")
+    from eo.data import map_vocab as MV
+    from eo.data import seg_dataset as SD
+    from eo.geobench.s2 import dihedral
+    from eo.maps import frozen, harness as H, sets
+    labels, ids = sets.load("pastis", "train")
+    where = {int(i): n for n, i in enumerate(ids)}
+    t = P.TASKS["pastis"]
+    for arm in frozen.ARMS:
+        ds = SD.SegDataset(SD.SegSpec("pastis", arm, "p1", "train"))
+        tok = frozen.load(arm)
+        side = MV.ARMS[arm][2]
+        good, cross = [], []
+        for sid in ds.samples[::300][:5]:
+            vs = ds._sample_views[int(sid)]
+            pid = int(ds.views.set_index("view").sample_id[vs[0]])
+            lab = np.asarray(labels[where[pid]])
+            codes = torch.as_tensor(np.asarray(ds.maps[vs]).astype(np.int64), device="cuda").view(-1, side, side)
+            sc = H.class_scores(tok, codes, "pastis", "universal", "crop224")
+            pr = D.apply_rule(sc, t.ignore, frozen.record(arm)["rule"], tok.output).cpu().numpy()
+            ks = ds.views.set_index("view").k.loc[vs].values
+            valid = lab != t.ignore
+            for j, k in enumerate(ks):
+                # pixel accuracy against each of the 8 variants of the patch's own mask (void excluded)
+                acc = [float((dihedral(lab, q) == pr[j])[dihedral(valid, q)].mean()) for q in range(8)]
+                good.append((acc[int(k)], int(np.argmax(acc)) == int(k), acc[int((k + 1) % 8)]))
+        right = sum(g[1] for g in good)
+        record(f"Z5 dihedral map = dihedral image ({arm})", right == len(good),
+               f"{len(good)} training views (5 patches x 8): the view's own variant k is the best of the 8 for "
+               f"{right}; pixel accuracy at k min {min(g[0] for g in good):.3f}, mean {np.mean([g[0] for g in good]):.3f}")
+        record(f"Z5 control: k + 1 ({arm})", np.mean([g[2] for g in good]) < np.mean([g[0] for g in good]) - 0.2,
+               f"pixel accuracy against the next variant: mean {np.mean([g[2] for g in good]):.3f}")
+        del tok
+        torch.cuda.empty_cache()
+
+
+def z11() -> None:
+    """Tiling: a constant field cut into CloudSen12's 3 x 3 crops and stitched predicts the same everywhere; a
+    random field comes back exactly; every val tile's views are the plan's crops in the plan's order."""
+    from eo.data import seg_dataset as SD
+    from eo.eval import seg as SEG
+    from eo.maps import tiling
+    t = P.TASKS["cloudsen12"]
+    crops = tiling.plan("cloudsen12", t.native, "crop224")
+    const = torch.zeros(2, t.n_classes, t.native, t.native)
+    const[:, 2] = 1.0
+    cut = torch.stack([const[:, :, y:y + c, x:x + c] for (y, x, c) in crops], 1).flatten(0, 1)
+    pr = D.snap_nearest(tiling.stitch(cut, crops, t.native), t.ignore)
+    rnd = torch.randn(2, t.n_classes, t.native, t.native)
+    cut_r = torch.stack([rnd[:, :, y:y + c, x:x + c] for (y, x, c) in crops], 1).flatten(0, 1)
+    back = tiling.stitch(cut_r, crops, t.native)
+    record("Z11 tiling", bool((pr == 2).all()) and torch.allclose(back, rnd, atol=1e-6),
+           f"{len(crops)} crops at {sorted({y for y, _, _ in crops})}: a constant field predicts one class at every "
+           f"pixel; a random field stitched back within 1e-6")
+    off = [(y + (1 if j == 4 else 0), x, c) for j, (y, x, c) in enumerate(crops)]
+    off = [(min(y, t.native - c), x, c) for (y, x, c) in off]
+    cut_o = torch.stack([rnd[:, :, y:y + c, x:x + c] for (y, x, c) in off], 1).flatten(0, 1)
+    err = float((tiling.stitch(cut_o, crops, t.native) - rnd).abs().max())
+    record("Z11 control: a tile offset by one pixel", err > 1e-3, f"max error {err:.3f}")
+    ds = SD.SegDataset(SD.SegSpec("cloudsen12", "aligned", "single", "val"))
+    p = SEG.crop_order_problems("cloudsen12", ds.views)
+    record("Z11 val views = the 3 x 3 plan", not p, f"{ds.views.sample_id.nunique()} tiles x 9 crops; problems {p[:2]}")
+    v = ds.views.copy()
+    v.iloc[[0, 1]] = v.iloc[[1, 0]].values
+    record("Z11 control: two crops swapped", bool(SEG.crop_order_problems("cloudsen12", v)), "flagged")
+
+
+def z11_ceiling() -> None:
+    """The true map tokens through eo/eval/seg.score (the generated-map path) reproduce each frozen arm's
+    Step 1 ceiling: the code reshape, decode, stitching and scorer are the harness's (read from step3/ceiling)."""
+    from eo.maps import frozen
+    for arm in frozen.ARMS:
+        ref = frozen.record(arm)["ceilings"]
+        for task in ("pastis", "cloudsen12"):
+            f = STEP3_CEILING / f"{task}_{arm}.json"
+            if not f.exists():
+                skip(f"Z11 ceiling {task}/{arm}", f"{f} not written (eval_seg.py score --ceiling)")
+                continue
+            got = json.loads(f.read_text())["result"]["mIoU"]
+            record(f"Z11 ceiling {task}/{arm}", abs(got - ref[task]) < 1e-6,
+                   f"eval/seg {got:.6f} = Step 1's frozen {ref[task]:.6f}")
+
+
+def z_model(only: str | None) -> None:
+    """The `.venv` half (Z4, Z5's sequences, Z8, Z9, Z10, Z12): eo/scripts/verify_seg_model.py, merged."""
+    import os
+    import subprocess
+    import tempfile
+    py = REPO / ".venv" / "bin" / "python"
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "model.json"
+        cmd = [str(py), "eo/scripts/verify_seg_model.py", "--out", str(out)] + (["--only", only] if only else [])
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("CONDA", "PYTHON"))}
+        env["PATH"] = f"{REPO / '.venv' / 'bin'}:{env.get('PATH', '')}"
+        r = subprocess.run(cmd, cwd=str(REPO), env=env, capture_output=True, text=True, timeout=7200)
+        if not out.exists():
+            record("Z-model (.venv half)", False, f"exit {r.returncode}: " + " | ".join(r.stderr.strip().splitlines()[-3:]))
+            return
+        for row in json.loads(out.read_text()):
+            RESULTS.append((row["check"], row["status"], row["detail"]))
+            print(f"[{row['status']}] {row['check']}: {row['detail']}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default=None)
     ap.add_argument("--skip-gpu", action="store_true")
     ap.add_argument("--expect-gpu", default=None)
     ap.add_argument("--out", default=None, help="write the results as JSON")
+    ap.add_argument("--skip-model", action="store_true", help="skip the .venv half (verify_seg_model.py)")
+    ap.add_argument("--model-only", default=None, help="--only for the .venv half, e.g. Z5,Z12")
     a = ap.parse_args()
-    checks = {"Z1": z1, "Z3": z3, "Z2floor": z2_floor, "Z6": z6, "Z7": z7}
+    checks = {"Z1": z1, "Z3": z3, "Z2floor": z2_floor, "Z6": z6, "Z7": z7, "Z5dates": z5_dates, "Z11": z11,
+              "Z11ceiling": z11_ceiling}
+    if not a.skip_model:
+        checks["Zmodel"] = lambda: z_model(a.model_only)
     if not a.skip_gpu:
         checks["Z2"] = lambda: z2(a.expect_gpu)
         checks["Z7maps"] = lambda: z7_maps(a.expect_gpu)
+        checks["Z5dihedral"] = lambda: z5_dihedral(a.expect_gpu)
     t0 = time.time()
     for k, fn in checks.items():
         if a.only and k not in a.only.split(","):

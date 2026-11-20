@@ -10,7 +10,11 @@
 of eo/data/temporal_vocab.py, 108 rows in all. `--layout temporal_nc` (2026-11-17) does the same to a
 Coords-free (nc, 81,188-id) checkpoint: BEN's 21 reserved ids and the 87 date ids of
 eo/data/temporal_vocab_nc.py, 81,296 in all; its identity covers ids 0..81,187 and its control 1 inserts
-before nc's PAD (81,187). `--device cpu` runs without a card: the check compares
+before nc's PAD (81,187). `--layout map` (A2 Step 3.1, 2026-11-19) appends A2's map rows
+(eo/data/map_vocab.py: three arms' slots, EO_MAP, eight BO_MAP_<task>; 80,369 rows) to a TEMPORAL base, its
+layout derived from the checkpoint's own vocab size (81,296 -> 161,665), built from the base's arm with
+`--override model_config.vocab_size=<base size>`. Its identity covers every base id, and its control 1 inserts
+the rows before the base's LAST id (gate Z4's control). `--device cpu` runs without a card: the check compares
 before and after on one device, so it holds on either, and a T360 pass takes minutes.
 
 `extend()` is the same, callable (2026-11-09): eo/scripts/verify_temporal.py's Y15 extends a miniature
@@ -44,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eo.data import ben_vocab as BV  # noqa: E402
 from eo.data import eo_vocab as EV  # noqa: E402
 from eo.data import eo_vocab_nc as EVNC  # noqa: E402
+from eo.data import map_vocab as MV  # noqa: E402
 from eo.data import temporal_vocab as TV  # noqa: E402
 from eo.data import temporal_vocab_nc as TVNC  # noqa: E402
 from eo.finetune import extend as X  # noqa: E402
@@ -59,6 +64,8 @@ LAYOUTS = {"ben": (BV.TOTAL_VOCAB_SIZE, "ben_vocab",
            "temporal_nc": (TVNC.TOTAL_VOCAB_SIZE, "temporal_vocab", TVNC.layout_record())}
 #: layout -> the pretraining vocabulary it extends: the source checkpoint's size and its PAD (control 1)
 SOURCES = {"ben": EV, "temporal": EV, "temporal_nc": EVNC}
+#: Layouts derived from the checkpoint's own vocab size (the map rows go after ANY temporal base's last id).
+DERIVED = ("map",)
 
 
 def sha256(path: Path) -> str:
@@ -124,23 +131,35 @@ def extend(arm_config: str, checkpoint: Path, out: Path, *, seed: int = 0, layou
     if out.exists() and any(out.iterdir()):
         raise ExtensionRefused(f"{out} exists and is not empty")
     gpu = torch.cuda.get_device_name(0) if device.startswith("cuda") else "cpu"
-    v_total, layout_key, layout_record = LAYOUTS[layout]
 
     model, cfg = G.build_model(arm_config, str(checkpoint), device=device, overrides=overrides)
     model.float()
     X.assert_tied(model)
     batch, rows = fixed_batch(cfg, batch_rows)
     before = per_row_logits(model, batch, device)
-    src = SOURCES[layout]
-    v_old = src.TOTAL_VOCAB_SIZE
-    if before.shape[-1] != v_old:
-        raise ExtensionRefused(f"--layout {layout} extends a {v_old}-id checkpoint; {checkpoint} built from "
-                               f"{arm_config} has {before.shape[-1]} (another vocabulary layout)")
+    if layout in DERIVED:
+        # The map rows go after the checkpoint's last id, whatever temporal layout it is (map_vocab.for_base
+        # refuses a size it does not know). Control 1 inserts them before that last id.
+        v_old = int(before.shape[-1])
+        try:
+            lay = MV.for_base(v_old)
+        except ValueError as e:
+            raise ExtensionRefused(f"--layout map: {e}")
+        v_total, layout_key, layout_record = lay.total, "map_vocab", lay.record()
+        ctrl_at = v_old - 1
+    else:
+        v_total, layout_key, layout_record = LAYOUTS[layout]
+        src = SOURCES[layout]
+        v_old = src.TOTAL_VOCAB_SIZE
+        if before.shape[-1] != v_old:
+            raise ExtensionRefused(f"--layout {layout} extends a {v_old}-id checkpoint; {checkpoint} built from "
+                                   f"{arm_config} has {before.shape[-1]} (another vocabulary layout)")
+        ctrl_at = src.PAD_ID
     n_new = v_total - v_old
 
-    # Control 1: insert before PAD. Must FAIL identity.
+    # Control 1: insert before PAD (map: before the base's last id). Must FAIL identity.
     ctrl = copy.deepcopy(model)
-    X.extend_vocab(ctrl, n_new, seed=seed, insert_before_pad=True, pad_id=src.PAD_ID)
+    X.extend_vocab(ctrl, n_new, seed=seed, insert_before_pad=True, pad_id=ctrl_at)
     rep_c1 = X.identity_report(before, per_row_logits(ctrl, batch, device),
                                batch["attention_mask"], v_old)
     del ctrl
@@ -193,7 +212,7 @@ def extend(arm_config: str, checkpoint: Path, out: Path, *, seed: int = 0, layou
         layout_key: layout_record,
         "identity": {**rep, "tol": IDENTITY_TOL, "passed": ok, "batch_rows": rows,
                      "precision": "fp32"},
-        "control_insert_before_pad": {**rep_c1, "fired": c1_fired},
+        "control_insert_before_pad": {**rep_c1, "fired": c1_fired, "inserted_at": int(ctrl_at)},
         "control_untied_resize": {"fired": c2_fired},
         "new_row_logit_mean": new_logit_mean, "old_row_logit_mean": old_logit_mean,
         "weights_file": wf.name, "weights_sha256": sha256(wf),
@@ -213,11 +232,15 @@ def main():
     ap.add_argument("--checkpoint", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--layout", choices=sorted(LAYOUTS), default="ben")
+    ap.add_argument("--layout", choices=sorted(LAYOUTS) + list(DERIVED), default="ben")
     ap.add_argument("--device", default="cuda", help="cuda, or cpu")
+    ap.add_argument("--override", action="append", default=[],
+                    help="a Hydra override of the arm (repeatable), e.g. model_config.vocab_size=81296 to build "
+                         "an extended temporal base from its source arm")
     a = ap.parse_args()
     try:
-        extend(a.arm_config, a.checkpoint, a.out, seed=a.seed, layout=a.layout, device=a.device)
+        extend(a.arm_config, a.checkpoint, a.out, seed=a.seed, layout=a.layout, device=a.device,
+               overrides=a.override or None)
     except ExtensionRefused as e:
         sys.exit(str(e))
 

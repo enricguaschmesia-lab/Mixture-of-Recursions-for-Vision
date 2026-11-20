@@ -1,0 +1,68 @@
+# @package _global_
+#
+# A2 R0: a direct segmentation fine-tune of A2's base on generated RGB map tokens (A2 Step 3; plan decisions 3,
+# 9, 10, 12). Shared settings; the three Step 4.0 overlays (r0_pastis1_{aligned,short,long}) differ from this
+# file in exactly seg.arm and max_length, the arm's sequence length (gate Z12).
+#
+# Model: B10cL-tr-x10-NC's shape exactly (arm_b10ctrxnc_vanilla), built at the map vocabulary (161,665 =
+# the nc temporal base's 81,296 + eo/data/map_vocab.py's 80,369 rows, asserted against the registry at
+# startup), initialised from the map-extended base, whose identity artifact preflight verifies
+# (eo/scripts/extend_checkpoint.py --layout map). Not a resume: optimizer and scheduler start fresh.
+#   launch:  bash eo/scripts/train_eo.sh --arm r0p1aligned --config eo_seg/r0_pastis1_aligned \
+#                --init-from /data/enric/runs/pretrain/a2_seg/base/b10cltrxnc_ext_map_nc_ckpt33000 --gpu a100
+#
+# Regime: BEN's best (t360_lora_e6's recipe, plan decision 10 and Step 4.0): LoRA rank 16 on q/k/v/o/gate/up/
+# down plus the map rows (a separate Parameter; every base row frozen, eo/finetune/lora.py), LR 1e-3, no
+# weight decay. bf16: SmolLM's body nears fp16's range (CLAUDE.md).
+#
+# Budget (PROPOSED for Step 4.0, not ratified): 20 epochs of PASTIS's 1,455 training patches, one dihedral
+# view drawn per patch and epoch (eo/data/seg_dataset.py), at batch 32: 1,440 an epoch (cut to whole steps),
+# 45 steps, 900 in all. Teacher-forced map CE on fold 4 every epoch; a save every 2 epochs. Generated mIoU on
+# fold 4 is read from the saves afterwards (eo/scripts/eval_seg.py); fold 5 (test) is never read here.
+defaults:
+  - /eo_terramesh/arm_b10ctrxnc_vanilla
+  - _self_
+
+dataset: geobench_seg
+seg:
+  task: pastis
+  frames: p1
+  arm: ???
+  train_split: train
+  eval_split: val
+  in_pinned: null               # null = 1,455 patches (A2's protocol); true = GeoBenchV2 0.9's pinned 1,200
+  root: /data/enric/data/geobench2
+multimodal:
+  split: val                    # TerraMesh's train root is not read (seg.root is the data)
+  eval_split: null              # TerraMesh's held-out split does not apply; the eval is seg.eval_split
+model_config:
+  vocab_size: 161665
+max_length: ???
+precision: bf16
+
+finetune:
+  init_from: ???                # set by train_eo.sh --init-from (the map-extended base)
+  regime: lora
+  lora:
+    r: 16
+    alpha: 32
+learning_rate: 1.0e-3
+weight_decay: 0.0
+
+total_batch_size: 32
+per_device_train_batch_size: 8
+per_device_eval_batch_size: 8
+num_train_steps: 900
+stop_steps: 900
+num_warmup_steps: 45            # one epoch
+lr_scheduler_type: warmup_stable_decay
+lr_scheduler_kwargs:
+  num_decay_steps: 180          # the last 20%, linear
+save_steps: 90
+eval_steps: 45
+eval_on_start: true
+save_total_limit: null
+fixed_eval_steps: null
+fixed_save_steps: null
+
+wandb_project: mor-eo-a2seg

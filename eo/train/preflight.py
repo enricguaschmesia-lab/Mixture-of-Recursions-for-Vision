@@ -124,9 +124,12 @@ class CheckResult:
     hint: str = ""
 
 
-#: The datasets an EO run may use: TerraMesh pretraining, the Phase 6 BEN fine-tune, and the
-#: temporal stage (A1: whole four-date locations and Major TOM scenes, in micro-batches).
-EO_DATASETS = ("terramesh_multimodal", "ben_multimodal", "terramesh_temporal")
+#: The datasets an EO run may use: TerraMesh pretraining, the Phase 6 BEN fine-tune, the
+#: temporal stage (A1: whole four-date locations and Major TOM scenes, in micro-batches), and A2's
+#: segmentation fine-tunes (GEO-Bench-2 inputs -> RGB map tokens, eo/data/seg_dataset.py).
+EO_DATASETS = ("terramesh_multimodal", "ben_multimodal", "terramesh_temporal", "geobench_seg")
+#: Fine-tunes that must start from an extended checkpoint (finetune.init_from): BEN and A2's segmentation.
+FINETUNE_DATASETS = ("ben_multimodal", "geobench_seg")
 
 
 @dataclass
@@ -620,6 +623,9 @@ def check_eval_split(ctx: PreflightContext) -> CheckResult:
     cfg = _load_config(path, ctx.overrides)
     if cfg.get("dataset") == "ben_multimodal":
         return CheckResult("eval split", True, "n/a: a BEN run evaluates on ben.eval_role ('BEN data')")
+    if cfg.get("dataset") == "geobench_seg":
+        return CheckResult("eval split", True, f"n/a: a segmentation run evaluates on seg.eval_split "
+                                               f"({(cfg.get('seg') or {}).get('eval_split')!r})")
     ref = (cfg.get("multimodal") or {}).get("eval_split")
     if ref is None:
         return CheckResult("eval split", True,
@@ -985,7 +991,7 @@ def check_init_from(ctx: PreflightContext) -> CheckResult:
     cfg = _load_config(ctx.config_path, ctx.overrides)
     init = (cfg.get("finetune") or {}).get("init_from")
     regime = (cfg.get("finetune") or {}).get("regime")
-    is_ben = cfg.get("dataset") == "ben_multimodal"
+    is_ben = cfg.get("dataset") in FINETUNE_DATASETS
     if regime == "scratch":
         if init not in (None, "???"):
             return CheckResult("init from", False, f"regime scratch with init_from {init}",
@@ -993,7 +999,7 @@ def check_init_from(ctx: PreflightContext) -> CheckResult:
         return CheckResult("init from", True, "regime scratch: random init, deliberately (PHASE6_PLAN L4)")
     if init in (None, "???"):
         if is_ben:
-            return CheckResult("init from", False, "a BEN run has no finetune.init_from",
+            return CheckResult("init from", False, f"a {cfg.get('dataset')} run has no finetune.init_from",
                                "Launch with train_eo.sh --init-from <extended checkpoint>.")
         return CheckResult("init from", True, "n/a (not a fine-tune)")
     if ctx.resuming:

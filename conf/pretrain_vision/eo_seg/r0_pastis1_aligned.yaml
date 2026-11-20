@@ -1,0 +1,12 @@
+# @package _global_
+#
+# A2 Step 4.0, arm aligned: R0 on PASTIS-1 with the frozen aligned map tokenizer (eo/maps/frozen.ARMS). Differs
+# from r0_base in exactly seg.arm and max_length, the arm's sequence length ([BO_S2L2A 196 EO] + [BO_MAP_PASTIS
+# G EO_MAP]); gate Z12 holds both.
+defaults:
+  - r0_base
+  - _self_
+
+seg:
+  arm: aligned
+max_length: 396
