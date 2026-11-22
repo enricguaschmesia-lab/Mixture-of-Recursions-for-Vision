@@ -41,6 +41,20 @@ CONTROLS (`variant`, for evaluation; eo/eval/seg.py):
                   images in place
   one_date        PASTIS-7: the middle group (j = 3) alone, with its date block
 
+MAP LAYOUTS (Step 4.0's follow-ups, Enric 2026-11-20 evening; plan Step 4.0 "follow-ups"). Default: the map block
+right after the inputs at sequential (lattice) positions, its codes in raster order, as Step 4.0 ran. Two options:
+  map_shift d   (raster only) the whole map block, BO_MAP to EO_MAP, moved d positions on: positions jump by d after
+                the inputs, so the map leaves the 198 lattice (alignment test: d = 99, half a block)
+  map_order "nested"  (a 28 x 28 map over ONE 14 x 14 input block: PASTIS-1, CloudSen12) the map's four 2 x 2 phases
+                as four 196-token blocks on the lattice: sub-cell j = 2 dy + dx of input patch k = 14 r + c (map cell
+                (2r + dy, 2c + dx)) sits at position BO + 1 + 198 j + k, written block by block (j = 0..3), each in
+                the inputs' raster order. Every map token is 198 (j + 1) positions after its input patch's token,
+                positions only increase, and EO_MAP takes the last code's position + 1 (989 on PASTIS-1).
+  Codes are stored, generated-and-returned and scored in RASTER order: map_chunk reorders into sequence order,
+  `to_raster` reorders back, and `step_positions` gives generation the position of each code it feeds back.
+Arms: Step 4.0's three (map_vocab.ARMS) or a follow-up alias (map_vocab.ALIASES), whose codes take its parent slot's
+first ids.
+
 ⚠ A TEST SPLIT IS REFUSED unless `allow_test=True` (Step 6's protocol runs only). Never score it in Steps 3-5.
 
 Runs in `.venv`: numpy, pandas, torch. Never imports terratorch.
@@ -92,8 +106,25 @@ def year_id(date: int) -> int:
     return int(str(int(date))[:4]) - YEAR_FIRST
 
 
+MAP_ORDERS = ("raster", "nested")
+NESTED_SIDE, INPUT_SIDE, BLOCK = 28, 14, 198      # the nested layout: a 28 x 28 map over the 14 x 14 input grid
+
+
+def nested_order(side: int = NESTED_SIDE, inner: int = INPUT_SIDE) -> np.ndarray:
+    """order[t] = the raster index (row-major over side x side) of the code written t-th under the nested layout:
+    t = j * inner^2 + k, k = r * inner + c the input patch, j = 2 dy + dx the sub-cell, cell (2r + dy, 2c + dx)."""
+    f = side // inner
+    out = []
+    for dy in range(f):
+        for dx in range(f):
+            for r in range(inner):
+                for c in range(inner):
+                    out.append((f * r + dy) * side + (f * c + dx))
+    return np.asarray(out, dtype=np.int64)
+
+
 def required_length(task: str, frames: str, arm: str, variant: str = "full") -> int:
-    g = MV.ARMS[arm][1] + 2
+    g = MV.spec(arm)[1] + 2
     img = TOKENS_PER_SAMPLE + 2
     if task == "pastis" and frames == "p7":
         n = 1 if variant == "one_date" else 7
@@ -111,14 +142,23 @@ class SegSpec:
     in_pinned: Optional[bool] = None
     root: Path = ROOT
     base_vocab: int = MV.BASE_VOCAB
+    map_shift: int = 0
+    map_order: str = "raster"
 
     def validate(self, allow_test: bool = False) -> None:
         if self.task not in TASKS:
             raise ValueError(f"task {self.task!r}: {TASKS}")
         if self.frames not in FRAMES[self.task]:
             raise ValueError(f"{self.task} takes frames {FRAMES[self.task]}, not {self.frames!r}")
-        if self.arm not in MV.ARMS:
-            raise ValueError(f"arm {self.arm!r}: {sorted(MV.ARMS)}")
+        if self.arm not in MV.ARMS and self.arm not in MV.ALIASES:
+            raise ValueError(f"arm {self.arm!r}: {sorted(MV.ARMS) + sorted(MV.ALIASES)}")
+        if self.map_order not in MAP_ORDERS:
+            raise ValueError(f"map_order {self.map_order!r}: {MAP_ORDERS}")
+        if int(self.map_shift) < 0 or (self.map_shift and self.map_order != "raster"):
+            raise ValueError(f"map_shift {self.map_shift}: a non-negative shift of the raster layout only")
+        if self.map_order == "nested" and (MV.spec(self.arm)[2] != NESTED_SIDE or self.frames == "p7"):
+            raise ValueError(f"the nested layout puts a {NESTED_SIDE} x {NESTED_SIDE} map over ONE input block; arm "
+                             f"{self.arm} is {MV.spec(self.arm)[2]} x {MV.spec(self.arm)[2]}, frames {self.frames}")
         if self.variant not in VARIANTS:
             raise ValueError(f"variant {self.variant!r}: {VARIANTS}")
         if self.variant in ("shuffled_dates", "one_date") and self.frames != "p7":
@@ -149,7 +189,11 @@ class SegDataset(Dataset):
                              f"{getattr(self.V, 'NAME', 'v1')}")
         self.task_token = self.lay.bo(spec.task)
         self.map_off, self.map_size = self.lay.slot(spec.arm)
-        self.n_map = MV.ARMS[spec.arm][1]
+        self.n_map = MV.spec(spec.arm)[1]
+        self.side = MV.spec(spec.arm)[2]
+        # sequence index -> raster index of the code written there (identity for the raster layout)
+        self.seq_order = nested_order(self.side) if spec.map_order == "nested" else np.arange(self.n_map)
+        assert sorted(self.seq_order.tolist()) == list(range(self.n_map)), "the map order is not a permutation"
         self.required = required_length(spec.task, spec.frames, spec.arm, "full")
         self.max_length = self.required if max_length is None else int(max_length)
         if self.max_length < self.required:
@@ -253,8 +297,37 @@ class SegDataset(Dataset):
         return torch.tensor(self.V.date_block(year_id(date), day_bin(date), with_year=False), dtype=torch.long)
 
     def map_chunk(self, view: int) -> torch.Tensor:
+        """[BO_MAP_<task>, the view's codes in SEQUENCE order (+ the slot's offset), EO_MAP]."""
         codes = np.asarray(self.maps[view]).astype(np.int64)        # uint16 -> int64 BEFORE the offset
-        return torch.tensor(self.lay.map_block(self.spec.arm, self.spec.task, codes), dtype=torch.long)
+        return torch.tensor(self.lay.map_block(self.spec.arm, self.spec.task, codes[self.seq_order]),
+                            dtype=torch.long)
+
+    def to_raster(self, seq_codes: np.ndarray) -> np.ndarray:
+        """Codes in sequence order (..., G) -> raster order (..., G): the inverse of map_chunk's reordering."""
+        seq_codes = np.asarray(seq_codes)
+        out = np.empty_like(seq_codes)
+        out[..., self.seq_order] = seq_codes
+        return out
+
+    def map_positions(self, bo: int) -> torch.Tensor:
+        """position_ids of [BO_MAP, G codes in sequence order, EO_MAP] when the inputs leave BO_MAP's lattice slot at
+        `bo`: raster = sequential from bo + map_shift; nested = BO at bo, code t = j * 196 + k at bo + 1 + 198 j + k,
+        EO_MAP after the last code (module docstring, MAP LAYOUTS)."""
+        g = self.n_map
+        if self.spec.map_order == "raster":
+            return torch.arange(bo + int(self.spec.map_shift), bo + int(self.spec.map_shift) + g + 2, dtype=torch.long)
+        t = torch.arange(g)
+        inner = INPUT_SIDE * INPUT_SIDE
+        codes = bo + 1 + BLOCK * (t // inner) + t % inner
+        return torch.cat([torch.tensor([bo]), codes, codes[-1:] + 1]).long()
+
+    def step_positions(self, variant: Optional[str] = None) -> torch.Tensor:
+        """(G,) the position of each code generation feeds back: the codes' position_ids in a built sequence (its
+        labelled tokens but EO_MAP). Read off a real sequence, so it is the training layout by construction; every view
+        of a dataset (and variant) shares it."""
+        s = self.sequence(int(self.views.view.values[0]), variant)
+        lab = (s["labels"] != -100).nonzero().flatten()
+        return s["position_ids"][lab[:-1]].clone()
 
     def derangement(self) -> Dict[int, int]:
         """view -> the view whose inputs the `wrong` control feeds it (same crop index, another sample)."""
@@ -303,17 +376,19 @@ class SegDataset(Dataset):
         chunks, mods = self.input_chunks(view, variant)
         m = self.map_chunk(view)
         widths = [int(c.shape[0]) for c in chunks]
-        lattice = lattice_positions(widths + [int(m.shape[0])], [x == "Date" for x in mods] + [False],
-                                    self.max_length)
+        lm = int(m.shape[0])
+        lattice = lattice_positions(widths + [lm], [x == "Date" for x in mods] + [False], self.max_length)
+        start = sum(widths)
+        mpos = self.map_positions(int(lattice[start]))             # the layout's map positions (MAP LAYOUTS)
         if variant == "prior":                         # the map alone, at its positions in the full layout
-            start = sum(widths)
             chunks, mods, widths = [], [], []
-            pos = torch.cat([lattice[start:start + int(m.shape[0])],
-                             torch.arange(int(lattice[start + int(m.shape[0]) - 1]) + 1,
-                                          int(lattice[start + int(m.shape[0]) - 1]) + 1
-                                          + self.max_length - int(m.shape[0]))])
+            last = int(mpos[-1])
+            pos = torch.cat([mpos, torch.arange(last + 1, last + 1 + self.max_length - lm)])
         else:
-            pos = lattice
+            pos = lattice.clone()
+            pos[start:start + lm] = mpos
+            last = int(mpos[-1])
+            pos[start + lm:] = torch.arange(last + 1, last + 1 + self.max_length - start - lm)
         ids = [self.V.MODALITY_TO_ID[x] for x in mods] + [MV.MAP_MODALITY_ID]
         out = assemble_sequence(chunks=chunks + [m], chunk_modality_ids=ids,
                                 chunk_shufflable=[False] * (len(chunks) + 1), max_length=self.max_length,
@@ -368,7 +443,8 @@ def spec_from_cfg(cfg, want: str) -> Optional[SegSpec]:
         return None
     return SegSpec(task=str(sc["task"]), arm=str(sc["arm"]), frames=str(sc.get("frames", "p1")), split=str(split),
                    in_pinned=sc.get("in_pinned", None) if want == "train" else None,
-                   root=Path(str(sc.get("root", ROOT))), base_vocab=int(cfg.model_config.vocab_size) - MV.N_NEW)
+                   root=Path(str(sc.get("root", ROOT))), base_vocab=int(cfg.model_config.vocab_size) - MV.N_NEW,
+                   map_shift=int(sc.get("map_shift", 0) or 0), map_order=str(sc.get("map_order", "raster") or "raster"))
 
 
 def build(cfg, want: str = "train") -> Optional[SegDataset]:
@@ -377,6 +453,7 @@ def build(cfg, want: str = "train") -> Optional[SegDataset]:
         return None
     batch = int(cfg.get("total_batch_size") or 1) if want == "train" else 1
     ds = SegDataset(spec, max_length=int(cfg.max_length), seed=int(cfg.get("seed", 42)), batch=batch)
-    print(f"seg {want}: {spec.task} {spec.frames} arm {spec.arm} split {spec.split} in_pinned {spec.in_pinned}: "
+    print(f"seg {want}: {spec.task} {spec.frames} arm {spec.arm} split {spec.split} in_pinned {spec.in_pinned} "
+          f"map_order {spec.map_order} map_shift {spec.map_shift}: "
           f"{len(ds.samples)} samples, {len(ds)} examples an epoch, {ds.required} tokens (max_length {ds.max_length})")
     return ds

@@ -1,0 +1,12 @@
+# @package _global_
+#
+# A2 Step 4.0 follow-up (Enric, 2026-11-20, evening; plan Step 4.0 "follow-ups", pre-registered): test 2, the control. C:c1000_224a in the raster layout: its 784 codes in raster order at sequential positions 199..982, as the long arm writes its map.
+# Differs from r0_base_e40 in exactly the seg keys below and max_length, the arm's sequence length (gate Z13).
+defaults:
+  - r0_base_e40
+  - _self_
+
+seg:
+  arm: c1000_224a
+  map_order: raster
+max_length: 984

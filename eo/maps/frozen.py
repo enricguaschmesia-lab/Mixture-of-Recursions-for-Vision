@@ -17,6 +17,14 @@ from pathlib import Path
 
 FROZEN = Path("/data/enric/reports/a2_seg/step1/frozen")
 ARMS = {"aligned": "aligned_B_b224_64000_long", "short": "short_B_b256_15360_long", "long": "long_C_c1000_256L"}
+#: Step 4.0's follow-up tokenizers (Enric, 2026-11-20, evening): frozen like the arms, kept apart so that every gate that
+#: iterates ARMS (verify_segmentation Z7: PASTIS and CloudSen12 tokens per arm) is unchanged. long_C_c4375_224 and
+#: long_C_c1000_224a were frozen by eo/experiments/segmentation/step4f_freeze.py (Step 1's own freeze()).
+FOLLOWUP = {"b256_64000": "short_B_b256_64000", "c4375_224": "long_C_c4375_224", "c1000_224a": "long_C_c1000_224a",
+            #: follow-up 2 (Enric, 2026-11-22): Cosmos DI16x16 fine-tuned with a logit head (agent D, the second run),
+            #: frozen by eo/experiments/segmentation/step4c_freeze.py
+            "cosmos16_224": "aligned_D_d224_cosmos16_lg"}
+ALL = {**ARMS, **FOLLOWUP}
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -29,12 +37,12 @@ def _sha(p: Path) -> str:
 
 
 def record(arm: str) -> dict:
-    return json.loads((FROZEN / ARMS[arm] / "record.json").read_text())
+    return json.loads((FROZEN / ALL[arm] / "record.json").read_text())
 
 
 def verify(arm: str) -> dict:
     """Re-hash every file in SHA256SUMS. Returns {path: sha}; raises on any mismatch."""
-    d = FROZEN / ARMS[arm]
+    d = FROZEN / ALL[arm]
     out = {}
     for line in (d / "SHA256SUMS").read_text().splitlines():
         sha, rel = line.split(maxsplit=1)
@@ -50,7 +58,7 @@ def load(arm: str, device: str = "cuda"):
     byte-identical to the frozen copy, else the frozen copy itself."""
     rec = record(arm)
     sums = verify(arm)
-    d = FROZEN / ARMS[arm]
+    d = FROZEN / ALL[arm]
     loader = rec["loader_frozen"]                      # "eo.experiments.segmentation.step1_X_tok.load('<path>', 'cuda')"
     mod_name, rest = loader.split(".load(", 1)
     weights = rest.split("'")[1]

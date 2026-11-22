@@ -43,6 +43,28 @@ from eo.data.eo_vocab import ModalityInfo
 #: Step 4.0's arms, in slot order: (codes, tokens per map, grid side). eo/maps/frozen.ARMS names their files.
 ARMS: Dict[str, Tuple[int, int, int]] = {"aligned": (64_000, 196, 14), "short": (15_360, 256, 16),
                                          "long": (1_000, 1_024, 32)}
+#: Step 4.0's follow-up tokenizers (Enric, 2026-11-20, evening; plan Step 4.0 "follow-ups"): ALIASES of the slots
+#: above, never new ids. name -> (slot arm, codes, tokens per map, grid side). A follow-up's codes c take the slot's
+#: ids off + c for c < codes: in the map base every slot row is untrained (mean + noise), so any run that starts
+#: from it may use any untrained ids, and the layout (and its record in extension.json, gate Z4) stays as built.
+#: ⚠ Two arms that alias one slot must never train in one model.
+#: cosmos16_224: Step 4.0's follow-up 2 (Enric, 2026-11-22), Cosmos Tokenize1-DI16x16 fine-tuned on renders
+#: (frozen D:d224_cosmos16_lg), the aligned arm's geometry and codebook size.
+ALIASES: Dict[str, Tuple[str, int, int, int]] = {"b256_64000": ("aligned", 64_000, 256, 16),
+                                                 "c4375_224": ("short", 4_375, 784, 28),
+                                                 "c1000_224a": ("long", 1_000, 784, 28),
+                                                 "cosmos16_224": ("aligned", 64_000, 196, 14)}
+
+
+def spec(arm: str) -> Tuple[int, int, int]:
+    """(codes, tokens per map, grid side) of a Step 4.0 arm or a follow-up alias."""
+    if arm in ARMS:
+        return ARMS[arm]
+    if arm in ALIASES:
+        return ALIASES[arm][1:]
+    raise KeyError(f"unknown map arm {arm!r}: {sorted(ARMS) + sorted(ALIASES)}")
+
+
 #: The task tokens, in id order. Three spares, so a task added later does not move EO_MAP or a slot.
 TASKS: Tuple[str, ...] = ("LULC", "PASTIS", "CLOUDSEN12", "KUROSIWO", "BURNSCARS", "SPARE1", "SPARE2", "SPARE3")
 #: eo/maps' dataset names -> the task token.
@@ -73,8 +95,15 @@ class MapLayout:
         return self.total - self.base_vocab
 
     def slot(self, arm: str) -> Tuple[int, int]:
+        """(first id, codes) of an arm's slot; an alias takes the first `codes` ids of its parent slot."""
+        if arm in ALIASES:
+            parent, codes = ALIASES[arm][0], ALIASES[arm][1]
+            off, size = self.slot(parent)
+            if codes > size:
+                raise ValueError(f"alias {arm}: {codes} codes do not fit slot {parent}'s {size}")
+            return off, codes
         if arm not in self.slots:
-            raise KeyError(f"unknown map arm {arm!r}: {sorted(self.slots)}")
+            raise KeyError(f"unknown map arm {arm!r}: {sorted(self.slots) + sorted(ALIASES)}")
         return self.slots[arm]
 
     def bo(self, task: str) -> int:
@@ -87,7 +116,7 @@ class MapLayout:
         """Raw codes (0..size-1) -> [BO_MAP_<task>, ids..., EO_MAP]. Casts each code to int first: the token
         arrays are uint16, and an offset past 65,535 would wrap silently."""
         off, size = self.slot(arm)
-        n_tok = ARMS[arm][1]
+        n_tok = spec(arm)[1]
         cs = [int(c) for c in codes]
         if len(cs) != n_tok:
             raise ValueError(f"arm {arm} writes {n_tok} tokens a map, got {len(cs)}")
@@ -179,6 +208,8 @@ assert not layout_problems(LAYOUT), layout_problems(LAYOUT)
 assert MAP_MODALITY_ID not in _tvnc.ID_TO_MODALITY, "the map's modality id is taken"
 assert all(MODALITY_TO_ID[n] == i for n, i in _tvnc.MODALITY_TO_ID.items()), "a base modality id moved"
 assert for_base(87_664).total == 87_664 + N_NEW, "the v1 temporal base (T360-T) takes the same layout"
+assert not set(ALIASES) & set(ARMS), "a follow-up alias shadows a Step 4.0 arm"
+assert all(LAYOUT.slot(_a) == (LAYOUT.slots[ALIASES[_a][0]][0], ALIASES[_a][1]) for _a in ALIASES), "an alias does not fit its slot"
 del _arm, _o, _s
 
 

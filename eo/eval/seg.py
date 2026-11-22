@@ -41,13 +41,15 @@ FLOOR_FACTOR = 2.0         # ... or within twice the measured GEMM-shape round-o
 @torch.no_grad()
 def generate(model, prompts: torch.Tensor, positions: torch.Tensor, slot: Tuple[int, int], n_tokens: int,
              greedy: bool = True, temperature: float = 1.0, seed: int = 0,
-             autocast: Optional[torch.dtype] = None, cache_offset: int = 0) -> Tuple[torch.Tensor, torch.Tensor]:
+             autocast: Optional[torch.dtype] = None, cache_offset: int = 0,
+             step_positions: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """(B, L) prompts ending in BO_MAP_<task>, their (B, L) positions -> (B, n_tokens) raw codes in the slot,
     and the mean unconstrained softmax mass the model put on the slot.
 
     Constrained: each step reads logits[off : off + size] only, so every emitted id is the arm's (Z8). Step t's
     token sits at the prompt's last position + 1 + t (eo/generate/cached.py: positions must be passed under the
-    lattice). `cache_offset` exists for gate Z8's control only: it shifts every cached step's position."""
+    lattice), or at step_positions[t] when given (the dataset's `step_positions`: a shifted or nested map layout,
+    seg_dataset MAP LAYOUTS). `cache_offset` exists for gate Z8's control only: it shifts every cached step's position."""
     off, size = slot
     ctx = torch.autocast("cuda", dtype=autocast) if autocast is not None else _null()
     g = torch.Generator(device=prompts.device).manual_seed(int(seed))
@@ -65,7 +67,8 @@ def generate(model, prompts: torch.Tensor, positions: torch.Tensor, slot: Tuple[
             toks.append(x)
             if t == n_tokens - 1:
                 break
-            pos = positions[:, -1:] + 1 + t + int(cache_offset)
+            pos = (positions[:, -1:] + 1 + t if step_positions is None
+                   else step_positions[t].to(positions.device).view(1, 1).expand(len(prompts), 1)) + int(cache_offset)
             o = model(input_ids=(x + off).unsqueeze(1), past_key_values=cache, position_ids=pos, use_cache=True)
             cache, logits = o.past_key_values, o.logits[:, -1, :].float()
     return torch.stack(toks, 1), mass / n_tokens
@@ -73,7 +76,8 @@ def generate(model, prompts: torch.Tensor, positions: torch.Tensor, slot: Tuple[
 
 @torch.no_grad()
 def cache_check(model, prompts: torch.Tensor, positions: torch.Tensor, slot: Tuple[int, int], n_steps: int,
-                autocast: Optional[torch.dtype] = None, cache_offset: int = 0) -> Dict[str, float]:
+                autocast: Optional[torch.dtype] = None, cache_offset: int = 0,
+                step_positions: Optional[torch.Tensor] = None) -> Dict[str, float]:
     """Max |logit difference| over the slot between a cached decode and full recomputation, after n_steps
     greedy tokens (fed back both ways); that in rounding steps of the compute dtype (eo/eval/ben.py); and the
     tolerance max(CACHE_ULPS steps, FLOOR_FACTOR x the round-off floor measured on the same prompts). The
@@ -82,7 +86,7 @@ def cache_check(model, prompts: torch.Tensor, positions: torch.Tensor, slot: Tup
     from eo.eval.ben import rounding_step
     off, size = slot
     codes, _ = generate(model, prompts, positions, slot, n_steps, greedy=True, autocast=autocast,
-                        cache_offset=cache_offset)
+                        cache_offset=cache_offset, step_positions=step_positions)
     ctx = torch.autocast("cuda", dtype=autocast) if autocast is not None else _null()
     diff, mag = [], []
     with ctx:
@@ -91,7 +95,8 @@ def cache_check(model, prompts: torch.Tensor, positions: torch.Tensor, slot: Tup
         seq, pos = prompts, positions
         for t in range(n_steps):
             ids = (codes[:, t] + off).unsqueeze(1)
-            p = positions[:, -1:] + 1 + t
+            p = (positions[:, -1:] + 1 + t if step_positions is None
+                 else step_positions[t].to(positions.device).view(1, 1).expand(len(prompts), 1))
             o = model(input_ids=ids, past_key_values=cache, position_ids=p + int(cache_offset), use_cache=True)
             cache = o.past_key_values
             seq, pos = torch.cat([seq, ids], 1), torch.cat([pos, p], 1)
@@ -120,7 +125,8 @@ def generate_views(model, ds, views: Sequence[int], variant: str, k: int, greedy
     """Every view's map: (N, K, G) codes and (N, K) slot mass. Prompts of one dataset have one length."""
     from eo.data import map_vocab as MV
     slot = ds.lay.slot(ds.spec.arm)
-    n_tok = MV.ARMS[ds.spec.arm][1]
+    n_tok = MV.spec(ds.spec.arm)[1]
+    sp = ds.step_positions(variant).to(device)          # the layout's code positions (sequential by default)
     codes = np.zeros((len(views), k, n_tok), np.uint16)
     mass = np.zeros((len(views), k), np.float32)
     t0 = time.time()
@@ -131,8 +137,8 @@ def generate_views(model, ds, views: Sequence[int], variant: str, k: int, greedy
         pos = torch.stack([p[1] for p in pr]).to(device)
         for j in range(k):
             c, m = generate(model, ids, pos, slot, n_tok, greedy=greedy, temperature=temperature,
-                            seed=seed * 1_000_003 + j * 7919 + s, autocast=autocast)
-            codes[s:s + len(vs), j] = c.cpu().numpy().astype(np.uint16)
+                            seed=seed * 1_000_003 + j * 7919 + s, autocast=autocast, step_positions=sp)
+            codes[s:s + len(vs), j] = ds.to_raster(c.cpu().numpy()).astype(np.uint16)   # stored in raster order
             mass[s:s + len(vs), j] = m.cpu().numpy()
         if log_every and (s // batch) % log_every == 0:
             print(f"  {s + len(vs)}/{len(views)} views ({time.time() - t0:.0f} s)", flush=True)
@@ -197,7 +203,7 @@ def score(task: str, arm: str, codes: np.ndarray, views, device: str = "cuda", m
     if problems:
         raise RuntimeError("; ".join(problems[:3]))
     t = P.TASKS[task]
-    side = MV.ARMS[arm][2]
+    side = MV.spec(arm)[2]
     if codes.ndim == 2:
         codes = codes[:, None]
     V, K, G = codes.shape

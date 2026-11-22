@@ -1,0 +1,11 @@
+# @package _global_
+#
+# A2 Step 4.0 follow-up 2 (Enric, 2026-11-22; plan Step 4.0 "follow-up 2", pre-registered): Cosmos Tokenize1-DI16x16 fine-tuned on palette-shuffled renders (frozen D:d224_cosmos16_lg, the logit head; f16 at 224 px, 196 tokens on the inputs' 14 x 14 grid, 64,000 codes; an alias of the aligned slot) in the aligned arm's layout and lattice positions.
+# Differs from r0_base_e40 in exactly seg.arm and max_length, the arm's sequence length (gate Z13).
+defaults:
+  - r0_base_e40
+  - _self_
+
+seg:
+  arm: cosmos16_224
+max_length: 396

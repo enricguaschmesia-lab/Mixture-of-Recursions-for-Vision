@@ -40,6 +40,18 @@ must fail it.
   Z12 Overlays: each Step 4.0 overlay differs from r0_base in exactly seg.arm and max_length, max_length is
       the arm's sequence length, the vocab is the registry's, precision bf16
                                      | an overlay with a stray key (learning_rate) is flagged
+  Z13 Step 4.0's follow-ups (2026-11-20, evening): r0_base_e40 = r0_base at 40 epochs; each follow-up overlay differs
+      from it in exactly its seg keys and max_length; the aliases sit inside their parent slots and the recorded layout
+      equals extension.json's; the 99 shift moves the map block and nothing else; the default layout is Step 4.0's;
+      the nested layout puts every code 198 (j + 1) after its input patch's token as that patch's sub-cell j, positions
+      rising, EO_MAP at 989, and its codes go back to raster order exactly
+                                     | a code past the alias refused; patch-major order and positions one off
+                                       flagged; nested on a 14 x 14 map refused
+      Z13cache: Z8's rule at 6 steps under the nested and shifted layouts; at 200 steps (across the first block
+      boundary) the nested drift within 3x the raster layout's own fp32 drift
+                                     | the cache one position off
+      Z13train: 2 steps of the nested layout through pretrain.py (CPU)
+                                     | the nested layout on the aligned arm, refused by pretrain.py's dataset
 """
 from __future__ import annotations
 
@@ -421,12 +433,247 @@ def z12() -> None:
     record("Z12 control: a stray key", diff != intended, f"flagged: differs in {sorted(diff)}")
 
 
+# ---------------------------------------------------------------- Z13 (Step 4.0's follow-ups)
+FOLLOWUPS = {"aligned_shift99": {"seg.arm": "aligned", "seg.map_shift": 99},
+             "c4375_224n": {"seg.arm": "c4375_224", "seg.map_order": "nested"},
+             "c1000_224an": {"seg.arm": "c1000_224a", "seg.map_order": "nested"},
+             "c1000_224ar": {"seg.arm": "c1000_224a", "seg.map_order": "raster"},
+             "b256_64000": {"seg.arm": "b256_64000"},
+             "cosmos16_224": {"seg.arm": "cosmos16_224"}}          # follow-up 2 (2026-11-22): fine-tuned Cosmos
+
+
+def nested_offset_problems(ds: SD.SegDataset, s: dict) -> list:
+    """Every map code of a nested sequence sits 198 (j + 1) positions after its input patch's token, and is that
+    patch's sub-cell j of the 28 x 28 map; positions only increase; EO_MAP right after the last code."""
+    out = []
+    lab = (s["labels"] != -100).nonzero().flatten()
+    codes_idx, eo_idx = lab[:-1], lab[-1]
+    pos = s["position_ids"]
+    s2 = ds.V.get_modality("S2L2A")
+    bo = int((s["input_ids"] == s2.bo_id).nonzero()[0])
+    inner = SD.INPUT_SIDE * SD.INPUT_SIDE
+    for t, i in enumerate(codes_idx.tolist()):
+        j, k = divmod(t, inner)
+        if int(pos[i]) - int(pos[bo + 1 + k]) != SD.BLOCK * (j + 1):
+            out.append(f"code {t}: offset {int(pos[i]) - int(pos[bo + 1 + k])} from input patch {k}, not {SD.BLOCK * (j + 1)}")
+            break
+        r, c = divmod(k, SD.INPUT_SIDE)
+        dy, dx = divmod(j, 2)
+        if int(ds.seq_order[t]) != (2 * r + dy) * SD.NESTED_SIDE + (2 * c + dx):
+            out.append(f"code {t} is not patch {k}'s sub-cell {j}")
+            break
+    p = pos[torch.cat([codes_idx, eo_idx.view(1)])]
+    if not bool((p.diff() > 0).all()):
+        out.append("map positions do not increase")
+    if int(pos[eo_idx]) != int(pos[codes_idx[-1]]) + 1 or int(pos[eo_idx]) > 989:
+        out.append(f"EO_MAP at {int(pos[eo_idx])}")
+    return out
+
+
+def z13() -> None:
+    from omegaconf import OmegaConf
+    from eo.finetune.init import _load_state  # noqa: F401  (import check: the eval path's loader)
+    # (a) the overlays
+    e40 = _flat(OmegaConf.to_container(_compose("eo_seg/r0_base_e40", ["seg.arm=x", "max_length=1"]), resolve=False))
+    b = _flat(OmegaConf.to_container(_compose("eo_seg/r0_base", ["seg.arm=x", "max_length=1"]), resolve=False))
+    d40 = {k for k in set(b) | set(e40) if b.get(k) != e40.get(k)}
+    c40 = _compose("eo_seg/r0_base_e40", ["seg.arm=aligned", "max_length=396"])
+    record("Z13 r0_base_e40 = r0_base at 40 epochs", d40 == {"num_train_steps", "stop_steps", "lr_scheduler_kwargs.num_decay_steps"}
+           and c40.num_train_steps == 1480 and c40.stop_steps == 1480 and c40.lr_scheduler_kwargs.num_decay_steps == 296
+           and c40.lr_scheduler_kwargs.decay_type == "linear" and c40.num_warmup_steps == 37 and c40.save_steps == 37,
+           f"differs from r0_base in {sorted(d40)}; 1,480 steps, decay 296 ({c40.lr_scheduler_kwargs.decay_type}), warmup 37")
+    for name, keys in FOLLOWUPS.items():
+        c = _compose(f"eo_seg/r0_pastis1_{name}")
+        f = _flat(OmegaConf.to_container(c, resolve=False))
+        diff = {k for k in set(e40) | set(f) if e40.get(k) != f.get(k)}
+        want = set(keys) | {"seg.arm", "max_length"}
+        ok = (diff == want and all(f[k] == v for k, v in keys.items())
+              and c.max_length == SD.required_length("pastis", "p1", str(c.seg.arm)) and c.precision == "bf16")
+        record(f"Z13 overlay {name}", ok, f"differs from r0_base_e40 in {sorted(diff)}; max_length {c.max_length}")
+    # (b) aliases: inside their parent slots; the recorded layout unchanged
+    lay = MV.LAYOUT
+    ext = json.loads((MAP_BASE / "extension.json").read_text())["map_vocab"]
+    al = all(lay.slot(a)[0] == lay.slots[MV.ALIASES[a][0]][0] and lay.slot(a)[1] == MV.ALIASES[a][1] for a in MV.ALIASES)
+    record("Z13 aliases", al and ext == json.loads(json.dumps(lay.record())),
+           f"{ {a: lay.slot(a) for a in MV.ALIASES} }; layout record = extension.json's: {ext == json.loads(json.dumps(lay.record()))}")
+    try:
+        lay.map_block("c4375_224", "pastis", [4375] + [0] * 783)
+        record("Z13 control: a code past the alias", False, "accepted")
+    except ValueError as e:
+        record("Z13 control: a code past the alias", True, f"refused: {str(e)[:60]}")
+    # (c) the shift: inputs untouched, the map block 99 on, nothing else
+    d0 = SD.SegDataset(SD.SegSpec("pastis", "aligned", "p1", "val"))
+    d9 = SD.SegDataset(SD.SegSpec("pastis", "aligned", "p1", "val", map_shift=99))
+    v = int(d0.views.view.values[5])
+    s0, s9 = d0.sequence(v), d9.sequence(v)
+    bo = int((s0["input_ids"] == d0.task_token).nonzero()[0])
+    same = all(torch.equal(s0[k], s9[k]) for k in ("input_ids", "labels", "attention_mask", "modality_ids"))
+    sh = (torch.equal(s0["position_ids"][:bo], s9["position_ids"][:bo])
+          and torch.equal(s9["position_ids"][bo:] - s0["position_ids"][bo:], torch.full_like(s0["position_ids"][bo:], 99)))
+    sp = d9.step_positions()
+    record("Z13 shift 99", same and sh and int(d9.prompt(v)[1][-1]) == 297 and sp[0] == 298 and sp[-1] == 493,
+           f"ids/labels/modalities equal, positions equal before BO_MAP and +99 from it; BO_MAP at "
+           f"{int(d9.prompt(v)[1][-1])}, codes at {int(sp[0])}..{int(sp[-1])}")
+    reg = all(torch.equal(d0.sequence(int(w))["position_ids"], torch.arange(d0.max_length))
+              for w in d0.views.view.values[:20])
+    record("Z13 regression: the default layout is Step 4.0's", reg,
+           "PASTIS-1 positions = 0..L-1 on 20 views (the lattice without date blocks), as Step 4.0 trained")
+    # (d) the nested layout
+    for arm in ("c4375_224", "c1000_224a"):
+        dn = SD.SegDataset(SD.SegSpec("pastis", arm, "p1", "train", map_order="nested"), batch=32)
+        dr = SD.SegDataset(SD.SegSpec("pastis", arm, "p1", "train", map_order="raster"), batch=32)
+        probs, rt = [], True
+        for i in range(0, len(dn), max(1, len(dn) // 5))[:5]:
+            w = dn.view_at(i)
+            s = dn.sequence(w)
+            probs += nested_offset_problems(dn, s)
+            lab = (s["labels"] != -100).nonzero().flatten()[:-1]
+            seq_codes = dn.lay.decode_block(arm, s["input_ids"][lab].tolist())
+            rt &= np.array_equal(dn.to_raster(np.asarray(seq_codes)), np.asarray(dn.maps[w]).astype(np.int64))
+            rt &= np.array_equal(dr.to_raster(np.asarray(dr.lay.decode_block(arm, dr.sequence(w)["input_ids"][
+                (dr.sequence(w)["labels"] != -100).nonzero().flatten()[:-1]].tolist()))), np.asarray(dr.maps[w]).astype(np.int64))
+            probs += [p for p in sequence_problems_nested(dn, s, w)]
+        spn = dn.step_positions()
+        record(f"Z13 nested {arm}", not probs and rt and int(spn[0]) == 199 and int(spn[195]) == 394
+               and int(spn[196]) == 397 and int(spn[-1]) == 988,
+               f"5 training views: every code 198 (j + 1) after its patch's token and its sub-cell j, positions rising, "
+               f"EO_MAP at 989; sequence -> raster round trip {rt} (raster layout too); codes at 199..394, 397..592, "
+               f"595..790, 793..988; problems {probs[:2]}")
+    # controls on one view: patch-major order and positions one off are flagged
+    dn = SD.SegDataset(SD.SegSpec("pastis", "c1000_224a", "p1", "val", map_order="nested"))
+    w = int(dn.views.view.values[0])
+    s = dn.sequence(w)
+    pm = SD.SegDataset(SD.SegSpec("pastis", "c1000_224a", "p1", "val", map_order="nested"))
+    pm.seq_order = np.asarray([(2 * (k // 14) + j // 2) * 28 + (2 * (k % 14) + j % 2) for k in range(196) for j in range(4)])
+    record("Z13 control: patch-major order", bool(nested_offset_problems(pm, s)), f"flagged: {nested_offset_problems(pm, s)[:1]}")
+    s_off = dict(s, position_ids=s["position_ids"].clone())
+    lab = (s["labels"] != -100).nonzero().flatten()
+    s_off["position_ids"][lab[:-1]] += 1
+    record("Z13 control: map positions one off", bool(nested_offset_problems(dn, s_off)),
+           f"flagged: {nested_offset_problems(dn, s_off)[:1]}")
+    try:
+        SD.SegDataset(SD.SegSpec("pastis", "aligned", "p1", "val", map_order="nested"))
+        record("Z13 control: nested on a 14 x 14 map", False, "built")
+    except ValueError as e:
+        record("Z13 control: nested on a 14 x 14 map", True, f"refused: {str(e)[:70]}")
+
+
+def sequence_problems_nested(ds: SD.SegDataset, s: dict, view: int) -> list:
+    """Z5's structural checks that do not assume raster order: five keys, length, labels = inputs on the G codes and
+    EO_MAP only, BO_MAP right before, codes in the arm's slot, the map's modality id."""
+    out = []
+    if set(s) != {"input_ids", "attention_mask", "labels", "position_ids", "modality_ids"}:
+        out.append(f"keys {sorted(s)}")
+    L = int(s["attention_mask"].sum())
+    lab = (s["labels"] != -100).nonzero().flatten()
+    if L != ds.required or len(lab) != ds.n_map + 1 or int(lab[-1]) != L - 1:
+        out.append(f"{L} tokens / {len(lab)} labels")
+    if not torch.equal(s["labels"][lab], s["input_ids"][lab]):
+        out.append("labels differ from inputs")
+    if int(s["input_ids"][lab[0] - 1]) != ds.task_token or int(s["input_ids"][lab[-1]]) != ds.lay.eo_map:
+        out.append("BO_MAP / EO_MAP")
+    body = s["input_ids"][lab[:-1]]
+    if not bool(((body >= ds.map_off) & (body < ds.map_off + ds.map_size)).all()):
+        out.append("a code outside the arm's slot")
+    if not bool((s["modality_ids"][lab[:-1]] == MV.MAP_MODALITY_ID).all()):
+        out.append("map modality id")
+    return out
+
+
+def z13_cache() -> None:
+    """Z8 under the follow-up layouts, on the map base (fp32): the cache follows the layout's step positions."""
+    from eo.eval import seg as SEG
+    from eo.finetune.init import build_finetuned
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    where = torch.cuda.get_device_name(0) if dev == "cuda" else "cpu"
+    for name in ("c4375_224n", "aligned_shift99"):
+        model, cfg = build_finetuned(f"eo_seg/r0_pastis1_{name}", None, device=dev, overrides=[f"finetune.init_from={MAP_BASE}"])
+        model.float().eval()
+        spec = SD.spec_from_cfg(cfg, "eval")
+        ds = SD.SegDataset(spec)
+        pr = [ds.prompt(int(v)) for v in ds.views.view.values[:2]]
+        ids = torch.stack([p[0] for p in pr]).to(dev)
+        pos = torch.stack([p[1] for p in pr]).to(dev)
+        sp = ds.step_positions().to(dev)
+        slot = ds.lay.slot(spec.arm)
+        # Z8's rule (max(4 steps, 2 x floor)) is calibrated on 6-step decodes; it holds here at 6 steps
+        r = SEG.cache_check(model, ids, pos, slot, 6, step_positions=sp)
+        c = SEG.cache_check(model, ids, pos, slot, 6, cache_offset=1, step_positions=sp)
+        record(f"Z13 cache {name}", r["within"] and r["codes_in_slot"],
+               f"{where} fp32, 6 steps: max |dlogit| {r['max_abs_logit_diff']:.2e} (tol {r['tol']:.2e}, floor "
+               f"{r['floor']:.2e}); codes in slot {r['codes_in_slot']}")
+        record(f"Z13 control: cache positions one off ({name})", not c["within"],
+               f"max |dlogit| {c['max_abs_logit_diff']:.2e} against tol {c['tol']:.2e}")
+        if spec.map_order == "nested":
+            # past the first block boundary (code 196) the cached decode drifts by fp32 round-off that grows with length
+            # in EVERY layout (2026-11-20: 2.2e-3 at 100 steps in both nested and raster, 9.0e-3 / 5.1e-3 at 200). So at
+            # 200 steps the nested drift is read against the raster layout's own, same model and prompts, and against
+            # the position control, which a wrong schedule would look like.
+            dr = SD.SegDataset(SD.SegSpec("pastis", spec.arm, "p1", "val", map_order="raster"))
+            prr = [dr.prompt(int(v)) for v in dr.views.view.values[:2]]
+            rr = SEG.cache_check(model, torch.stack([p[0] for p in prr]).to(dev), torch.stack([p[1] for p in prr]).to(dev),
+                                 slot, 200, step_positions=dr.step_positions().to(dev))
+            rn = SEG.cache_check(model, ids, pos, slot, 200, step_positions=sp)
+            cn = SEG.cache_check(model, ids, pos, slot, 200, cache_offset=1, step_positions=sp)
+            record(f"Z13 cache {name}, 200 steps (across a block boundary)",
+                   rn["max_abs_logit_diff"] <= 3 * rr["max_abs_logit_diff"] and rn["codes_in_slot"]
+                   and cn["max_abs_logit_diff"] > 100 * rn["max_abs_logit_diff"],
+                   f"nested drift {rn['max_abs_logit_diff']:.2e} against the raster layout's {rr['max_abs_logit_diff']:.2e} "
+                   f"(<= 3x) and the one-off control's {cn['max_abs_logit_diff']:.2e} (> 100x)")
+        del model
+
+
+def z13_train() -> None:
+    """Two steps of the nested layout through pretrain.py (CPU, fp32): the run builds the nested dataset, trains with a
+    finite loss and saves. Control: the same run with the nested layout on a 14 x 14 arm (aligned) is refused when the
+    dataset is built, so the option really reaches the data. (Not a row-movement test: every map row of the tied table
+    gets a gradient through the softmax, and Adam's first updates are about lr x sign(grad) whatever its size.)"""
+    import re
+    import subprocess
+    from util.env import load_dotenv
+    load_dotenv()
+    save = os.environ.get("MOR_SAVE_DIR", "")
+    if not save.startswith("/data/"):
+        record("Z13 train", False, f"MOR_SAVE_DIR {save!r} is not under /data")
+        return
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false", CUDA_VISIBLE_DEVICES="")
+
+    def run(tag, extra):
+        rel = f"gate_seg/{time.strftime('%Y%m%d_%H%M%S')}_z13{tag}"
+        out = Path(save) / "pretrain" / rel
+        cmd = [sys.executable, "pretrain.py", "--config-path", "conf/pretrain_vision", "--config-name",
+               "eo_seg/r0_pastis1_c4375_224n", f"name={out.name}", f"output_dir={rel}", f"wandb_run_name={out.name}",
+               "wandb=false", f"finetune.init_from={MAP_BASE}", "num_train_steps=2", "stop_steps=2", "num_warmup_steps=0",
+               "lr_scheduler_kwargs.num_decay_steps=0", "save_steps=2", "eval_on_start=false", "eval_steps=1000",
+               "total_batch_size=2", "per_device_train_batch_size=2", "logging_steps=1", "dataloader_num_workers=0",
+               "precision=fp32", f"hydra.run.dir={out}/hydra"] + extra
+        r = subprocess.run(cmd, cwd=str(REPO), env=env, capture_output=True, text=True, timeout=3600)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "pretrain.log").write_text(r.stdout + r.stderr)
+        return r, out
+
+    r, out = run("", [])
+    log = r.stdout + r.stderr
+    losses = [float(x) for x in re.findall(r"'loss': ([0-9.eE+-]+|nan|inf)", log) if x not in ("nan", "inf")]
+    nonfinite = bool(re.search(r"'loss': (nan|inf)", log))
+    ok = r.returncode == 0 and (out / "checkpoint-2").is_dir() and "map_order nested" in log and len(losses) == 2 \
+        and not nonfinite
+    record("Z13 train (pretrain.py, nested)", ok,
+           f"exit {r.returncode}; checkpoint-2 {(out / 'checkpoint-2').is_dir()}; the dataset says map_order nested "
+           f"{'map_order nested' in log}; train losses {losses}; log {out / 'pretrain.log'}")
+    c, cout = run("ctl", ["seg.arm=aligned", "max_length=396"])
+    clog = c.stdout + c.stderr
+    record("Z13 control: nested on the aligned arm through pretrain.py", c.returncode != 0 and "nested layout" in clog,
+           f"exit {c.returncode}; refused by the dataset: {'nested layout' in clog}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default=None)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
-    checks = {"Z4": z4, "Z5": z5, "Z8": z8, "Z9": z9, "Z10": z10, "Z12": z12}
+    checks = {"Z4": z4, "Z5": z5, "Z8": z8, "Z9": z9, "Z10": z10, "Z12": z12, "Z13": z13, "Z13cache": z13_cache,
+              "Z13train": z13_train}
     t0 = time.time()
     for k, fn in checks.items():
         if a.only and k not in a.only.split(","):

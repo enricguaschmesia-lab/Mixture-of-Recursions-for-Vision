@@ -577,8 +577,9 @@ def z7() -> None:
         record(f"Z7 control: {task} rows one off", shifted < 0.5, f"agreement {shifted:.4f}")
 
 
-def z7_maps(expect_gpu: str | None) -> None:
-    """Each arm's stored validation map tokens = the harness's own render-and-encode path."""
+def z7_maps(expect_gpu: str | None, arms=None, tag: str = "") -> None:
+    """Each arm's stored validation map tokens = the harness's own render-and-encode path. `arms`: Step 4.0's three
+    by default; Z7followup passes eo/maps/frozen.FOLLOWUP (PASTIS only: their CloudSen12 maps are not tokenized)."""
     if not torch.cuda.is_available():
         skip("Z7 maps", "no GPU visible")
         return
@@ -590,7 +591,7 @@ def z7_maps(expect_gpu: str | None) -> None:
     for task, ds in (("pastis", "pastis"), ("cloudsen12", "cloudsen12")):
         v = Vw.load(task)["views"]
         rows = v[v.split == "val"].view.values
-        for arm in frozen.ARMS:
+        for arm in (arms or frozen.ARMS):
             d = Vw.TOK_ROOT[task] / f"MAP_{arm}"
             if not (d / "metadata.json").exists():
                 skip(f"Z7 maps {task}/{arm}", "not tokenized yet")
@@ -780,6 +781,7 @@ def main():
     if not a.skip_gpu:
         checks["Z2"] = lambda: z2(a.expect_gpu)
         checks["Z7maps"] = lambda: z7_maps(a.expect_gpu)
+        checks["Z7followup"] = lambda: z7_maps(a.expect_gpu, __import__("eo.maps.frozen", fromlist=["x"]).FOLLOWUP)
         checks["Z5dihedral"] = lambda: z5_dihedral(a.expect_gpu)
     t0 = time.time()
     for k, fn in checks.items():

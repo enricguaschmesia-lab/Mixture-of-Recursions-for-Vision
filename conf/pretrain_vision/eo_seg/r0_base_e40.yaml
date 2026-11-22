@@ -1,0 +1,15 @@
+# @package _global_
+#
+# A2 Step 4.0's 40-epoch budget as a base: r0_base with the schedule the extension test sent every Step 4.0 arm to
+# (2026-11-20; the pick read these runs). Differs from r0_base in exactly num_train_steps, stop_steps and
+# lr_scheduler_kwargs.num_decay_steps: 40 epochs x 37 steps = 1,480, warmup still one epoch (37), linear decay over the
+# last 20% (296), eval and save every 37. Step 4.0's follow-ups (Enric, 2026-11-20, evening) start from it, so they
+# compare at equal budget with r0p1{aligned,short,long}_x2_20261120_194832 (gate Z13).
+defaults:
+  - r0_base
+  - _self_
+
+num_train_steps: 1480            # 40 epochs x 37 steps
+stop_steps: 1480
+lr_scheduler_kwargs:
+  num_decay_steps: 296           # the last 20%, linear

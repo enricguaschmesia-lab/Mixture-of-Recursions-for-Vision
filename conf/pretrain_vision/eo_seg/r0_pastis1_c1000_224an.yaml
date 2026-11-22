@@ -1,0 +1,12 @@
+# @package _global_
+#
+# A2 Step 4.0 follow-up (Enric, 2026-11-20, evening; plan Step 4.0 "follow-ups", pre-registered): test 2, geometry. C:c1000_224a (f8 at 224 px, 784 tokens, 1,000 codes; an alias of the long slot) in the nested layout (four lattice blocks).
+# Differs from r0_base_e40 in exactly the seg keys below and max_length, the arm's sequence length (gate Z13).
+defaults:
+  - r0_base_e40
+  - _self_
+
+seg:
+  arm: c1000_224a
+  map_order: nested
+max_length: 984

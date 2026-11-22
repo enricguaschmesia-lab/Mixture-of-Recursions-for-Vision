@@ -60,7 +60,7 @@ def encode_maps(tok, task: str, labels: np.ndarray, device: str = "cuda") -> np.
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", choices=["pastis", "cloudsen12"], required=True)
-    ap.add_argument("--arm", choices=list(frozen.ARMS), required=True)
+    ap.add_argument("--arm", choices=list(frozen.ALL), required=True)
     ap.add_argument("--splits", default="train,val,test")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--expect-gpu", default=None)

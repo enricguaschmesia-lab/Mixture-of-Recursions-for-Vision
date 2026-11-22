@@ -15,10 +15,13 @@
 # down plus the map rows (a separate Parameter; every base row frozen, eo/finetune/lora.py), LR 1e-3, no
 # weight decay. bf16: SmolLM's body nears fp16's range (CLAUDE.md).
 #
-# Budget (PROPOSED for Step 4.0, not ratified): 20 epochs of PASTIS's 1,455 training patches, one dihedral
-# view drawn per patch and epoch (eo/data/seg_dataset.py), at batch 32: 1,440 an epoch (cut to whole steps),
-# 45 steps, 900 in all. Teacher-forced map CE on fold 4 every epoch; a save every 2 epochs. Generated mIoU on
-# fold 4 is read from the saves afterwards (eo/scripts/eval_seg.py); fold 5 (test) is never read here.
+# Budget (Step 4.0, Enric's go of 2026-11-20; worklog §5): 20 epochs of GEO-Bench-2's PASTIS training set as
+# GeoBenchV2 0.9 pins it, 1,200 patches (seg.in_pinned: true; item 82, settled 2026-11-20 in the A2 plan's
+# Step 4.0), one dihedral view drawn per patch and epoch (eo/data/seg_dataset.py), at batch 32: 1,184 an epoch
+# (cut to whole steps), 37 steps, 740 in all; warmup one epoch, linear decay over the last 20% (148). Teacher-
+# forced map CE on fold 4 at step 0 and after every epoch, and a save every epoch: the protocol picks the save
+# with the lowest CE. Generated mIoU on fold 4 is read from the saves afterwards (eo/scripts/eval_seg.py);
+# fold 5 (test) is never read here. The protocol's extension test may rerun all arms at twice the epochs.
 defaults:
   - /eo_terramesh/arm_b10ctrxnc_vanilla
   - _self_
@@ -30,7 +33,7 @@ seg:
   arm: ???
   train_split: train
   eval_split: val
-  in_pinned: null               # null = 1,455 patches (A2's protocol); true = GeoBenchV2 0.9's pinned 1,200
+  in_pinned: true               # GeoBenchV2 0.9's pinned 1,200 (item 82); null = the Hub head's 1,455
   root: /data/enric/data/geobench2
 multimodal:
   split: val                    # TerraMesh's train root is not read (seg.root is the data)
@@ -52,14 +55,14 @@ weight_decay: 0.0
 total_batch_size: 32
 per_device_train_batch_size: 8
 per_device_eval_batch_size: 8
-num_train_steps: 900
-stop_steps: 900
-num_warmup_steps: 45            # one epoch
+num_train_steps: 740            # 20 epochs x 37 steps
+stop_steps: 740
+num_warmup_steps: 37            # one epoch
 lr_scheduler_type: warmup_stable_decay
 lr_scheduler_kwargs:
-  num_decay_steps: 180          # the last 20%, linear
-save_steps: 90
-eval_steps: 45
+  num_decay_steps: 148          # the last 20%, linear
+save_steps: 37                  # every epoch
+eval_steps: 37
 eval_on_start: true
 save_total_limit: null
 fixed_eval_steps: null
