@@ -1,0 +1,11 @@
+# @package _global_
+#
+# A2 Step 4.1, regime full: r0_s41 with every weight trained (195,782,400 parameters), the map rows at the same LR
+# (no separate group), no weight decay. LR from the command line: 3e-5, 1e-4 or 3e-4 (plan Step 4.1, item 8).
+# Gate Z15: differs from r0_s41 in exactly finetune.regime.
+defaults:
+  - r0_s41
+  - _self_
+
+finetune:
+  regime: full

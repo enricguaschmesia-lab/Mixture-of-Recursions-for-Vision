@@ -1,0 +1,8 @@
+# @package _global_
+#
+# A2 Step 4.1, regime LoRA r16 (alpha 32): r0_s41 unchanged, the regime r0_base already sets (Step 4.0's, BEN's
+# best). Adapters on q/k/v/o/gate/up/down plus the map rows train (51,014,208 parameters); every base row is frozen.
+# LR from the command line: 3e-4, 1e-3 or 3e-3 (plan Step 4.1, item 8). Gate Z15: equal to r0_s41.
+defaults:
+  - r0_s41
+  - _self_

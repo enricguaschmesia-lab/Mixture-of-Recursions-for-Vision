@@ -283,6 +283,12 @@ def main(cfg: DictConfig):
         # Extra held-out evals at fixed steps, for learning curves dense where they move (eo/train/fixed_eval.py).
         from eo.train.fixed_eval import FixedEvalCallback
         callbacks.append(FixedEvalCallback(cfg.fixed_eval_steps))
+    if (cfg.get("plateau_stop") or {}).get("enable"):
+        # A2 Step 4.1: the held-out CE's plateau starts the decay, then the run stops (eo/train/plateau_stop.py).
+        if eval_dataset is None:
+            raise ValueError("plateau_stop.enable needs an eval set")
+        from eo.train.plateau_stop import PlateauStopCallback
+        callbacks.append(PlateauStopCallback(cfg))
     if hasattr(train_dataset, "epoch_callback"):
         # The temporal stage takes its epoch from global_step // steps_per_epoch: SetEpochCallback
         # rounds state.epoch, which names the next epoch on a resume past mid-epoch (A1 finding 18).

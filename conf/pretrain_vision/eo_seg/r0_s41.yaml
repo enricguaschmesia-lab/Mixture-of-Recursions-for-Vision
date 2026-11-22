@@ -1,0 +1,27 @@
+# @package _global_
+#
+# A2 Step 4.1's schedule (docs/plans/a2_segmentation.md, Step 4.1, items 1-2; pre-registered 2026-11-22): Step 4.0's
+# picked arm (r0_pastis1_aligned: the frozen aligned tokenizer, 196 map tokens on the inputs' lattice) for UP TO 50
+# epochs, stopped on fold-4 map CE. Differs from r0_pastis1_aligned in exactly num_train_steps, stop_steps,
+# lr_scheduler_kwargs.num_decay_steps and the plateau_stop block (gate Z15, eo/scripts/verify_seg_recipe.py):
+#   * 50 epochs x 37 steps = 1,850; warmup one epoch (37); the scheduled linear decay over the last 20% (370);
+#   * plateau_stop (eo/train/plateau_stop.py): after each epoch e >= 4, if the lowest fold-4 map CE over epochs 1..e
+#     is not below 0.999 x the lowest over 1..e-3, the LR decays linearly to 0 over max(2, ceil(e/4)) epochs and the
+#     run stops there; if it has not fired by epoch 39 the scheduled decay runs over epochs 41-50;
+#   * eval and a save every epoch (r0_base), so the protocol's checkpoint, the lowest-CE save, always exists.
+# The regime overlays r0_s41_{lora16,lora64,full} set the regime; the LR and the seed are command-line overrides
+# (learning_rate=..., seed=...), recorded in each run's finetune_config.yaml and its run id.
+defaults:
+  - r0_pastis1_aligned
+  - _self_
+
+num_train_steps: 1850            # 50 epochs x 37 steps
+stop_steps: 1850
+lr_scheduler_kwargs:
+  num_decay_steps: 370           # the last 20%, linear
+plateau_stop:
+  enable: true
+  patience: 3                    # epochs
+  rel: 0.001                     # less than 0.1 % gained in three epochs
+  decay_frac: 0.25               # the decay is the run's last 20 %
+  min_decay: 2                   # epochs
