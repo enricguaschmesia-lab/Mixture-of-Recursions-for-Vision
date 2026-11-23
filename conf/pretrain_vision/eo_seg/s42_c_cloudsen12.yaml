@@ -1,0 +1,18 @@
+# @package _global_
+#
+# A2 Step 4.2, Route C on CloudSen12 (plan Step 4.2, item 3): s42_c_pastis's head on Step 5.2's CloudSen12 recipe, each
+# 224-px crop's pixel CE at native resolution (nothing ignored), the head's LR the one chosen on PASTIS fold 4. Differs from
+# s52_cloudsen12 in exactly seg.route and the seg_head block (gate Z22).
+defaults:
+  - s52_cloudsen12
+  - _self_
+
+seg:
+  route: head
+seg_head:
+  enable: true
+  lr: ???                        # the head's LR, on the command line: PASTIS's choice
+  layers: [7, 14, 21, 29]
+  copy_start: 199
+  channels: [512, 256, 128, 64]
+  dropout: 0.1

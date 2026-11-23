@@ -221,7 +221,10 @@ class SegDataset(Dataset):
             raise RuntimeError(f"{idir}/metadata.json does not match inputs.parquet")
         self.maps = np.load(mdir / "tokens.npy", mmap_mode="r")
         self.s2 = np.load(idir / "tokens.npy", mmap_mode="r")
-        if not (np.load(mdir / "present.npy").all() and np.load(idir / "present.npy").all()):
+        # The map artifact must hold every view of the split read (checked below, once the split is selected): Route B's
+        # cells (A2 Step 4.2) hold train and val only, since the test split's labels are never read.
+        map_present = np.load(mdir / "present.npy")
+        if not np.load(idir / "present.npy").all():
             raise RuntimeError(f"{tok}: an artifact is incomplete")
         self.map_meta, self.input_meta = meta, imeta
 
@@ -245,6 +248,8 @@ class SegDataset(Dataset):
         if sp.in_pinned is not None:
             sel &= views.in_pinned == bool(sp.in_pinned)
         self.views = views[sel].reset_index(drop=True)
+        if not map_present[self.views.view.values].all():
+            raise RuntimeError(f"{mdir}: the artifact lacks views of split {sp.split}")
         # samples, and each sample's views (train draws among them)
         self.samples = np.unique(self.views.sample_idx.values)
         self._sample_views = {int(s): g.view.to_numpy(np.int64)
@@ -452,7 +457,10 @@ def build(cfg, want: str = "train") -> Optional[SegDataset]:
     if spec is None:
         return None
     batch = int(cfg.get("total_batch_size") or 1) if want == "train" else 1
-    ds = SegDataset(spec, max_length=int(cfg.max_length), seed=int(cfg.get("seed", 42)), batch=batch)
+    cls = SegDataset
+    if str((cfg.get("seg") or {}).get("route", "map") or "map") == "head":
+        from eo.data.seg_head_dataset import SegHeadDataset as cls      # A2 Step 4.2, Route C: the S2 block twice
+    ds = cls(spec, max_length=int(cfg.max_length), seed=int(cfg.get("seed", 42)), batch=batch)
     print(f"seg {want}: {spec.task} {spec.frames} arm {spec.arm} split {spec.split} in_pinned {spec.in_pinned} "
           f"map_order {spec.map_order} map_shift {spec.map_shift}: "
           f"{len(ds.samples)} samples, {len(ds)} examples an epoch, {ds.required} tokens (max_length {ds.max_length})")

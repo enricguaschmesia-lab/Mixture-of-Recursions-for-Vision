@@ -165,6 +165,13 @@ def main(cfg: DictConfig):
         from eo.finetune.init import init_from
         finetune_report = init_from(model, cfg)
         print(f"finetune: {finetune_report}")
+    if (cfg.get("seg_head") or {}).get("enable"):
+        # A2 Step 4.2, Route C: a U-Net head on the hidden states of a doubled S2 block (eo/finetune/seg_head.py).
+        if finetune_report is None:
+            raise ValueError("seg_head needs a fine-tune init (finetune.init_from with regime lora)")
+        from eo.finetune.seg_head import wrap_model
+        model, seg_head_report = wrap_model(model, cfg, finetune_report)
+        print(f"seg_head: {seg_head_report}")
 
     # CLEVR-initialised vanilla (2026-10-27): the CLEVR vanilla model's body under a fresh EO
     # embedding table, converted and verified offline (eo/scripts/convert_clevr_init.py).
@@ -325,9 +332,12 @@ def main(cfg: DictConfig):
         # The two-arm comparison is read off exactly the quantity arm B would
         # not have produced. EOTrainer adds the logging and nothing else --
         # the loss itself is still the stock Trainer's (Phase 3 Step 5, D3.6).
-        trainer = EOTrainer(model=model, args=train_args, train_dataset=train_dataset,
-                            eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,
-                            data_collator=data_collator,)
+        trainer_cls = EOTrainer
+        if (cfg.get("seg_head") or {}).get("enable"):
+            from eo.finetune.seg_head import SegHeadTrainer as trainer_cls    # A2 Route C: the head's own LR group
+        trainer = trainer_cls(model=model, args=train_args, train_dataset=train_dataset,
+                              eval_dataset=eval_dataset, callbacks=callbacks, cfg=cfg,
+                              data_collator=data_collator,)
     else:
         # CLEVR and anything else: untouched.
         trainer = Trainer(model=model, args=train_args, train_dataset=train_dataset,

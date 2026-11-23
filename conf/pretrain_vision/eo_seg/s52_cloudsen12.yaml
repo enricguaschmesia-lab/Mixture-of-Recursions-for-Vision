@@ -1,0 +1,26 @@
+# @package _global_
+# A2 Step 5.2 (2026-11-22; docs/plans/a2_segmentation.md, Step 5.2): Step 4.1's recipe on CloudSen12. The recipe is
+# r0_s41_lora16 with learning_rate=3e-3 and the seed on the command line, as on PASTIS-1; only the task and the epoch
+# change. The base comes from train_eo.sh --init-from: the map-extended base for R0, R1's base for R1.
+#
+# CloudSen12 (GEO-Bench-2, L2A as Step 2 tokenized it): 4,000 training tiles; val's 535 tiles read as GEO-Bench-2's
+# 3 x 3 overlapping 224-px crops (eo/maps/tiling), 4,815 views; test is never read (the dataset refuses it). A training
+# example is one of a tile's 72 views (9 fixed random 224-px crops from eo/geobench/views.py x 8 dihedral variants),
+# drawn per (seed, epoch, tile) (eo/data/seg_dataset.py), so an epoch is one draw per tile: 4,000 examples, 125 steps
+# at batch 32. The schedule is Step 4.1's in these epochs:
+# up to 50 epochs (6,250 steps), warmup one epoch, the last 20 % decaying, eval and save every epoch, and the plateau
+# stop (r0_s41) on the val crops' map CE.
+defaults:
+  - r0_s41_lora16
+  - _self_
+seg:
+  task: cloudsen12
+  frames: single
+  in_pinned: null                # in_pinned selects among PASTIS's training patches only
+num_train_steps: 6250            # 50 epochs x 125 steps
+stop_steps: 6250
+num_warmup_steps: 125            # one epoch
+lr_scheduler_kwargs:
+  num_decay_steps: 1250          # the last 20 %, linear
+save_steps: 125                  # every epoch
+eval_steps: 125

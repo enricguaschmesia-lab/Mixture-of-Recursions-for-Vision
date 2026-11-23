@@ -1,0 +1,14 @@
+# @package _global_
+#
+# A2 Step 4.2, Route B on CloudSen12 (plan Step 4.2, item 2): s42_b_pastis's route on Step 5.2's CloudSen12 recipe. The
+# codes are CloudSen12's 4 classes through the alias cells_cloudsen12 (the short slot's first 4 ids, untrained in the map
+# base), the cells of each 224-px crop at 8 native px (MAP_cells_cloudsen12). Differs from s52_cloudsen12 in exactly
+# seg.arm, seg.map_order and max_length (gate Z22).
+defaults:
+  - s52_cloudsen12
+  - _self_
+
+seg:
+  arm: cells_cloudsen12
+  map_order: nested
+max_length: 984

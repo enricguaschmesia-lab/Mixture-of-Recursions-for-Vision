@@ -50,10 +50,17 @@ ARMS: Dict[str, Tuple[int, int, int]] = {"aligned": (64_000, 196, 14), "short": 
 #: ⚠ Two arms that alias one slot must never train in one model.
 #: cosmos16_224: Step 4.0's follow-up 2 (Enric, 2026-11-22), Cosmos Tokenize1-DI16x16 fine-tuned on renders
 #: (frozen D:d224_cosmos16_lg), the aligned arm's geometry and codebook size.
+#: cells_<task>: A2 Step 4.2's Route B (plan Step 4.2, item 2), ONE CLASS TOKEN PER CELL of a 28 x 28 grid at 8 px on the
+#: 224 canvas, no tokenizer: code c is the task's label c (PASTIS 0-18 and VOID 19; CloudSen12's 4 classes), the cells
+#: computed by eo/maps/cells.py. Each task takes its own slot, so the two tasks' ids never coincide.
 ALIASES: Dict[str, Tuple[str, int, int, int]] = {"b256_64000": ("aligned", 64_000, 256, 16),
                                                  "c4375_224": ("short", 4_375, 784, 28),
                                                  "c1000_224a": ("long", 1_000, 784, 28),
-                                                 "cosmos16_224": ("aligned", 64_000, 196, 14)}
+                                                 "cosmos16_224": ("aligned", 64_000, 196, 14),
+                                                 "cells_pastis": ("long", 20, 784, 28),
+                                                 "cells_cloudsen12": ("short", 4, 784, 28)}
+#: Route B's aliases, by task (eo/maps/cells.py and eo/eval/seg_routes.py read them).
+CELL_ARMS: Dict[str, str] = {"pastis": "cells_pastis", "cloudsen12": "cells_cloudsen12"}
 
 
 def spec(arm: str) -> Tuple[int, int, int]:

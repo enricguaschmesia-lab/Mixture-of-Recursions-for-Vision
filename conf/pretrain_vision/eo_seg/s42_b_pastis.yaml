@@ -1,0 +1,16 @@
+# @package _global_
+#
+# A2 Step 4.2, Route B on PASTIS-1 (docs/plans/a2_segmentation.md, Step 4.2, item 2; pre-registered 2026-11-23): one class
+# token per cell of a 28 x 28 grid at 8 px on the 224 canvas, written by the decoder in the nested layout (four 196-token
+# lattice blocks, Step 4.0's follow-ups), 984 tokens. The codes are PASTIS's labels 0-18 and VOID (19) through the alias
+# cells_pastis (the long slot's first 20 ids, untrained in the map base; eo/data/map_vocab.py), the cells from
+# eo/maps/cells.py (MAP_cells_pastis). Route A's recipe unchanged: r0_s41_lora16 with learning_rate=3e-3 and the seed on
+# the command line. Differs from r0_s41_lora16 in exactly seg.arm, seg.map_order and max_length (gate Z22).
+defaults:
+  - r0_s41_lora16
+  - _self_
+
+seg:
+  arm: cells_pastis
+  map_order: nested
+max_length: 984

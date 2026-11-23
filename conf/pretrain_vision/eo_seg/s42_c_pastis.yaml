@@ -1,0 +1,23 @@
+# @package _global_
+#
+# A2 Step 4.2, Route C on PASTIS-1 (docs/plans/a2_segmentation.md, Step 4.2, item 3; pre-registered 2026-11-23): a U-Net
+# head on the decoder's hidden states, the protocol-matched reference (eo/finetune/seg_head.py). The input is the view's S2
+# block twice (396 tokens; eo/data/seg_head_dataset.py, seg.route head), the head reads the second copy's 196 image tokens
+# at hidden_states[7, 14, 21, 29], and its loss is the pixel CE at native 128 px with void ignored. The recipe's LoRA r16
+# adapters train at learning_rate (3e-3 on the command line) and the head at seg_head.lr (also on the command line: 3e-4,
+# 1e-3 or 3e-3, chosen on fold 4 at seed 42); the map rows are frozen. The plateau stop reads the val pixel CE. seg.arm stays
+# aligned: its artifact indexes the views, and no map token is read. Differs from r0_s41_lora16 in exactly seg.route and the
+# seg_head block (gate Z22).
+defaults:
+  - r0_s41_lora16
+  - _self_
+
+seg:
+  route: head
+seg_head:
+  enable: true
+  lr: ???                        # the head's LR, on the command line (seg_head.lr=...)
+  layers: [7, 14, 21, 29]        # HF hidden_states indices: layers 7, 14, 21 and 29 after the final norm
+  copy_start: 199                # the second copy's first image token
+  channels: [512, 256, 128, 64]  # terratorch's UNetDecoder, as TerraMind's configs
+  dropout: 0.1                   # TerraMind's head_dropout
