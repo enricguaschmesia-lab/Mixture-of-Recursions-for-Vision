@@ -182,6 +182,8 @@ class PerModalityLossMixin:
         logs its own per-modality CE. The outer call must add nothing: its accumulators hold the
         LAST set's values, which it would log again as plain `eval_loss_<modality>` (A1 finding 12).
         """
+        if getattr(self, "_dt", None) is not None:     # B1 Step 8: each evaluation draws the table's depths from batch 0
+            self._dt["eval_idx"] = -1
         named = kwargs.get("eval_dataset", args[0] if args else None)
         if isinstance(getattr(self, "eval_dataset", None) if named is None else named, dict):
             return super().evaluate(*args, **kwargs)
@@ -262,6 +264,7 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
         self.cfg = cfg
         self._eo_depth_setup()
         self._ct_setup()
+        self._dt_setup()
 
     # ---- EO: per-update depth shares by modality (wave 1, 2026-11-11; Paper B plan, B1) ----------------------
     # B0 found that a learned router's allocation at one checkpoint is one draw (a tied modality swings whole
@@ -362,6 +365,51 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                 ct["last"] = None
             f.write(_json.dumps(row) + "\n")
 
+    # ---- EO: training under a fixed depth table (B1 Step 8, 2026-11-18; eo/train/depth_table.py) ---------------------
+    # mor.token.depth_table: the MoR layer takes each position's depth from a per-modality table in place of the random
+    # router's draw. On EVERY forward, training and evaluation, it needs the slot of the token each position predicts
+    # and the draw's seed; _dt_forward hands them over and clears them after. Training forwards draw from (seed, "train",
+    # global step, micro-batch, rank), so a resume repeats them; evaluation forwards from (seed, "eval", batch index,
+    # rank), the index restarting at every evaluate(), so every evaluation draws the same depths. Gate W37.
+    def _dt_setup(self):
+        from eo.train import depth_table as DT
+        self._dt = None
+        table = DT.read_block(self.cfg)
+        if table is None:
+            return
+        problems = DT.config_problems(self.cfg, n_gpus=self.args.world_size)
+        layers = [m for m in self.model.modules() if getattr(m, "eo_table", None) is not None]
+        if len(layers) != 1:
+            problems.append(f"one MoR layer holding the table (found {len(layers)})")
+        if problems:
+            raise ValueError("depth table: " + "; ".join(problems))
+        self._dt = {"layer": layers[0], "table": table, "seed": table["seed"], "rank": int(self.args.process_index),
+                    "step": None, "micro": -1, "eval_idx": -1}
+
+    def _dt_forward(self, model, inputs, modality_ids, train_forward: bool):
+        """model(**inputs), with the depth table's per-forward key and seed handed to the MoR layer when there is one."""
+        dt = getattr(self, "_dt", None)
+        if dt is None:
+            return model(**inputs)
+        from eo.train import depth_table as DT
+        if modality_ids is None:
+            raise RuntimeError("depth table: a forward without modality_ids has no slot key")
+        if train_forward:
+            gs = int(self.state.global_step)
+            if dt["step"] != gs:
+                dt["step"], dt["micro"] = gs, -1
+            dt["micro"] += 1
+            seed = DT.draw_seed(dt["seed"], "train", gs, dt["micro"], dt["rank"])
+        else:
+            dt["eval_idx"] += 1
+            seed = DT.draw_seed(dt["seed"], "eval", dt["eval_idx"], dt["rank"])
+        layer = dt["layer"]
+        layer.eo_table_slot, layer.eo_table_seed = DT.slot_key(modality_ids), seed
+        try:
+            return model(**inputs)
+        finally:
+            layer.eo_table_slot = layer.eo_table_seed = None
+
     # ---- EO: the compute target (Paper B intervention 1; B1, 2026-11-15) ----------------------------------------------
     # mor.token.balancing "compute" (eo/train/compute_target.py): no balancing loss; each micro-batch's loss gains
     # price * (its body positions' soft mean depth) / accumulation steps, so an update trains under price * m; after the
@@ -456,6 +504,10 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
         if ct is not None and self.args.should_save:
             from eo.train import compute_target as CT
             CT.write_state(output_dir, ct["block"], ct["state"], self.state.global_step, origin="MoRTrainer save")
+        dt = getattr(self, "_dt", None)
+        if dt is not None and self.args.should_save:    # B1 Step 8: the table this checkpoint was trained under
+            from eo.train import depth_table as DT
+            DT.write_record(output_dir, dt["table"], self.state.global_step, origin="MoRTrainer save")
 
     def create_optimizer(self):
         """
@@ -1420,7 +1472,7 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
             layer.eo_position_class = self._eo_position_class(modality_ids, inputs["attention_mask"])
             layer.eo_depth_counts = layer.eo_soft_by_class = layer.eo_soft_depth = layer.eo_router_entropy = None
             try:
-                outputs = model(**inputs)
+                outputs = self._dt_forward(model, inputs, modality_ids, True)
             finally:
                 layer.eo_position_class = None
             if layer.eo_depth_counts is None:
@@ -1448,7 +1500,8 @@ class MoRTrainer(PerModalityLossMixin, Trainer):
                 ct["ent_sum"] = es.detach().double() if ct["ent_sum"] is None else ct["ent_sum"] + es.detach().double()
                 ct["ent_cnt"] = ec.detach().double() if ct["ent_cnt"] is None else ct["ent_cnt"] + ec.detach().double()
         else:
-            outputs = model(**inputs)
+            outputs = self._dt_forward(model, inputs, modality_ids,
+                                       bool(model.training and not return_outputs))
 
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.

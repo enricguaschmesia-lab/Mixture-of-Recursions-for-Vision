@@ -1090,6 +1090,69 @@ def main(argv=None) -> int:
                     "arm_a10cb3trncct18c_mor", "arm_a10cb3trs2ncct18c_mor")   # the last two: B1 Step 7b, 2026-11-17
     ]]
 
+    # --- the depth table (B1 Step 8, 2026-11-18; check_depth_table). A broken block, a learned router, Coords active,
+    # the max-depth warm-up; and on a resume, a checkpoint trained under another table, a table run resumed without its
+    # table, a random-router checkpoint under a table without the transplant launcher's record, and a transplant record
+    # of another table. ---
+    from eo.train import depth_table as DTm
+    third = [0.3333333333333333, 0.3333333333333333, 0.3333333333333334]
+    dt_good = {"rows": {sl: [0.0, 1.0, 0.0] for sl in DTm.SLOTS}, "gate": "draw", "seed": 0}
+    dt_other = {**dt_good, "rows": {sl: list(third) for sl in DTm.SLOTS}}
+
+    def dt_cfg(table=None, **over):
+        kw = {"mor__rand_router": True, "multimodal__active_modalities": list(IMAGE_MODALITIES)}
+        if table is not None:
+            kw["mor__token__depth_table"] = json.loads(json.dumps(table))
+        kw.update(over)
+        return _broken_config(tmp, **kw)
+
+    def dt_rows(**rows):
+        return {**dt_good, "rows": {**dt_good["rows"], **rows}}
+
+    def dt_ckpt(name, record=None, transplant=None, step=20):
+        d = tmp / f"run_dt_{name}"
+        c = _fake_checkpoint(d, "random", step=step)
+        (c / "trainer_state.json").write_text(json.dumps({"train_batch_size": 4, "global_step": step}))
+        blk = lambda b: DTm.read_block({"mor": {"token": {"depth_table": b}}, "recursive": {"num_recursion": 3}})  # noqa: E731
+        if record is not None:
+            DTm.write_record(c, blk(record), step, "preflight control")
+        if transplant is not None:
+            (c / DTm.TRANSPLANT).write_text(json.dumps({"version": 1, "table": DTm.identity(blk(transplant))}))
+        return d
+
+    def dt_resume(run, config):
+        return dict(env=GOOD_ENV, run_dir=run, resuming=True, allow_existing=True, config=config)
+
+    dt_ok, dt_plain = dt_cfg(dt_good), dt_cfg()
+    cases += [(label, "depth table", kw) for label, kw in [
+        ("table: a missing slot (LULC)",             dict(env=GOOD_ENV, config=dt_cfg({**dt_good, "rows": {
+            k: v for k, v in dt_good["rows"].items() if k != "LULC"}}))),
+        ("table: an extra slot (Coords)",            dict(env=GOOD_ENV, config=dt_cfg(dt_rows(Coords=[0.0, 1.0, 0.0])))),
+        ("table: a row summing to 0.9",              dict(env=GOOD_ENV, config=dt_cfg(dt_rows(DEM=[0.3, 0.3, 0.3])))),
+        ("table: a row over 2 depths",               dict(env=GOOD_ENV, config=dt_cfg(dt_rows(DEM=[0.5, 0.5])))),
+        ("table: gate soft",                         dict(env=GOOD_ENV, config=dt_cfg({**dt_good, "gate": "soft"}))),
+        ("table: seed 1.5",                          dict(env=GOOD_ENV, config=dt_cfg({**dt_good, "seed": 1.5}))),
+        ("table: on a learned router",               dict(env=GOOD_ENV, config=dt_cfg(dt_good, mor__rand_router=False))),
+        ("table: Coords active",                     dict(env=GOOD_ENV, config=dt_cfg(
+            dt_good, multimodal__active_modalities=list(IMAGE_MODALITIES) + ["Coords"]))),
+        ("table: with bal_warmup_step",              dict(env=GOOD_ENV, config=dt_cfg(dt_good, mor__token__bal_warmup_step=10))),
+        ("table: resume, another table's record",    dt_resume(dt_ckpt("other", record=dt_other), dt_ok)),
+        ("table: resume, a table run under no table", dt_resume(dt_ckpt("as_plain", record=dt_good), dt_plain)),
+        ("table: resume, a plain checkpoint, no transplant", dt_resume(dt_ckpt("plain"), dt_ok)),
+        ("table: resume, another table's transplant", dt_resume(dt_ckpt("tr_other", transplant=dt_other), dt_ok)),
+    ]]
+    ci_pos += [(label, "depth table", res) for label, res in [
+        ("table: a good block, a new run",           _results(env=GOOD_ENV, config=dt_ok)),
+        ("table: resumed with its own record",       _results(**dt_resume(dt_ckpt("own", record=dt_good), dt_ok))),
+        ("table: a transplant's first resume",       _results(**dt_resume(dt_ckpt("tr_own", transplant=dt_good), dt_ok))),
+        ("table: n/a on a random router without one", _results(env=GOOD_ENV, config=dt_plain)),
+        ("table: a plain checkpoint, no table",      _results(**dt_resume(dt_ckpt("plain_ok"), dt_plain))),
+    ] + [
+        (f"table: {arm} as shipped, a new run",      _results(env=GOOD_ENV, config=eo_cfg / f"{arm}.yaml"))
+        for arm in ("arm_a10crb3trnct2_random", "arm_a10crb3trnct2g1_random", "arm_a10crb3trs2nct2_random",
+                    "arm_a10crb3trs2nct2g1_random", "arm_a10crb3trnctu_random", "arm_a10crb3trnctu1_random")
+    ]]
+
     print("\nnegative controls (each must FIRE):")
     fired = 0
     for label, target, kw in cases:

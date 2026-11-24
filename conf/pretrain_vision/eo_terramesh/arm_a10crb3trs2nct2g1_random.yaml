@@ -1,0 +1,26 @@
+# @package _global_
+#
+# ARM A10cR-b3-tr-s2-NC-t2g1 — the Coords-free 1 + 3 + 1 train cell's random-router backbone under a FIXED DEPTH TABLE (B1 Step 8, 2026-11-18;
+# eo/train/depth_table.py): uniform depth 2 with every exit's gate at alpha (1), seed 43's backbone. Paper B's criterion 3 (B1 plan, Steps 8-9): a transplant from the backbone's
+# checkpoint-1980 (eo/train/transplant.py) continued to 3300 under this table, paired by batches with the other rows.
+#
+# ┌── THE DIFF FROM arm_a10crb3trs2nc_random, IN FULL ─────────────────────────────────────────────┐
+# │   mor.token.depth_table   (absent: the random draw)   rows {S2L2A: [0.0, 1.0, 0.0], S1: [0.0, 1.0, 0.0], DEM: [0.0, 1.0, 0.0], NDVI: [0.0, 1.0, 0.0], LULC: [0.0, 1.0, 0.0]}, gate one, seed 0
+# │ Nothing else. W37 in eo/scripts/verify_phase3.py asserts it.                        │
+# └─────────────────────────────────────────────────────────────────────────────────────┘
+#
+#   launch (RCP, course project; each on Enric's yes, worklog §4 items 76-77):
+#     .venv/bin/python -m eo.train.transplant --source <backbone>/checkpoint-1980 --source-config eo_terramesh/arm_a10crb3trs2nc_random \
+#         --target-config eo_terramesh/arm_a10crb3trs2nct2g1_random --dest $G/runs/pretrain/phase3/<run id>
+#     then train_eo.sh --resume --run-id <run id> --config eo_terramesh/arm_a10crb3trs2nct2g1_random
+
+defaults:
+  - arm_a10crb3trs2nc_random
+  - _self_
+
+mor:
+  token:
+    depth_table:
+      rows: {S2L2A: [0.0, 1.0, 0.0], S1: [0.0, 1.0, 0.0], DEM: [0.0, 1.0, 0.0], NDVI: [0.0, 1.0, 0.0], LULC: [0.0, 1.0, 0.0]}
+      gate: one
+      seed: 0

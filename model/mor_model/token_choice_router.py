@@ -75,6 +75,40 @@ class MoRLlamaDecoderLayer(nn.Module):
         self.eo_router_entropy = None
         _blk = self.cfg.mor.token.get("compute", None) if self.cfg.mor.token.get("balancing", None) == "compute" else None
         self.eo_confidence = float((_blk.get("confidence", 0.0) if _blk is not None else 0.0) or 0.0)
+        # EO (B1 Step 8, 2026-11-18): mor.token.depth_table (eo/train/depth_table.py) replaces the RANDOM router's depth
+        # draw with one from a per-modality table. Whoever runs the forward hands it the positions' slots and the draw's
+        # seed for that forward (the trainer, run_pass); a forward without them raises, so a table model never falls back
+        # to the random draw. Plain attributes: no parameter, no buffer, nothing in the state dict. Absent = untouched.
+        self.eo_table = None
+        self.eo_table_slot = None       # (bs, seq_len) long: depth_table.slot_key of the batch, set per forward
+        self.eo_table_seed = None       # int: depth_table.draw_seed of the forward, set per forward
+        if self.cfg.mor.token.get("depth_table", None) is not None:
+            from eo.train import depth_table as DT
+            if not self.cfg.mor.rand_router:
+                raise ValueError("mor.token.depth_table needs a random router (mor.rand_router: true)")
+            self.eo_table = DT.read_block(self.cfg)
+            if self.eo_table["n"] != self.num_recursion:
+                raise ValueError(f"mor.token.depth_table: rows over {self.eo_table['n']} depths, the layer has {self.num_recursion}")
+            self.eo_table_cdf = DT.cdf(self.eo_table)
+            self._eo_draw_depths = DT.draw_depths
+
+    def _eo_table_draw(self, r: torch.Tensor) -> torch.Tensor:
+        """B1 Step 8: each position's depth from the table, by the slot of the token it predicts (eo/train/depth_table.py);
+        the gate the top of r (`draw`, the random router's own) or 1 (`one`, times alpha downstream). Returns r's shape
+        with the gate at the drawn depth and 0 elsewhere, so the top-1 below takes the table's depth (the gate is at
+        least 1e-4, never a tie with the zeros)."""
+        slot, seed = self.eo_table_slot, self.eo_table_seed
+        if slot is None or seed is None:
+            raise RuntimeError("mor.token.depth_table: this forward has no slot key or draw seed (eo_table_slot, "
+                               "eo_table_seed); a table model never falls back to the random draw")
+        bs, seq_len, _ = r.shape
+        if tuple(slot.shape) != (bs, seq_len):
+            raise ValueError(f"mor.token.depth_table: slot key {tuple(slot.shape)} for a ({bs}, {seq_len}) batch")
+        dep = self._eo_draw_depths(slot.to(r.device), seed, self.eo_table_cdf)
+        w = r.amax(-1) if self.eo_table["gate"] == "draw" else torch.ones_like(r[..., 0])
+        out = torch.zeros_like(r)
+        out.scatter_(-1, dep.unsqueeze(-1), w.clamp_min(1e-4).to(r.dtype).unsqueeze(-1))
+        return out
 
     def reset_parameters(self):
         for block in self.block_list:
@@ -269,6 +303,11 @@ class MoRLlamaDecoderLayer(nn.Module):
             # e.g. to put every token at one depth. Never set in training.
             if getattr(self, "rand_override", None) is not None:
                 router_weights = self.rand_override(router_weights)
+            if self.eo_table is not None:
+                if getattr(self, "rand_override", None) is not None:
+                    raise RuntimeError("mor.token.depth_table and an evaluation rand_override on one layer: which depth wins "
+                                       "is not defined")
+                router_weights = self._eo_table_draw(router_weights)
             router_probs = _router_probs = router_weights * self.cfg.mor.token.get("alpha", 0.1)
         
         if self.training and self.training_step < self.bal_warmup_step:

@@ -734,6 +734,9 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     model.eval()
     mor = [m for m in find_mor_layers(model)]
     rand_hook = getattr(mor[0], "rand_override", None) if mor else None   # RandomDepthForce, if installed
+    # B1 Step 8: a model trained under mor.token.depth_table draws its depths from the table, and its layer needs each
+    # batch's slots and draw seed (eo/train/depth_table.py; the trainer's evaluation draws: seed, "eval", batch index)
+    table = mor[0] if (mor and getattr(mor[0], "eo_table", None) is not None) else None
     grabbed: List[torch.Tensor] = []
     handle = None
     skip = override is not None and override.mode == "skip"
@@ -758,9 +761,13 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     rows = {k: [] for k in ("n", "ce_sum", "top1", "d_pred", "d_tgt", "d_src")}
     tid = V.MODALITY_TO_ID[per_row_target] if per_row_target is not None else None
     try:
-        for batch in loader:
+        for bi, batch in enumerate(loader):
             batch = dict(batch)                    # never mutate the caller's batch
             mids = batch.pop("modality_ids")
+            if table is not None:
+                from eo.train import depth_table as DT
+                table.eo_table_slot = DT.slot_key(mids).to(device)
+                table.eo_table_seed = DT.draw_seed(table.eo_table["seed"], "eval", bi, 0)
             labels = batch.pop("labels")
             inputs = {k: v.to(device) for k, v in batch.items()}
             if override is not None:
@@ -842,6 +849,8 @@ def run_pass(model, loader, *, device: str = "cuda", override: Optional[DepthOve
     finally:
         if handle is not None:
             handle.remove()
+        if table is not None:
+            table.eo_table_slot = table.eo_table_seed = None
 
     per_mod = {}
     tot_n = tot_ce = 0

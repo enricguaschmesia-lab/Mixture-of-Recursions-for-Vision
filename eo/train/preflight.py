@@ -42,6 +42,10 @@ raises; each one produces a run that trains happily and is worthless:
   * a compute-target run (Paper B intervention 1) with a broken block, on a
     random router or two GPUs, or resumed without its saved price, which would
     restart at its initial value               (eo/train/compute_target.py)
+  * a depth-table run (B1 Step 8) with a broken table, on a learned router or
+    with Coords, resumed under another table, or a random-router checkpoint
+    resumed under a table without the transplant's record
+                                               (eo/train/depth_table.py)
 
 They are cheap to check and expensive to discover on day three of a run, so the
 launcher checks all of them before `pretrain.py` is reached.
@@ -1139,6 +1143,46 @@ def check_compute_target(ctx: PreflightContext) -> CheckResult:
     return CheckResult("compute target", True, detail)
 
 
+def check_depth_table(ctx: PreflightContext) -> CheckResult:
+    """B1 Step 8 (2026-11-18; eo/train/depth_table.py): `mor.token.depth_table`, training under a fixed per-modality table.
+
+    Each failure here trains happily on the wrong thing: a table with a missing or misspelt slot, a row that is not a
+    probability vector over the run's depths, an unknown gate, a seed that is not an integer, a learned router (the
+    table replaces the random draw only), the max-depth warm-up, an active modality with no slot (Coords). On a resume:
+    a checkpoint trained under another table, a table run resumed without its table, or a random-router checkpoint
+    resumed under a table without the transplant launcher's record.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("depth table", True, "skipped (no config)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    from eo.train import depth_table as DT
+    hint = ("mor.token.depth_table needs exactly rows (the slots S2L2A, S1, DEM, NDVI, LULC, each a probability vector "
+            "over depths 1..Nr), gate (draw or one) and seed (an integer), on a random router of a Coords-free run. A "
+            "transplant's copy needs transplant.json, written by eo/train/transplant.py.")
+    try:
+        table = DT.read_block(cfg)
+    except ValueError as e:
+        return CheckResult("depth table", False, str(e).splitlines()[0], hint)
+    ck = _latest_checkpoint(ctx.run_dir) if ctx.resuming else None
+    if table is not None:
+        problems = DT.config_problems(cfg, n_gpus=ctx.n_gpus)
+        if problems:
+            return CheckResult("depth table", False, "; ".join(problems), hint)
+    if ctx.resuming:
+        if ck is None:
+            return CheckResult("depth table", True if table is None else False,
+                               "n/a (no mor.token.depth_table)" if table is None
+                               else f"resuming, but no checkpoint-* under {ctx.run_dir}")
+        why = DT.resume_problem(ck, table)
+        if why:
+            return CheckResult("depth table", False, why, hint)
+    if table is None:
+        return CheckResult("depth table", True, "n/a (no mor.token.depth_table)")
+    rows = "; ".join(f"{s} {table['rows'][s]}" for s in DT.SLOTS)
+    return CheckResult("depth table", True, f"gate {table['gate']}, seed {table['seed']}: {rows}"
+                       + (f"; resumes {ck.name}" if ck is not None else ""))
+
+
 def _load_config(path: Path, overrides: Optional[Dict[str, object]] = None) -> dict:
     """The config the RUN will actually see, with CLI overrides applied.
 
@@ -1436,6 +1480,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_init_from,
     check_pretrain_init,
     check_compute_target,
+    check_depth_table,
     check_gpu_free_memory,
     check_resume_checkpoint,
     check_gpu_identity,      # last: the only one that touches CUDA

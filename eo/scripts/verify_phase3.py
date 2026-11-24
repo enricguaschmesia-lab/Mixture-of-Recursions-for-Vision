@@ -4579,6 +4579,372 @@ def w24_per_modality_reset() -> bool:
     return bool(ok and c_old and c_nan)
 
 
+
+W37_OVERLAYS = {   # B1 Step 8's table overlays: name -> (parent, gate, seed, rows kind)
+    "arm_a10crb3trnct2_random": ("arm_a10crb3trnc_random", "draw", 0, "d2"),
+    "arm_a10crb3trnct2g1_random": ("arm_a10crb3trnc_random", "one", 0, "d2"),
+    "arm_a10crb3trs2nct2_random": ("arm_a10crb3trs2nc_random", "draw", 0, "d2"),
+    "arm_a10crb3trs2nct2g1_random": ("arm_a10crb3trs2nc_random", "one", 0, "d2"),
+    "arm_a10crb3trnctu_random": ("arm_a10crb3trnc_random", "draw", 0, "uniform"),
+    "arm_a10crb3trnctu1_random": ("arm_a10crb3trnc_random", "draw", 1, "uniform"),
+}
+
+
+def w37s_depth_table() -> bool:
+    """W37's CPU part, no model (B1 Step 8, 2026-11-18; eo/train/depth_table.py): the overlays, the parser's refusals,
+    the slot key, the draw and the resume records.
+
+    (a) The six table overlays (uniform depth 2 at both gates on both backbones, the no-op pair) read as written and
+    differ from their parents in mor.token.depth_table alone. Controls: the parser refuses a missing slot, an extra
+    slot, a row not summing to 1, a negative entry, a row of the wrong length, an unknown gate and a non-integer seed;
+    config_problems names a learned router, Coords among the active modalities and the max-depth warm-up.
+    (b) The slot key is the label frame: position t carries the slot of token t + 1, S1GRD and S1RTC one slot, -1 at
+    BO, EO, padding and the last position. Controls: a Coords position raises; the key read in the input frame differs.
+    (c) The draw: one-hot rows give their depth everywhere; over 2^20 positions a uniform row's and a (0.2, 0.8, 0)
+    row's frequencies lie within 5 sigma (depth 3 never drawn from the second); slot -1 takes depth Nr; the depths
+    equal an independent inverse CDF (searchsorted) of the same seeded uniforms, bit for bit; one seed repeats.
+    Controls: another seed draws otherwise; a permuted table moves the depths.
+    (d) draw_seed is deterministic, and distinct over training steps, micro-batches, ranks and evaluation batches.
+    (e) The resume records: a checkpoint's depth_table.json of this table resumes; one of another table, a table
+    run's checkpoint under no table, and a random-router checkpoint under a table without transplant.json are
+    refused; transplant.json of this table starts it, of another table is refused."""
+    import tempfile
+    import torch
+    from eo.data import eo_vocab
+    from eo.train import depth_table as DT
+    from eo.train import warm_start as WS
+    ok = True
+    # ---- (a) ----
+    d2 = [0.0, 1.0, 0.0]
+    third = [0.3333333333333333, 0.3333333333333333, 0.3333333333333334]
+    a_ok = True
+    for name, (parent, gate, seed, kind) in W37_OVERLAYS.items():
+        cfg, par = _compose(f"eo_terramesh/{name}"), _compose(f"eo_terramesh/{parent}")
+        t = DT.read_block(cfg)
+        want = d2 if kind == "d2" else third
+        diff = WS.config_diff(par, cfg)
+        good = (t["gate"] == gate and t["seed"] == seed and all(t["rows"][s] == want for s in DT.SLOTS)
+                and bool(diff) and all(k.startswith("mor.token.depth_table.") for k in diff)
+                and DT.read_block(par) is None and DT.config_problems(cfg) == [])
+        a_ok &= good
+    print(f"    the six overlays read as written and differ from their parents in the table alone = {a_ok}")
+    base = {"dataset": "terramesh_multimodal", "recursive": {"num_recursion": 3},
+            "multimodal": {"active_modalities": ["S2L2A", "S1GRD", "S1RTC", "DEM", "NDVI", "LULC"]},
+            "mor": {"enable": True, "type": "token", "rand_router": True,
+                    "token": {"depth_table": {"rows": {s: list(third) for s in DT.SLOTS}, "gate": "draw", "seed": 0}}}}
+
+    def mutated(fn):
+        c = copy.deepcopy(base)
+        fn(c)
+        return c
+
+    tbl = lambda c: c["mor"]["token"]["depth_table"]  # noqa: E731
+    bad = {"a missing slot": lambda c: tbl(c)["rows"].pop("LULC"),
+           "an extra slot": lambda c: tbl(c)["rows"].__setitem__("Coords", list(d2)),
+           "a row summing to 0.9": lambda c: tbl(c)["rows"].__setitem__("DEM", [0.3, 0.3, 0.3]),
+           "a negative entry": lambda c: tbl(c)["rows"].__setitem__("DEM", [-0.1, 1.1, 0.0]),
+           "a row of length 2": lambda c: tbl(c)["rows"].__setitem__("DEM", [0.5, 0.5]),
+           "an unknown gate": lambda c: tbl(c).__setitem__("gate", "soft"),
+           "a float seed": lambda c: tbl(c).__setitem__("seed", 1.5),
+           "a bool seed": lambda c: tbl(c).__setitem__("seed", True),
+           "a missing key": lambda c: tbl(c).pop("seed")}
+    refused = []
+    for why, fn in bad.items():
+        try:
+            DT.read_block(mutated(fn))
+        except ValueError:
+            refused.append(why)
+    pos_ok = DT.read_block(base) is not None and DT.config_problems(base) == []
+    probs = {"a learned router": lambda c: c["mor"].__setitem__("rand_router", False),
+             "Coords active": lambda c: c["multimodal"]["active_modalities"].append("Coords"),
+             "the max-depth warm-up": lambda c: c["mor"]["token"].__setitem__("bal_warmup_step", 5)}
+    named = [why for why, fn in probs.items() if DT.config_problems(mutated(fn))]
+    c_ok = len(refused) == len(bad) and len(named) == len(probs) and pos_ok
+    print(f"    controls: the parser refuses {len(refused)}/{len(bad)} broken blocks, config_problems names "
+          f"{len(named)}/{len(probs)} unfit runs, and the plain block passes = {c_ok}")
+    ok &= a_ok and c_ok
+    # ---- (b) ----
+    m = eo_vocab.MODALITY_TO_ID
+    mids = torch.tensor([[0, m["S2L2A"], m["S2L2A"], m["S1GRD"], m["S1RTC"], m["DEM"], m["NDVI"], m["LULC"], 0, 0]])
+    key = DT.slot_key(mids)
+    k_ok = key.tolist() == [[0, 0, 1, 1, 2, 3, 4, -1, -1, -1]]
+    try:
+        DT.slot_key(torch.tensor([[0, m["S2L2A"], m["Coords"], 0]]))
+        kc1 = False
+    except ValueError:
+        kc1 = True
+    inframe = DT.slot_key(torch.cat([mids[:, :1], mids], 1))[:, :-1]      # position t keyed by its own token t
+    kc2 = not torch.equal(inframe, key)
+    print(f"    slot key in the label frame, S1 one slot, -1 at BO/EO/padding/last = {k_ok}; controls: Coords raises = "
+          f"{kc1}, the input-frame key differs = {kc2}")
+    ok &= k_ok and kc1 and kc2
+    # ---- (c) ----
+    rows = {"S2L2A": [0.0, 1.0, 0.0], "S1": [1.0, 0.0, 0.0], "DEM": [0.0, 0.0, 1.0], "NDVI": [0.2, 0.8, 0.0],
+            "LULC": list(third)}
+    t = {"rows": rows, "gate": "draw", "seed": 0, "n": 3}
+    cdf = DT.cdf(t)
+    shape = (1024, 1024)
+    res = {}
+    for s_idx, sname in enumerate(DT.SLOTS):
+        res[sname] = DT.draw_depths(torch.full(shape, s_idx, dtype=torch.long), 12345, cdf)
+    neg = DT.draw_depths(torch.full(shape, -1, dtype=torch.long), 12345, cdf)
+    n = shape[0] * shape[1]
+    sig = lambda p: 5 * (p * (1 - p) / n) ** 0.5  # noqa: E731
+    f_l = torch.bincount(res["LULC"].flatten(), minlength=3).double() / n
+    f_n = torch.bincount(res["NDVI"].flatten(), minlength=3).double() / n
+    one_hot = bool((res["S2L2A"] == 1).all() and (res["S1"] == 0).all() and (res["DEM"] == 2).all())
+    freq = (all(abs(float(f_l[i]) - 1 / 3) < sig(1 / 3) for i in range(3)) and abs(float(f_n[0]) - 0.2) < sig(0.2)
+            and float(f_n[2]) == 0.0)
+    u = torch.rand(shape, generator=torch.Generator(device="cpu").manual_seed(12345), dtype=torch.float64)
+    indep = all(torch.equal(res[s], torch.searchsorted(cdf[i].contiguous(), u, right=True).clamp_max(2))
+                for i, s in enumerate(DT.SLOTS))
+    again = torch.equal(DT.draw_depths(torch.full(shape, 4, dtype=torch.long), 12345, cdf), res["LULC"])
+    other = float((DT.draw_depths(torch.full(shape, 4, dtype=torch.long), 54321, cdf) != res["LULC"]).double().mean())
+    perm = dict(rows, NDVI=rows["LULC"], LULC=rows["NDVI"])
+    moved = not torch.equal(DT.draw_depths(torch.full(shape, 3, dtype=torch.long), 12345,
+                                           DT.cdf({"rows": perm, "gate": "draw", "seed": 0, "n": 3})), res["NDVI"])
+    d_ok = one_hot and freq and bool((neg == 2).all()) and indep and again
+    print(f"    the draw: one-hot rows exact = {one_hot}; frequencies within 5 sigma over 2^20 (uniform "
+          f"{[round(float(x), 4) for x in f_l]}, (0.2, 0.8, 0) {[round(float(x), 4) for x in f_n]}) = {freq}; slot -1 at "
+          f"depth 3 = {bool((neg == 2).all())}; equal to an independent inverse CDF = {indep}; one seed repeats = {again}")
+    dc = other > 0.5 and moved
+    print(f"    controls: another seed changes {other:.3f} of a uniform row's depths, a permuted table moves NDVI's = {dc}")
+    ok &= d_ok and dc
+    # ---- (d) ----
+    seeds = [DT.draw_seed(0, "train", st, mi, rk) for st in range(100) for mi in range(16) for rk in range(2)]
+    seeds += [DT.draw_seed(0, "eval", bi, rk) for bi in range(100) for rk in range(2)]
+    s_ok = len(set(seeds)) == len(seeds) and DT.draw_seed(0, "train", 5, 1, 0) == DT.draw_seed(0, "train", 5, 1, 0) \
+        and DT.draw_seed(0, "eval", 3, 0) != DT.draw_seed(1, "eval", 3, 0)
+    print(f"    draw_seed: deterministic, {len(seeds)} forwards all distinct, another table seed differs = {s_ok}")
+    ok &= s_ok
+    # ---- (e) ----
+    t2 = DT.read_block(_compose("eo_terramesh/arm_a10crb3trnct2_random"))
+    tu = DT.read_block(_compose("eo_terramesh/arm_a10crb3trnctu_random"))
+    root = Path(tempfile.mkdtemp(prefix="w37_"))
+    ck1, ck2, ck3 = root / "checkpoint-2", root / "checkpoint-4", root / "checkpoint-6"
+    DT.write_record(ck1, t2, 2, "W37")
+    ck2.mkdir()
+    ck3.mkdir()
+    (ck3 / DT.TRANSPLANT).write_text(json.dumps({"version": 1, "table": DT.identity(t2)}))
+    r_ok = DT.resume_problem(ck1, t2) is None and DT.resume_problem(ck2, None) is None and DT.resume_problem(ck3, t2) is None
+    rc = [DT.resume_problem(ck1, tu), DT.resume_problem(ck1, None), DT.resume_problem(ck2, t2), DT.resume_problem(ck3, tu)]
+    rc_ok = all(rc)
+    print(f"    resume records: this table's record, a plain checkpoint under no table and this table's transplant "
+          f"record resume = {r_ok}; controls: another table's, a table run under no table, a plain checkpoint under a "
+          f"table and another table's transplant are refused = {rc_ok} ({sum(bool(x) for x in rc)}/4)")
+    ok &= r_ok and rc_ok
+    return bool(ok)
+
+
+
+def w37_depth_table() -> bool:
+    """W37, with the model (B1 Step 8, 2026-11-18; eo/train/depth_table.py, eo/train/transplant.py).
+
+    Part 1 in process (CPU, fp32; the cell's random-router model, untrained, seed 0; two held-out rows): a table
+    model's forward without its key raises, and so does one with an evaluation rand_override installed. Under uniform
+    depth 2 with the random router's gate, every body position takes depth 2 and every other position depth 3, each
+    exit's gate is the top of the layer's three uniforms, and the logits equal, bit for bit, B0 Step 5's table path
+    (RandomDepthForce.set_table: one-hot rows, key 0 at depth 3) on the same weights and uniforms. Under gate one every
+    exit's gate is exactly 1. Controls: gate one's logits differ from that path, and so do the uniform table's.
+    Part 2 through pretrain.py (CPU, fp32): the cell's random-router config trains 2 updates and saves; the launcher
+    copies its checkpoint-2 bit for bit with transplant.json; the copy resumes under uniform depth 2 for 2 updates, with
+    every body class at depth 2 and delimiters and padding at 3 in each update's depth shares, and checkpoint-4 carries
+    depth_table.json naming the table. Preflight's depth-table check passes the copy and the resumed run under their
+    table. Controls: the launcher refuses an existing destination, a learned target, a source without optimizer.pt and
+    a table run's checkpoint; preflight refuses the resumed run under the no-op table and under no table, the copy
+    under the no-op table, and the plain checkpoint-2 under a table."""
+    import shutil
+    import time
+    import torch
+    from eo.data import eo_vocab
+    from eo.eval import teacher_forced as TF
+    from eo.routing.telemetry import find_mor_layers
+    from eo.train import depth_table as DT
+    from eo.train import transplant as TP
+    from eo.train import warm_start as WS
+    from eo.train.preflight import PreflightContext, check_depth_table
+    from lm_dataset.load_dataset import load_eval_dataset_from_config
+    from util.env import load_dotenv
+    PLAIN, T2, T2G1, TU = ("eo_terramesh/arm_a10crb3trnc_random", "eo_terramesh/arm_a10crb3trnct2_random",
+                           "eo_terramesh/arm_a10crb3trnct2g1_random", "eo_terramesh/arm_a10crb3trnctu_random")
+    ok = True
+    # ---- Part 1 ----
+    ev = load_eval_dataset_from_config(_compose(T2))
+    pos = [0, len(ev) - 1]
+    batch = {k: torch.stack([ev[p][k] for p in pos]) for k in ev[0]}
+    mids = batch.pop("modality_ids")
+    labels = batch.pop("labels")
+    plain, _ = WS.build(PLAIN, 0)
+    sd = plain.state_dict()
+    models = {}
+    for name in (T2, T2G1, TU):
+        mdl, _ = WS.build(name, 0)
+        mdl.load_state_dict(sd, strict=True)
+        models[name] = mdl
+    for mdl in [plain, *models.values()]:
+        mdl.eval()
+        mdl.config.use_cache = False
+    lay = lambda mdl: find_mor_layers(mdl)[0]  # noqa: E731
+    SEED = 1234
+    key = DT.slot_key(mids)
+    exp = torch.where(key >= 0, torch.ones_like(key), torch.full_like(key, 2))
+
+    def fwd(mdl, keyed=True):
+        L = lay(mdl)
+        if keyed:
+            L.eo_table_slot, L.eo_table_seed = key, DT.draw_seed(0, "eval", 0, 0)
+        torch.manual_seed(SEED)
+        try:
+            with torch.no_grad():
+                return mdl(**batch).logits
+        finally:
+            L.eo_table_slot = L.eo_table_seed = None
+
+    try:
+        fwd(models[T2], keyed=False)
+        r1 = False
+    except RuntimeError:
+        r1 = True
+    TF.install_random_depth(models[T2], 2, seed=SEED)
+    try:
+        fwd(models[T2])
+        r2 = False
+    except RuntimeError:
+        r2 = True
+    lay(models[T2]).rand_override = None
+    print(f"    a table model's forward without its key raises = {r1}; with an evaluation rand_override = {r2}")
+    ok &= r1 and r2
+
+    def captured(mdl):
+        L, rec = lay(mdl), {}
+        orig = L._eo_table_draw
+
+        def cap(r):
+            o = orig(r)
+            rec["r"], rec["o"] = r.detach().clone(), o.detach().clone()
+            return o
+        L._eo_table_draw = cap
+        h = L.register_forward_hook(lambda m, i, out: rec.__setitem__("d", out.token_expert_indices.detach().clone()))
+        try:
+            rec["logits"] = fwd(mdl)
+        finally:
+            h.remove()
+            del L._eo_table_draw
+        return rec
+
+    c2, c1 = captured(models[T2]), captured(models[T2G1])
+    w_draw = c2["r"].amax(-1).clamp_min(1e-4)
+    at = lambda rec: rec["o"].gather(-1, exp.unsqueeze(-1)).squeeze(-1)  # noqa: E731
+    only = lambda rec: bool((rec["o"].ne(0).sum(-1) == 1).all())  # noqa: E731
+    d_ok = torch.equal(c2["d"].long(), exp) and torch.equal(c1["d"].long(), exp)
+    g_ok = only(c2) and torch.equal(at(c2), w_draw) and only(c1) and bool((at(c1) == 1.0).all())
+    rf = TF.install_random_depth(plain, None, seed=SEED)
+    rf.set_table({0: [0.0, 0.0, 1.0], **{i: [0.0, 1.0, 0.0] for i in eo_vocab.MODALITY_TO_ID.values()}})
+    rf.mod_ids = mids
+    torch.manual_seed(SEED)
+    with torch.no_grad():
+        lg_rf = plain(**batch).logits
+    lay(plain).rand_override = None
+    same = torch.equal(c2["logits"], lg_rf)
+    lg_tu = fwd(models[TU])
+    ctl = not torch.equal(c1["logits"], lg_rf) and not torch.equal(lg_tu, lg_rf)
+    print(f"    uniform 2: body positions at depth 2, the rest at 3, both gates = {d_ok}; each exit's gate the top of the "
+          f"layer's uniforms (draw) or exactly 1 (one) = {g_ok}; logits = B0's table path, bit for bit = {same}")
+    print(f"    controls: gate one's logits and the uniform table's differ from that path = {ctl}")
+    ok &= d_ok and g_ok and same and ctl
+    rp = TF.run_pass(models[T2], [dict(batch, modality_ids=mids, labels=labels)], device="cpu", dtype=None)
+    dd, lm = rp["tokens"]["depth"], rp["tokens"]["label_mod"]
+    rp_ok = (bool(((dd == 2) | (lm == 0)).all() and ((dd == 3) | (lm > 0)).all() and (lm > 0).any())
+             and lay(models[T2]).eo_table_slot is None and lay(models[T2]).eo_table_seed is None)
+    print(f"    run_pass (E1's path) hands the table its key: scored body tokens at depth 2, the rest at 3, the key "
+          f"cleared after = {rp_ok}")
+    ok &= rp_ok
+    del plain, models
+    # ---- Part 2 ----
+    import gc
+    gc.collect()
+    load_dotenv()
+    SAVE_DIR = os.environ.get("MOR_SAVE_DIR", "")
+    if not SAVE_DIR.startswith("/data/"):
+        print(f"    MOR_SAVE_DIR {SAVE_DIR!r} is not under /data: refusing to write checkpoints")
+        return False
+    env = dict(os.environ, WANDB_MODE="disabled", TOKENIZERS_PARALLELISM="false", CUDA_VISIBLE_DEVICES="")
+    over = ["wandb=false", "num_train_steps=6", "num_warmup_steps=0", "lr_scheduler_kwargs.num_decay_steps=0",
+            "save_steps=2", "eval_steps=1000", "total_batch_size=8", "per_device_train_batch_size=4", "logging_steps=1",
+            "dataloader_num_workers=0", "eval_on_start=false", "precision=fp32",
+            "multimodal.split=val"]       # the cell trains on the train split; here on val's complement, as B1's smokes
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    base = Path(SAVE_DIR) / "pretrain" / "gate_w37"
+    print("    pretrain.py on CPU (fp32)")
+
+    def run(rel, cfg_name, extra=()):
+        root = base / rel
+        rc, log = _pretrain(cfg_name, f"gate_w37/{rel}", over + [f"hydra.run.dir={root}/hydra", *extra], env)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"pretrain_{int(time.time())}.log").write_text(log)
+        return rc, root, log
+
+    rc_a, root_a, _ = run(f"w37_{stamp}_plain", PLAIN, ["stop_steps=2"])
+    ck2 = root_a / "checkpoint-2"
+    if rc_a != 0 or not (ck2 / "optimizer.pt").is_file():
+        print(f"    the plain run: rc {rc_a}, checkpoint-2 with optimizer.pt {ck2.is_dir()}: see {root_a}")
+        return False
+    dest = base / f"w37_{stamp}_t2"
+    rec = TP.make_copy(ck2, PLAIN, T2, dest)
+    cp = dest / "checkpoint-2"
+    bit = all(WS.sha256(ck2 / f) == WS.sha256(cp / f) for f in rec["files"]) and (cp / DT.TRANSPLANT).is_file()
+    print(f"    transplant: {len(rec['files'])} files bit for bit with {DT.TRANSPLANT}, the table's diff only "
+          f"({len(rec['config_diff'])} keys) = {bit}")
+
+    def refused(fn):
+        try:
+            fn()
+            return False
+        except (RuntimeError, ValueError):
+            return True
+    noopt = base / f"w37_{stamp}_noopt" / "checkpoint-2"
+    shutil.copytree(ck2, noopt)
+    (noopt / "optimizer.pt").unlink()
+    lc = [refused(lambda: TP.make_copy(ck2, PLAIN, T2, dest)),
+          refused(lambda: TP.make_copy(ck2, PLAIN, "eo_terramesh/arm_a10cb3trnc_mor", base / f"w37_{stamp}_learned")),
+          refused(lambda: TP.make_copy(noopt, PLAIN, T2, base / f"w37_{stamp}_noopt_dest"))]
+
+    def pf(run_dir, cfg_name):
+        cfgp = REPO / "conf/pretrain_vision" / f"{cfg_name}.yaml"
+        r = check_depth_table(PreflightContext(gpu_alias="titanv", run_dir=run_dir, config_path=cfgp, allow_existing=True,
+                                               resuming=True, check_torch=False,
+                                               overrides={k: v for k, v in (o.split("=", 1) for o in over)}))
+        return r.ok
+    p_copy = pf(dest, T2)
+    rc_b, root_b, log_b = run(dest.name, T2, ["stop_steps=4", "resume_from_checkpoint=true"])
+    f = root_b / "depth_shares.jsonl"
+    rows = [json.loads(x) for x in f.read_text().splitlines() if '"step"' in x] if f.is_file() else []
+    body = [1, 2, 3, 4, 5, 6]
+    # a class absent from a batch counts nothing (a row holds S1GRD or S1RTC): no body position off depth 2, some at it
+    shares = bool(rows) and [r["step"] for r in rows] == [3, 4] and all(
+        all(r["counts"][i][0] == 0 and r["counts"][i][2] == 0 for i in body) and sum(r["counts"][i][1] for i in body) > 0
+        and all(r["counts"][i][0] == 0 and r["counts"][i][1] == 0 for i in (8, 9))
+        and sum(r["counts"][i][2] for i in (8, 9)) > 0 and sum(r["counts"][7]) == 0 for r in rows)
+    ck4 = root_b / "checkpoint-4"
+    recd = json.loads((ck4 / DT.FILE).read_text()) if (ck4 / DT.FILE).is_file() else {}
+    t2 = DT.read_block(_compose(T2))
+    rec_ok = recd.get("table") == DT.identity(t2) and recd.get("global_step") == 4
+    p_run = pf(root_b, T2)
+    print(f"    the copy resumes under uniform 2 (rc {rc_b}): updates {[r['step'] for r in rows]}, every body class at "
+          f"depth 2 and delimiters and padding at 3 = {shares}; checkpoint-4's {DT.FILE} names the table = {rec_ok}; "
+          f"preflight passes the copy = {p_copy} and the resumed run = {p_run}")
+    lc.append(refused(lambda: TP.make_copy(ck4, PLAIN, T2, base / f"w37_{stamp}_from_table_run")))
+    pc = [not pf(root_b, TU), not pf(root_b, PLAIN), not pf(root_a, T2)]
+    dest2 = base / f"w37_{stamp}_t2b"
+    TP.make_copy(ck2, PLAIN, T2, dest2)
+    pc.append(not pf(dest2, TU))
+    print(f"    controls: the launcher refuses an existing destination, a learned target, a source without optimizer.pt "
+          f"and a table run's checkpoint = {lc}; preflight refuses the resumed run under the no-op table and under no "
+          f"table, the plain checkpoint-2 under a table, and a copy under the no-op table = {pc}")
+    ok &= bit and rc_b == 0 and shares and rec_ok and p_copy and p_run and all(lc) and all(pc)
+    return bool(ok)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -4616,6 +4982,7 @@ def main() -> int:
         ("W25  LoRA on the frozen LLM body            [LLM LoRA]", w25_smollm_lora),
         ("W26s routing statistics: known answers      [B0]", w26s_routing_stats),
         ("W28s a depth table is what it claims        [B0 Step 5]", w28s_depth_table),
+        ("W37s a training depth table: configs, key, draw, records [B1 Step 8]", w37s_depth_table),
         ("W7  decode metrics collapse on shuffled   [Step 7]", w7_decode_collapse),
         ("W10  depth is content-driven, not positional [Step 8]", w10_routing_is_content_driven),
     ]
@@ -4632,6 +4999,7 @@ def main() -> int:
         checks.append(("W31  per-update depth shares, training unchanged [wave 1]", w31_depth_shares))
         checks.append(("W34  the compute target: layer, pretrain.py, resume [B1]", w34_compute_target))
         checks.append(("W35  the warm start: exact continuation, fresh router [B1]", w35_warm_start))
+        checks.append(("W37  a training depth table: layer, pretrain.py, transplant [B1 Step 8]", w37_depth_table))
 
     results = []
     for title, fn in checks:

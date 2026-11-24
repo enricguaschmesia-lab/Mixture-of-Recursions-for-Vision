@@ -464,6 +464,14 @@ def main() -> int:
             raise SystemExit("`extended_base` is a --model-config checkpoint name")
         else:
             model, cfg = G.build_model(args.arm_config, ck_path)
+        if ck_path is not None and (Path(ck_path) / "depth_table.json").is_file():
+            # B1 Step 8: a checkpoint trained under mor.token.depth_table is scored under ITS table only; with another
+            # config its depths would be another table's, or the random draw's, without a word
+            from eo.train import depth_table as DT
+            mt = next((m.eo_table for m in TF.find_mor_layers(model) if getattr(m, "eo_table", None) is not None), None)
+            why = DT.resume_problem(Path(ck_path), mt)
+            if why:
+                raise SystemExit(f"{ck}: {why}: score a table run with its own config")
         if int(cfg.dataloader_num_workers) != args.num_workers:
             raise SystemExit(f"--num-workers {args.num_workers} != config's "
                              f"{cfg.dataloader_num_workers}: modality orders would differ from training")
@@ -522,6 +530,9 @@ def main() -> int:
                     "model_config": args.model_config, "loaded": loaded, "vocab": int(model.config.vocab_size),
                     "vocab_layout": V.__name__.rsplit(".", 1)[-1],
                     "logged_eval": logged_eval(run_dir, step) if ck not in ("untrained", "extended_base") else None})
+        tbl = next((m.eo_table for m in TF.find_mor_layers(model) if getattr(m, "eo_table", None) is not None), None)
+        if tbl is not None:      # B1 Step 8: a model trained under mor.token.depth_table; run_pass draws from it
+            doc["depth_table"] = {"rows": tbl["rows"], "gate": tbl["gate"], "seed": tbl["seed"]}
         if rf is not None:
             doc["trained_recursions"] = rf.n_trained
             doc["gate_seed"] = args.gate_seed

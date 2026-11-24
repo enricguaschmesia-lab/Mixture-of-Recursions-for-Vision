@@ -1,0 +1,26 @@
+# @package _global_
+#
+# ARM A10cR-b3-tr-NC-tu — the Coords-free 1 + 3 + 1 train cell's random-router backbone under a FIXED DEPTH TABLE (B1 Step 8, 2026-11-18;
+# eo/train/depth_table.py): the no-op: the backbone's own uniform depths as a table, draw seed 0, seed 42's backbone (Step 8's no-op pair with tu1). Paper B's criterion 3 (B1 plan, Steps 8-9): a transplant from the backbone's
+# checkpoint-1980 (eo/train/transplant.py) continued to 3300 under this table, paired by batches with the other rows.
+#
+# ┌── THE DIFF FROM arm_a10crb3trnc_random, IN FULL ─────────────────────────────────────────────┐
+# │   mor.token.depth_table   (absent: the random draw)   rows {S2L2A: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334], S1: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334], DEM: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334], NDVI: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334], LULC: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334]}, gate draw, seed 0
+# │ Nothing else. W37 in eo/scripts/verify_phase3.py asserts it.                        │
+# └─────────────────────────────────────────────────────────────────────────────────────┘
+#
+#   launch (RCP, course project; each on Enric's yes, worklog §4 items 76-77):
+#     .venv/bin/python -m eo.train.transplant --source <backbone>/checkpoint-1980 --source-config eo_terramesh/arm_a10crb3trnc_random \
+#         --target-config eo_terramesh/arm_a10crb3trnctu_random --dest $G/runs/pretrain/phase3/<run id>
+#     then train_eo.sh --resume --run-id <run id> --config eo_terramesh/arm_a10crb3trnctu_random
+
+defaults:
+  - arm_a10crb3trnc_random
+  - _self_
+
+mor:
+  token:
+    depth_table:
+      rows: {S2L2A: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334], S1: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334], DEM: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334], NDVI: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334], LULC: [0.3333333333333333, 0.3333333333333333, 0.3333333333333334]}
+      gate: draw
+      seed: 0
