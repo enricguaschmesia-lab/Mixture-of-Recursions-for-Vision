@@ -58,7 +58,10 @@ ALIASES: Dict[str, Tuple[str, int, int, int]] = {"b256_64000": ("aligned", 64_00
                                                  "c1000_224a": ("long", 1_000, 784, 28),
                                                  "cosmos16_224": ("aligned", 64_000, 196, 14),
                                                  "cells_pastis": ("long", 20, 784, 28),
-                                                 "cells_cloudsen12": ("short", 4, 784, 28)}
+                                                 "cells_cloudsen12": ("short", 4, 784, 28),
+                                                 #: A2 Step 4.3's palette ablation: the aligned tokenizer and slot, the
+                                                 #: maps rendered with palette.ARBITRARY (palette.arm_palette)
+                                                 "aligned_arb": ("aligned", 64_000, 196, 14)}
 #: Route B's aliases, by task (eo/maps/cells.py and eo/eval/seg_routes.py read them).
 CELL_ARMS: Dict[str, str] = {"pastis": "cells_pastis", "cloudsen12": "cells_cloudsen12"}
 

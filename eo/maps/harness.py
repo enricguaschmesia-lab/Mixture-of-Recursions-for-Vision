@@ -60,6 +60,8 @@ def task_palette(dataset: str, palette: str) -> tuple[np.ndarray, tuple, int | N
     task = P.TASKS[dataset]
     if palette == "universal":
         return P.UNIVERSAL, task.assign, P.VOID_COLOUR
+    if palette == "universal_arb":                        # A2 Step 4.3's palette ablation (palette.ARBITRARY)
+        return P.UNIVERSAL, P.ARBITRARY[dataset], P.VOID_COLOUR
     if palette == "step0":
         colours, assign = P.step0_distinct(task)
         return colours, assign, None
@@ -122,7 +124,7 @@ def class_scores(tok: MapTokenizer, idx: torch.Tensor, dataset: str, palette: st
     if tok.output == "rgb":
         sc_s = D.rgb_scores(out, np.asarray(colours)[list(assign)])
     elif tok.output == "logits":
-        if palette != "universal":
+        if palette not in ("universal", "universal_arb"):        # universal_arb: the same 32 colours, reassigned
             raise ValueError("palette logits are over the universal palette")
         sc_s = D.logit_scores(out, assign)
     else:

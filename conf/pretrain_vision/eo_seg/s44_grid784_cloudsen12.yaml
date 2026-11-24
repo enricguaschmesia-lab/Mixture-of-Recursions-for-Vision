@@ -1,0 +1,15 @@
+# @package _global_
+#
+# A2 Step 4.5 (2026-11-24; docs/plans/a2_segmentation.md, Step 4, "4.5, the grid decision"): the 784-token map grid on
+# CloudSen12 val at Step 4.1's recipe. Step 5.2's CloudSen12 overlay (eo_seg/s52_cloudsen12) plus exactly the three keys
+# that eo_seg/s43_grid784 adds to r0_s41_lora16: Step 4.0's follow-up arm c4375_224n (C:c4375_224, f8 at 224 px,
+# 28 x 28 = 784 tokens, 4,375 codes, nested as four 196-token lattice blocks over the 14 x 14 input grid) and max_length
+# 984. learning_rate=3e-3 and the seed go on the command line, as for every Step 4.1-recipe run (gate Z27).
+defaults:
+  - s52_cloudsen12
+  - _self_
+
+seg:
+  arm: c4375_224
+  map_order: nested
+max_length: 984

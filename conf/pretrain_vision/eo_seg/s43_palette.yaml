@@ -1,0 +1,13 @@
+# @package _global_
+#
+# A2 Step 4.3 (2026-11-23; docs/plans/a2_segmentation.md, Step 4, "Steps 4.3 and 4.4's design and reading", item 2): the
+# palette ablation on CloudSen12, on R1's base (train_eo.sh --init-from R1's packaged base, as Step 5.2's R1 arm), at Step
+# 4.1's recipe (learning_rate=3e-3 and the seed on the command line). The map arm aligned_arb is the aligned tokenizer and
+# slot with CloudSen12's maps rendered in palette.ARBITRARY: thick cloud on colour 13, not LULC's clouds (8).
+# Differs from s52_cloudsen12 in exactly seg.arm (gate Z26).
+defaults:
+  - s52_cloudsen12
+  - _self_
+
+seg:
+  arm: aligned_arb

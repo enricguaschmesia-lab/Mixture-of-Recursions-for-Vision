@@ -52,6 +52,12 @@ right after the inputs at sequential (lattice) positions, its codes in raster or
                 positions only increase, and EO_MAP takes the last code's position + 1 (989 on PASTIS-1).
   Codes are stored, generated-and-returned and scored in RASTER order: map_chunk reorders into sequence order,
   `to_raster` reorders back, and `step_positions` gives generation the position of each code it feeds back.
+CHAIN (A2 Step 4.3, 2026-11-23; plan Step 4, "Steps 4.3 and 4.4's design and reading", item 4). `chain` names a
+generated-LULC artifact, <task>/tok/LULCGEN_<chain>/ (eo/experiments/segmentation/step43_chain_gen.py: TerraMind's 196
+LULC tokens the base wrote for each view from its S2 block). With it every sequence starts with that view's LULC block:
+    [BO_LULC l1..l196 EO_LULC] [BO_S2L2A .. EO_S2L2A] [BO_MAP_<task> .. EO_MAP]      on the lattice, 594 tokens
+so the map keeps Route A's 198-position offset from its S2 patch. Variant `wrong` takes both blocks of the deranged
+view; `wrong_lulc` keeps the view's own S2 and takes the deranged view's LULC.
 Arms: Step 4.0's three (map_vocab.ARMS) or a follow-up alias (map_vocab.ALIASES), whose codes take its parent slot's
 first ids.
 
@@ -85,7 +91,8 @@ except Exception:                                # pragma: no cover
 ROOT = Path("/data/enric/data/geobench2")
 TASKS = ("pastis", "cloudsen12")
 FRAMES = {"pastis": ("p1", "p7"), "cloudsen12": ("single",)}
-VARIANTS = ("full", "prior", "wrong", "shuffled_dates", "one_date")
+VARIANTS = ("full", "prior", "wrong", "shuffled_dates", "one_date", "wrong_lulc")
+CHAIN_MOD = "LULC"                               # the chained block's modality (A2 Step 4.3)
 INPUT = "S2L2A"
 P7 = [f"p7_{j}" for j in range(7)]
 ONE_DATE_GROUP = 3
@@ -123,9 +130,11 @@ def nested_order(side: int = NESTED_SIDE, inner: int = INPUT_SIDE) -> np.ndarray
     return np.asarray(out, dtype=np.int64)
 
 
-def required_length(task: str, frames: str, arm: str, variant: str = "full") -> int:
+def required_length(task: str, frames: str, arm: str, variant: str = "full", chain: Optional[str] = None) -> int:
     g = MV.spec(arm)[1] + 2
     img = TOKENS_PER_SAMPLE + 2
+    if chain:                                    # one LULC block before the image (A2 Step 4.3)
+        return 2 * img + g
     if task == "pastis" and frames == "p7":
         n = 1 if variant == "one_date" else 7
         return n * (DATE_WIDTH + img) + g
@@ -144,6 +153,7 @@ class SegSpec:
     base_vocab: int = MV.BASE_VOCAB
     map_shift: int = 0
     map_order: str = "raster"
+    chain: Optional[str] = None
 
     def validate(self, allow_test: bool = False) -> None:
         if self.task not in TASKS:
@@ -169,6 +179,10 @@ class SegSpec:
             raise PermissionError("the test split is refused: Steps 3-5 never read it (allow_test is Step 6's)")
         if self.in_pinned is not None and not (self.task == "pastis" and self.split == "train"):
             raise ValueError("in_pinned selects among PASTIS's training patches only")
+        if self.chain and (self.frames == "p7" or self.map_shift or self.map_order != "raster"):
+            raise ValueError("the chain (A2 Step 4.3) is one LULC block before one image, raster map, no shift")
+        if self.variant == "wrong_lulc" and not self.chain:
+            raise ValueError("variant wrong_lulc needs a chain")
         if self.split == "train" and self.variant != "full":
             raise ValueError("controls are evaluation variants")
 
@@ -194,7 +208,7 @@ class SegDataset(Dataset):
         # sequence index -> raster index of the code written there (identity for the raster layout)
         self.seq_order = nested_order(self.side) if spec.map_order == "nested" else np.arange(self.n_map)
         assert sorted(self.seq_order.tolist()) == list(range(self.n_map)), "the map order is not a permutation"
-        self.required = required_length(spec.task, spec.frames, spec.arm, "full")
+        self.required = required_length(spec.task, spec.frames, spec.arm, "full", spec.chain)
         self.max_length = self.required if max_length is None else int(max_length)
         if self.max_length < self.required:
             raise ValueError(f"max_length {self.max_length} < the {self.required} tokens of {spec.task} "
@@ -227,6 +241,15 @@ class SegDataset(Dataset):
         if not np.load(idir / "present.npy").all():
             raise RuntimeError(f"{tok}: an artifact is incomplete")
         self.map_meta, self.input_meta = meta, imeta
+        self.lulc = None
+        if sp.chain:                                   # the generated LULC (CHAIN): one row per view, like the map
+            cdir = tok / f"LULCGEN_{sp.chain}"
+            cmeta = json.loads((cdir / "metadata.json").read_text())
+            if int(cmeta["n_views"]) != len(views) or int(cmeta["tokens_per_sample"]) != TOKENS_PER_SAMPLE:
+                raise RuntimeError(f"{cdir}/metadata.json is not a LULC block over these {len(views)} views")
+            self.lulc = np.load(cdir / "tokens.npy", mmap_mode="r")
+            self.lulc_present = np.load(cdir / "present.npy")
+            self.chain_meta = cmeta
 
         # input rows of each view, in sequence order
         if sp.task == "pastis":
@@ -250,6 +273,8 @@ class SegDataset(Dataset):
         self.views = views[sel].reset_index(drop=True)
         if not map_present[self.views.view.values].all():
             raise RuntimeError(f"{mdir}: the artifact lacks views of split {sp.split}")
+        if self.lulc is not None and not self.lulc_present[self.views.view.values].all():
+            raise RuntimeError(f"LULCGEN_{sp.chain}: the artifact lacks views of split {sp.split}")
         # samples, and each sample's views (train draws among them)
         self.samples = np.unique(self.views.sample_idx.values)
         self._sample_views = {int(s): g.view.to_numpy(np.int64)
@@ -296,6 +321,12 @@ class SegDataset(Dataset):
     def _s2_chunk(self, row: int) -> torch.Tensor:
         info = self.V.get_modality(INPUT)
         body = torch.from_numpy(np.asarray(self.s2[row]).astype(np.int64)) + info.codebook_offset
+        return torch.cat([torch.tensor([info.bo_id]), body, torch.tensor([info.eo_id])])
+
+    def _lulc_chunk(self, view: int) -> torch.Tensor:
+        """[BO_LULC, the view's generated LULC codes (+ LULC's offset), EO_LULC] (CHAIN)."""
+        info = self.V.get_modality(CHAIN_MOD)
+        body = torch.from_numpy(np.asarray(self.lulc[view]).astype(np.int64)) + info.codebook_offset
         return torch.cat([torch.tensor([info.bo_id]), body, torch.tensor([info.eo_id])])
 
     def _date_chunk(self, date: int) -> torch.Tensor:
@@ -355,7 +386,11 @@ class SegDataset(Dataset):
         rows = self.in_rows[src]
         chunks, mods = [], []
         if self.spec.frames != "p7":                    # PASTIS-1 and CloudSen12: one image, no date block
-            return [self._s2_chunk(int(r)) for r in rows], [INPUT] * len(rows)
+            chunks, mods = [self._s2_chunk(int(r)) for r in rows], [INPUT] * len(rows)
+            if self.lulc is not None:                   # CHAIN: the LULC block first
+                lv = self.derangement()[view] if variant in ("wrong", "wrong_lulc") else view
+                chunks, mods = [self._lulc_chunk(int(lv))] + chunks, [CHAIN_MOD] + mods
+            return chunks, mods
         dates = self.in_dates[src]
         groups = range(len(rows))
         if variant == "one_date":
@@ -449,7 +484,8 @@ def spec_from_cfg(cfg, want: str) -> Optional[SegSpec]:
     return SegSpec(task=str(sc["task"]), arm=str(sc["arm"]), frames=str(sc.get("frames", "p1")), split=str(split),
                    in_pinned=sc.get("in_pinned", None) if want == "train" else None,
                    root=Path(str(sc.get("root", ROOT))), base_vocab=int(cfg.model_config.vocab_size) - MV.N_NEW,
-                   map_shift=int(sc.get("map_shift", 0) or 0), map_order=str(sc.get("map_order", "raster") or "raster"))
+                   map_shift=int(sc.get("map_shift", 0) or 0), map_order=str(sc.get("map_order", "raster") or "raster"),
+                   chain=(str(sc["chain"]) if sc.get("chain") else None))
 
 
 def build(cfg, want: str = "train") -> Optional[SegDataset]:
@@ -462,6 +498,6 @@ def build(cfg, want: str = "train") -> Optional[SegDataset]:
         from eo.data.seg_head_dataset import SegHeadDataset as cls      # A2 Step 4.2, Route C: the S2 block twice
     ds = cls(spec, max_length=int(cfg.max_length), seed=int(cfg.get("seed", 42)), batch=batch)
     print(f"seg {want}: {spec.task} {spec.frames} arm {spec.arm} split {spec.split} in_pinned {spec.in_pinned} "
-          f"map_order {spec.map_order} map_shift {spec.map_shift}: "
+          f"map_order {spec.map_order} map_shift {spec.map_shift} chain {spec.chain}: "
           f"{len(ds.samples)} samples, {len(ds)} examples an epoch, {ds.required} tokens (max_length {ds.max_length})")
     return ds

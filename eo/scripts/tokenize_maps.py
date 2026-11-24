@@ -30,7 +30,7 @@ import torch
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 from eo.geobench import s2 as G, sources as S, views as V  # noqa: E402
-from eo.maps import frozen, palette as P  # noqa: E402
+from eo.maps import frozen, harness as H, palette as P  # noqa: E402
 from eo.maps.tokenizers import run_fixed  # noqa: E402
 
 CHUNK = 2048
@@ -51,8 +51,9 @@ def view_labels(task: str, vs) -> np.ndarray:
 
 def encode_maps(tok, task: str, labels: np.ndarray, device: str = "cuda") -> np.ndarray:
     t = P.TASKS[task]
-    P.validate(P.UNIVERSAL, t.assign, t.ignore, t.n_classes)
-    x = P.render(torch.as_tensor(labels, device=device), t.assign, tok.input_size, P.UNIVERSAL)
+    _, assign, _ = H.task_palette(task, P.arm_palette(tok.frozen["arm"]))      # A2 Step 4.3: an arm's own palette
+    P.validate(P.UNIVERSAL, assign, t.ignore, t.n_classes)
+    x = P.render(torch.as_tensor(labels, device=device), assign, tok.input_size, P.UNIVERSAL)
     codes = run_fixed(tok.encode, x, tok.batch)
     return codes.reshape(len(codes), -1).cpu().numpy()
 
@@ -111,7 +112,8 @@ def main():
             "present_by_split": {s: int(present[views.view.values[views.split == s]].sum()) for s in ("train", "val", "test")},
             "frozen": tok.frozen, "tokenizer_record": tok.record(),
             "palette": "eo.maps.palette.UNIVERSAL", "palette_sha256": P.palette_record()["sha256"],
-            "assignment": list(P.TASKS[a.task].assign), "render": "nearest to the tokenizer's input size",
+            "assignment": list(H.task_palette(a.task, P.arm_palette(a.arm))[1]), "palette_name": P.arm_palette(a.arm),
+            "render": "nearest to the tokenizer's input size",
             "batch": tok.batch, "run_fixed": "cuDNN deterministic, TF32 off, tail padded with zeros",
             "flatten": "row-major", "codes_used": int(len(np.unique(tk))) if len(tk) else 0,
             "gpu": gpu, "fork_commit": subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],

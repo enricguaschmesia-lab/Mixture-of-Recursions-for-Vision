@@ -227,7 +227,7 @@ def score(task: str, arm: str, codes: np.ndarray, views, device: str = "cuda", m
             ks = []
             for j in range(K):
                 ib = torch.as_tensor(codes[s * n_crops:e * n_crops, j].astype(np.int64), device=device)
-                sc = H.class_scores(tok, ib.view(-1, side, side), task, "universal", "crop224")
+                sc = H.class_scores(tok, ib.view(-1, side, side), task, P.arm_palette(arm), "crop224")
                 ks.append(D.apply_rule(sc, t.ignore, rule, tok.output))
             pr = vote(torch.stack(ks), t.n_classes)
             conf.update(gt, pr)

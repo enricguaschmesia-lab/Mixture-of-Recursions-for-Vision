@@ -1,0 +1,15 @@
+# @package _global_
+#
+# A2 Step 4.3 (2026-11-23; docs/plans/a2_segmentation.md, Step 4, "Steps 4.3 and 4.4's design and reading", item 4): the
+# chain through generated TerraMind LULC on PASTIS-1, at Step 4.1's recipe (learning_rate=3e-3 and the seed on the
+# command line). Each sequence is [BO_LULC l EO_LULC][BO_S2L2A s EO_S2L2A][BO_MAP_PASTIS m EO_MAP] on the lattice,
+# the LULC the map base wrote from the view's S2 block (pastis/tok/LULCGEN_base; step43_chain_gen.py), so the map keeps
+# Route A's 198-position offset from its S2 patch (eo/data/seg_dataset.py, CHAIN).
+# Differs from r0_s41_lora16 in exactly seg.chain and max_length (gate Z26).
+defaults:
+  - r0_s41_lora16
+  - _self_
+
+seg:
+  chain: base
+max_length: 594

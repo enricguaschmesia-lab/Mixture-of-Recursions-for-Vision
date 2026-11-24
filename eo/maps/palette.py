@@ -126,6 +126,19 @@ TASKS: dict[str, Task] = {
 }
 
 
+#: A2 Step 4.3's palette ablation (2026-11-23; plan Step 4, "Steps 4.3 and 4.4's design and reading", item 2): the task's
+#: assignment with no colour reused from LULC. CloudSen12's thick cloud takes colour 13, the next unused colour in greedy
+#: order, instead of LULC's clouds (8); clear, thin cloud and shadow keep 10, 11, 12. Read through a map arm alias
+#: (map_vocab.ALIASES "aligned_arb", frozen.PALETTE_ALIASES) under the palette name "universal_arb".
+ARBITRARY: dict = {"cloudsen12": (10, 13, 11, 12)}
+PALETTE_OF_ARM: dict = {"aligned_arb": "universal_arb"}
+
+
+def arm_palette(arm: str) -> str:
+    """The palette name a map arm's maps are rendered and decoded with (eo/maps/harness.task_palette)."""
+    return PALETTE_OF_ARM.get(arm, "universal")
+
+
 class PaletteError(ValueError):
     pass
 

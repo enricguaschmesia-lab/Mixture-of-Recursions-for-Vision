@@ -24,7 +24,9 @@ FOLLOWUP = {"b256_64000": "short_B_b256_64000", "c4375_224": "long_C_c4375_224",
             #: follow-up 2 (Enric, 2026-11-22): Cosmos DI16x16 fine-tuned with a logit head (agent D, the second run),
             #: frozen by eo/experiments/segmentation/step4c_freeze.py
             "cosmos16_224": "aligned_D_d224_cosmos16_lg"}
-ALL = {**ARMS, **FOLLOWUP}
+#: A2 Step 4.3's palette ablation (2026-11-23): the aligned tokenizer itself, its maps rendered with palette.ARBITRARY
+PALETTE_ALIASES = {"aligned_arb": ARMS["aligned"]}
+ALL = {**ARMS, **FOLLOWUP, **PALETTE_ALIASES}
 REPO = Path(__file__).resolve().parents[2]
 
 

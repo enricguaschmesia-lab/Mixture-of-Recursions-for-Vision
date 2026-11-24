@@ -1,0 +1,15 @@
+# @package _global_
+#
+# A2 Step 4.3 (2026-11-23; docs/plans/a2_segmentation.md, Step 4, "Steps 4.3 and 4.4's design and reading", item 3): the
+# map grid, 196 against 784, at Step 4.1's recipe. Step 4.0's follow-up arm c4375_224n (C:c4375_224, f8 at 224 px,
+# 28 x 28 = 784 tokens, 4,375 codes, in the nested layout: four 196-token lattice blocks) on r0_s41_lora16 with
+# learning_rate=3e-3 and the seed on the command line, so the plateau stop lets it run up to 50 epochs.
+# Differs from r0_s41_lora16 in exactly seg.arm, seg.map_order and max_length (gate Z26).
+defaults:
+  - r0_s41_lora16
+  - _self_
+
+seg:
+  arm: c4375_224
+  map_order: nested
+max_length: 984
