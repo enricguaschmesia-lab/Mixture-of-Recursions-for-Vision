@@ -158,8 +158,14 @@ def build_prompt(dataset, row: int, target: str,
         chunks.append(dataset._load_chunk(name, row))   # [BO, body, EO], offset applied
         context.append(name)
 
-    info = get_modality(target)
-    truth = dataset._load_chunk(target, row)[1:-1]      # strip BO/EO -> the body
+    # The target's BO in the DATASET's layout (v1 eo_vocab, or eo_vocab_nc for a Coords-free run: its BO/EO ids
+    # move, its image ids do not), checked against the row's own block, so a layout mismatch raises here.
+    V = getattr(dataset, "_V", None)
+    info = (V.get_modality if V is not None else get_modality)(target)
+    block = dataset._load_chunk(target, row)
+    if int(block[0]) != info.bo_id:
+        raise RuntimeError(f"row {row} {target}: the block opens with {int(block[0])}, the layout's BO is {info.bo_id}")
+    truth = block[1:-1]                                  # strip BO/EO -> the body
     prompt = torch.cat(chunks + [torch.tensor([info.bo_id], dtype=torch.long)])
     return {"prompt": prompt, "truth": truth, "context": context}
 

@@ -1,0 +1,15 @@
+# @package _global_
+#
+# BEN with B10c-tr-x10 (2026-11-23, the experiments-overview deck's GPU job 4; Enric: "Launch 1-4"): what changes
+# when B10's BEN recipe runs on B10c-tr-x10, B10c's shape (153M) trained on 8.4M train-split scenes seen once
+# (vanilla10ctrx_20261111_215330, checkpoint-33000). It makes the size comparison against T360 one of size at
+# train-split data, which the B10 rows (val split) cannot show. A fragment, not a config: each b10ctrx_* overlay
+# lists it after its b10_* twin, so the twin's data, roles, budget, schedule and regime stay as they are.
+#   * geometry: B10's already (arm_b10_vanilla = arm_b10ctr_x10_vanilla's shape), so no model key changes.
+#   * token_set clean: B10c-tr-x10 was trained on the offset-free train split (as arm_b10c is arm_b10 + this key).
+#   * bf16: B10c-tr-x10 itself diverged in fp16 (CLAUDE.md: bf16 for long runs at any size; as t360_base).
+# Its overlays differ from their b10_* twins in exactly these two keys (checked on the workstation by
+# /data/enric/reports/slides/experiments_overview/gpu_jobs/check_overlays.py, with a control).
+multimodal:
+  token_set: clean
+precision: bf16

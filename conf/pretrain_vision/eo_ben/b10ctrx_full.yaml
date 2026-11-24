@@ -1,0 +1,9 @@
+# @package _global_
+#
+# B10c-tr-x10 on BEN (2026-11-23, deck GPU job 4): b10_full's recipe on B10c-tr-x10. Differs from b10_full in
+# exactly b10ctrx_base's keys.
+#   launch (RCP, course): /data/enric/rcp_p6/chain_ben3.sh b10ctrxfull b10ctrx_full b10ctrx_ext_ckpt33000 fp16 eo_terramesh/arm_b10c_vanilla
+defaults:
+  - b10_full
+  - b10ctrx_base
+  - _self_

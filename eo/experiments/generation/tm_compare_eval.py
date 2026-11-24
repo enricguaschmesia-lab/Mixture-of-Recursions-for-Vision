@@ -74,7 +74,7 @@ TM_RUNS = {"tm_base": ("terramind_v1_base_generate", "pixels"),
            "tm_large": ("terramind_v1_large_generate", "pixels"),
            "tm_base_tok": ("terramind_v1_base_generate", "tokens")}
 TOK_KEY = {"S2L2A": "tok_sen2l2a@224", "S1GRD": "tok_sen1grd@224", "S1RTC": "tok_sen1rtc@224"}
-OURS = ("t360", "b10c")
+OURS = ("t360", "b10c", "b10cltrxnc")   # b10cltrxnc: the 149M Coords-free base (2026-11-23)
 SAMPLERS = ("t1", "p08")
 STEPS, DECODE_SEED, BATCH, TM_BATCH, TM_SEED = 10, 0, 8, 16, 1000
 #: S2L2A is scored as reflectance; everything else in the units it is stored in.
