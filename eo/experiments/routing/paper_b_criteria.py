@@ -55,6 +55,7 @@ time means must equal b3_depth_shares' stored readings, and C1's numbers b3_seed
     .venv/bin/python eo/experiments/routing/paper_b_criteria.py --self-test
     .venv/bin/python eo/experiments/routing/paper_b_criteria.py read A
     .venv/bin/python eo/experiments/routing/paper_b_criteria.py read C990     (arm C: from its switch on; C1980 too)
+    .venv/bin/python eo/experiments/routing/paper_b_criteria.py read B        (arm B from step 0; D990 from its switch)
 
 Writes /data/enric/reports/b1/criteria/<arm>.{json,txt}. Runs in `.venv`, CPU, seconds.
 """
@@ -119,6 +120,18 @@ ARMS = {
               "windows": ("plateau", "late", "anneal"),
               "runs": {"c1980s42": RUNS / "mor10cwb3trnc1980_20261116_175333",
                        "c1980s43": RUNS / "mor10cwb3trs2nc1980_20261116_175333"}},
+    # Arms B and D as launched (B1 Step 7b, 2026-11-17/18; decision 14): the compute target at 1.8 on the soft mean with
+    # the confidence term (0.1 x the body positions' mean router entropy), B from step 0 (every window), D from the
+    # random-router checkpoint-990 (windows from its switch, as C990's)
+    "B": {"label": "arm B: the learned router under the compute target 1.8 with the confidence term, from step 0 (seeds 42, 43)",
+          "cell": "b3trnc", "router_forms": 1, "injects_per_modality": False,
+          "runs": {"b42": RUNS / "mor10cb3trncct18c_20261118_010057",
+                   "b43": RUNS / "mor10cb3trs2ncct18c_20261118_010057"}},
+    "D990": {"label": "arm D at 990: A10cR-b3-tr-NC's checkpoint-990 continued under arm B's target (seeds 42, 43)",
+             "cell": "b3trnc", "router_forms": 1, "injects_per_modality": False, "switch": 990,
+             "windows": ("plateau", "late", "anneal"),
+             "runs": {"d990s42": RUNS / "mor10cwb3trncct18c990_20261118_010057",
+                      "d990s43": RUNS / "mor10cwb3trs2ncct18c990_20261118_010057"}},
 }
 
 
@@ -266,9 +279,14 @@ def c4_run(dm: dict, costs: dict, mean: dict, w_grd: float, w_slot: np.ndarray, 
     return out
 
 
-def c4_controls(dm: dict, mean: dict, w_grd: float, w_slot: np.ndarray) -> bool:
-    """At this run's load in each rule window and frame: the gain-optimal allocation passes, its worst relabelling fails."""
-    ok = True
+def c4_controls(dm: dict, mean: dict, w_grd: float, w_slot: np.ndarray) -> tuple:
+    """At this run's load in each rule window and frame: the gain-optimal allocation passes, its worst relabelling fails.
+
+    Returns (holds, the largest p the optimum itself reaches). The test can reject only where the optimum reaches
+    p <= C4_P. At a load of whole slots it cannot (B1 Step 7b, 2026-11-18: arm B puts 20% of positions at depth 1
+    and none at 3, so one slot is shallow and four sit at 2; 24 of the 120 relabellings give the same allocation,
+    and the optimum reads p 0.05-0.20). Then C4 is not measurable at that load, and read_arm says so."""
+    ok, p_opt_max = True, 0.0
     for w in C4_WINDOWS:
         load = w_slot @ five(dm[w], w_grd)
         for frame in ("target_only", "all_forced"):
@@ -280,7 +298,8 @@ def c4_controls(dm: dict, mean: dict, w_grd: float, w_slot: np.ndarray) -> bool:
                         key=lambda X: float((w_slot[:, None] * X * C).sum()))
             p_worst = regret_test(worst, w_slot, C)["p"]
             ok &= p_opt <= C4_P + 1e-12 and p_worst > C4_P
-    return bool(ok)
+            p_opt_max = max(p_opt_max, float(p_opt))
+    return bool(ok), p_opt_max
 
 
 # ------------------------------------------------------------------------------------------------ read an arm
@@ -320,10 +339,18 @@ def read_arm(name: str) -> int:
         shifted = {w: {m: dm[tags[1]][w][IMG[(i + 1) % 6]] for i, m in enumerate(IMG)} for w in WIN}
         ctl["c1_shuffled_fails"] = not c1_pair(dm[tags[0]], shifted, w_grd, WIN)["passes"]
     ctl["c2_synthetic"] = c2_synthetic_ok()
-    ctl["c4_optimum_passes_worst_fails"] = all(c4_controls(dm[t], mean, w_grd, w_slot) for t in tags)
+    c4c = {t: c4_controls(dm[t], mean, w_grd, w_slot) for t in tags}
+    c4_measurable = all(p <= C4_P + 1e-12 for _, p in c4c.values())
+    c4_na = None
+    if c4_measurable:
+        ctl["c4_optimum_passes_worst_fails"] = all(h for h, _ in c4c.values())
+    else:      # C4 is a signal: a load where no allocation can reach p <= C4_P leaves it unmeasured, not the arm unread
+        c4_na = (f"the C4 control is n/a: at this load the gain-optimal allocation itself reaches p "
+                 f"{max(p for _, p in c4c.values()):.3f} > {C4_P}, so no allocation can pass")
     if arm.get("stored"):
         ctl["reproduces_stored_time_means"] = all(reproduces_stored(t, dm[t]) for t in tags)
-    L.append("  controls: " + ", ".join(f"{k} {'holds' if v else 'FAILS'}" for k, v in ctl.items()))
+    L.append("  controls: " + ", ".join(f"{k} {'holds' if v else 'FAILS'}" for k, v in ctl.items())
+             + (f"; {c4_na}" if c4_na else ""))
 
     # ---- C1 ----
     pairs = {f"{a}|{b}": c1_pair(dm[a], dm[b], w_grd, WIN) for a, b in itertools.combinations(tags, 2)}
@@ -366,7 +393,8 @@ def read_arm(name: str) -> int:
     # ---- C4 ----
     c4r = {t: c4_run(dm[t], costs, mean, w_grd, w_slot, WIN) for t in tags}
     c4_follows = all(r["follows"] for r in c4r.values())
-    c4 = "follows the gain" if c4_follows else "does not follow the gain"
+    c4 = ("not measurable at this load" if not c4_measurable else
+          "follows the gain" if c4_follows else "does not follow the gain")
     L.append(f"\n  C4 meaningful, a SIGNAL (never part of the verdict since 2026-11-16): {c4.upper()}  (rule: regret "
              f"at the run's own load, p <= {C4_P} over 120 slot relabellings in {' and '.join(C4_WINDOWS)}; target "
              f"only primary on the mean of the cell's seeds' tables)")
@@ -394,7 +422,7 @@ def read_arm(name: str) -> int:
     verdicts = {"C1": c1, "C2": c2, "C3": c3, "C5": c5}
     signals = {"C4": c4}
     success = all(verdicts[k] == "pass" for k in ("C1", "C2", "C3")) and c5 in ("pass", "n/a")
-    old_rule = success and c4_follows          # 2026-11-15's verdict: all five, with C4 a condition
+    old_rule = success and c4_follows and c4_measurable   # 2026-11-15's verdict: all five, with C4 a condition
     L.append(f"\n  VERDICTS (success needs C1, C2 and C3, and C5 where it applies): {verdicts}; success: {success}")
     L.append(f"  SIGNALS (read and reported, never a condition): {signals}")
     L.append(f"  under the rule of 2026-11-15 (C4 a condition): passes all five: {old_rule}")
@@ -410,6 +438,7 @@ def read_arm(name: str) -> int:
         "controls": ctl, "verdicts": verdicts, "signals": signals, "success": success,
         "passes_all_rule_2026_11_15": old_rule,
         "c1": pairs, "c2": c2r, "c4": c4r, "w_grd": w_grd, "w_slot": w_slot.tolist(),
+        **({"c4_not_measurable": c4_na} if c4_na else {}),
         "cell_tables": {s: {f: v.tolist() for f, v in c.items()} for s, c in costs.items()},
         "time_means": {t: {w: {m: dm[t][w][m].tolist() for m in IMG} for w in WIN} for t in tags},
         "windows": {w: list(ab) for w, ab in WIN.items()}, "switch": arm.get("switch"), "runs_read": tags,

@@ -26,6 +26,8 @@ unit's metrics.json. CONTROLS, which must fail: B10 on the original tokens again
 differ), and a C unit paired with itself must read 0 with a zero-width interval.
 
     .venv/bin/python eo/experiments/routing/b1_c_read.py            (every C unit scored at both checkpoints)
+    .venv/bin/python eo/experiments/routing/b1_c_read.py B          (arm B, 2026-11-18: its two seeds, D990-s42 at uniform 2
+                                                                     beside them at 3300 as description; written to b1/b_read)
 
 Writes /data/enric/reports/b1/c_read/read.{txt,json}. Runs in `.venv`, CPU.
 """
@@ -41,6 +43,11 @@ OUT = Path("/data/enric/reports/b1/c_read")
 CKS = ("checkpoint-1980", "checkpoint-3300")
 C_UNITS = {"C990-s42": "c990s42_e1tv", "C990-s43": "c990s43_e1tv",
            "C1980-s42": "c1980s42_e1tv", "C1980-s43": "c1980s43_e1tv"}
+# B1 Step 7b (2026-11-18): arm B read the same way (`b1_c_read.py B`, written to b1/b_read). Beside its units at 3300,
+# D990-s42, a body retrained at uniform depth 2 by accident (b1_d_read.py), as description: B runs mean depth 1.8
+ARM_UNITS = {"C": C_UNITS, "B": {"B-s42": "b42_e1tv", "B-s43": "b43_e1tv"}}
+ARM_OUT = {"C": Path("/data/enric/reports/b1/c_read"), "B": Path("/data/enric/reports/b1/b_read")}
+EXTRA_3300 = {"B": {"D990-s42 at uniform 2 (description)": "d990s42_e1tv"}}
 ROUTED = {"random s42": "a10crb3trnc_e1tv", "random s43": "a10crb3trs2nc_e1tv",
           "learned s42 (A)": "a10cb3trnc_e1tv", "learned s43 (A)": "a10cb3trs2nc_e1tv",
           "vanilla 5L": "b10c5trnc_e1tv"}
@@ -73,20 +80,23 @@ def mean_rows(a: dict, b: dict, names) -> dict:
             for n in names}
 
 
-def main() -> int:
+def main(arm: str = "C") -> int:
+    if arm not in ARM_UNITS:
+        raise SystemExit(f"arm {arm!r}: one of {sorted(ARM_UNITS)}")
+    C_UNITS, OUT, extra = ARM_UNITS[arm], ARM_OUT[arm], EXTRA_3300.get(arm, {})
     a0 = _a0()
     img = [m for m in a0.MODALITIES if m != "Coords"]
     names = img + ["image", "all"]
     fmt = lambda p: f"{p['diff']:+.4f} [{p['lo']:+.4f}, {p['hi']:+.4f}]"  # noqa: E731
     have = {k: t for k, t in C_UNITS.items() if all((AE / t / ck / "metrics.json").exists() for ck in CKS)}
     if not have:
-        raise SystemExit("no C unit is scored at both checkpoints yet")
-    doc = {"c_units": have, "routed": ROUTED, "forced2": {k: str(v) for k, v in FORCED2.items()}, "seed_gap": SEED_GAP,
-           "measure": f"pooled image-token CE, C - other, paired per token, 95% row bootstrap ({a0.NBOOT} draws)",
+        raise SystemExit(f"no {arm} unit is scored at both checkpoints yet")
+    doc = {f"{arm.lower()}_units": have, "routed": ROUTED, "forced2": {k: str(v) for k, v in FORCED2.items()}, "seed_gap": SEED_GAP,
+           "measure": f"pooled image-token CE, {arm} - other, paired per token, 95% row bootstrap ({a0.NBOOT} draws)",
            "by_ck": {}}
-    lines = ["B1 arm C against the Coords-free 1 + 3 + 1 train cell: pooled image-token CE, C - other, paired per token, "
-             f"95% row bootstrap ({a0.NBOOT}); TITAN V fp16, Coords dropped. Negative: C is better. "
-             f"C units: {', '.join(have)}"]
+    lines = [f"B1 arm {arm} against the Coords-free 1 + 3 + 1 train cell: pooled image-token CE, {arm} - other, paired per token, "
+             f"95% row bootstrap ({a0.NBOOT}); TITAN V fp16, Coords dropped. Negative: {arm} is better. "
+             f"{arm} units: {', '.join(have)}"]
     for ck in CKS:
         gap = SEED_GAP[ck]
         R, M = {}, {}
@@ -107,6 +117,8 @@ def main() -> int:
         ref = AE / have[next(iter(have))] / ck
         others, why0 = {}, None
         units = {k: AE / t / ck for k, t in ROUTED.items()} | {k: p / ck for k, p in FORCED2.items()}
+        if ck == "checkpoint-3300":
+            units |= {k: AE / t / ck for k, t in extra.items() if (AE / t / ck / "metrics.json").exists()}
         for k, p in units.items():
             unit_ok(p)
             ok, why = a0.same_sequences(ref, p)
@@ -123,10 +135,10 @@ def main() -> int:
         others["forced d2, both seeds"] = mean_rows(others["random s42 forced d2"], others["random s43 forced d2"], names)
         order = ["random s42", "random s43", "random, both seeds", "learned s42 (A)", "learned s43 (A)",
                  "learned, both seeds (A)", "vanilla 5L", "random s42 forced d2", "random s43 forced d2",
-                 "forced d2, both seeds"]
+                 "forced d2, both seeds"] + [k for k in extra if k in others]
         D = {"pairing": why0, "units": {}}
         lines.append(f"  {ck}: pairing {why0} with every unit; control (B10, original tokens) fails as it must against "
-                     f"every C unit; self-pairs 0 [0, 0]; the cell's seed gap {gap:.4f}")
+                     f"every {arm} unit; self-pairs 0 [0, 0]; the cell's seed gap {gap:.4f}")
         for k in have:
             U = {"image_ce": a0.mean(R[k]["image"]), "e1": a0.mean(R[k]["all"]), "pairs": {}}
             lines.append(f"    {k}: image tokens {U['image_ce']:.4f} (E1 {U['e1']:.4f})")
@@ -153,4 +165,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import sys
+    raise SystemExit(main(*sys.argv[1:2]))
