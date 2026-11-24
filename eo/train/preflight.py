@@ -1071,6 +1071,8 @@ def check_init_from(ctx: PreflightContext) -> CheckResult:
     Not a resume: the resume checks refuse a partial load, which loading across a vocabulary
     change would be. This verifies instead that the starting weights are exactly the
     ones extend_checkpoint.py proved identical to the pretrained model on every old id.
+    Or (A2 Step 5.2) a packaged continued base: a training checkpoint of a run that continued
+    from such a base, with its continued.json (eo/finetune/init.verify_continued).
     """
     if ctx.config_path is None or not ctx.config_path.is_file():
         return CheckResult("init from", True, "skipped (no config)")
@@ -1098,8 +1100,15 @@ def check_init_from(ctx: PreflightContext) -> CheckResult:
         return CheckResult("init from", False, "the config has no model_config.vocab_size")
     try:
         doc = verify_extension(Path(str(init)), int(vocab))
-    except (RuntimeError, FileNotFoundError, KeyError) as e:
-        return CheckResult("init from", False, str(e).splitlines()[0])
+    except (RuntimeError, FileNotFoundError, KeyError, ValueError, TypeError) as e:
+        return CheckResult("init from", False, str(e).splitlines()[0],
+                           "A fine-tune starts from an extended base (extend_checkpoint.py, extension.json) or a "
+                           "packaged continued base (package_continued.py, continued.json).")
+    if doc.get("kind") == "continued":       # A2 Step 5.2: a training checkpoint of a `continue` run (init.py)
+        return CheckResult("init from", True,
+                           f"{Path(str(init)).name}: continued base, {doc['run']} step {doc['step']}, from the base "
+                           f"sha {doc['base']['weights_sha256'][:10]} (identity max |dlogit| "
+                           f"{doc['base']['extension']['identity']['max_abs_diff']:.1e}), sha {doc['weights_sha256'][:10]}")
     return CheckResult("init from", True,
                        f"{Path(str(init)).name}: identity max |dlogit| {doc['identity']['max_abs_diff']:.1e}, "
                        f"controls fired, sha {doc['weights_sha256'][:10]}")

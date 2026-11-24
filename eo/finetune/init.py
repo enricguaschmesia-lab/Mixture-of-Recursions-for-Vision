@@ -11,11 +11,19 @@ a vocabulary change would be. Here:
   * its identity artifact (`extension.json`) must exist and record a passed identity check
     with both controls fired, and the weights must hash to what it recorded.
 Then the regime is applied: `full` (everything trains) or `lora` (eo/finetune/lora.py).
+
+A second kind of base (A2 Step 5.2, 2026-11-23): a CONTINUED base, a training checkpoint of a run
+that continued from a verified extended base (`pretrain_init` variant `continue`, every parameter
+training: A2's R1). It has no `extension.json`; its record is `continued.json`, written by
+`write_continued` (CLI eo/scripts/package_continued.py), which holds the base's own extension.json,
+the run's pretrain_init.json, the run, step and vocabulary size, and the weights' SHA-256.
+`verify_extension` accepts either record, never both.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Dict, Optional, Sequence
 
@@ -47,26 +55,139 @@ def _load_state(path: Path) -> Dict[str, torch.Tensor]:
     return torch.load(path, map_location="cpu", weights_only=True)
 
 
-def verify_extension(init_dir: Path, vocab_size: int, check_hash: bool = True) -> Dict:
-    """The identity artifact's verdict. Raises with the reason if it does not hold."""
-    ej = init_dir / "extension.json"
-    if not ej.is_file():
-        raise RuntimeError(f"{ej} missing: {init_dir} was not produced by extend_checkpoint.py "
-                           f"(or its identity check never passed)")
-    doc = json.loads(ej.read_text())
+CONTINUED = "continued.json"      # a continued base's record (A2 Step 5.2; write_continued)
+
+
+def _check_extension_doc(doc: Dict, vocab_size: int, where) -> None:
+    """An extension.json's verdict without its weights: identity passed, both controls fired, the vocabulary."""
     if not doc.get("identity", {}).get("passed"):
-        raise RuntimeError(f"{ej}: identity check did not pass")
+        raise RuntimeError(f"{where}: identity check did not pass")
     if not (doc.get("control_insert_before_pad", {}).get("fired")
             and doc.get("control_untied_resize", {}).get("fired")):
-        raise RuntimeError(f"{ej}: a control did not fire, so the identity check proves nothing")
+        raise RuntimeError(f"{where}: a control did not fire, so the identity check proves nothing")
     if int(doc["extension"]["vocab_after"]) != int(vocab_size):
-        raise RuntimeError(f"{ej}: extended to {doc['extension']['vocab_after']}, "
+        raise RuntimeError(f"{where}: extended to {doc['extension']['vocab_after']}, "
                            f"config wants {vocab_size}")
+
+
+def verify_extension(init_dir: Path, vocab_size: int, check_hash: bool = True) -> Dict:
+    """The identity artifact's verdict. Raises with the reason if it does not hold.
+
+    A directory with `continued.json` and no `extension.json` is a continued base (verify_continued); its
+    returned record carries `kind: "continued"`, `weights_sha256` and `source_checkpoint` like an extension's."""
+    ej = init_dir / "extension.json"
+    if ej.is_file() and (init_dir / CONTINUED).is_file():
+        raise RuntimeError(f"{init_dir} holds both extension.json and {CONTINUED}: which base is it?")
+    if not ej.is_file() and (init_dir / CONTINUED).is_file():
+        return verify_continued(init_dir, vocab_size, check_hash)
+    if not ej.is_file():
+        raise RuntimeError(f"{ej} missing: {init_dir} was not produced by extend_checkpoint.py "
+                           f"(or its identity check never passed), and has no {CONTINUED} either")
+    doc = json.loads(ej.read_text())
+    _check_extension_doc(doc, vocab_size, ej)
     wf = init_dir / doc["weights_file"]
     if check_hash and _sha256(wf) != doc["weights_sha256"]:
         raise RuntimeError(f"{wf} does not hash to what extension.json recorded: it changed "
                            f"after the identity check")
     return doc
+
+
+def verify_continued(init_dir: Path, vocab_size: int, check_hash: bool = True) -> Dict:
+    """A continued base's verdict (A2 Step 5.2). Raises with the reason if it does not hold.
+
+    * `continued.json` exists, of kind "continued", version 1, at the config's vocabulary, as is the directory's
+      config.json;
+    * the base it continued from passed its own identity check (its extension.json, held in the record: identity
+      passed, both controls fired) at the SAME vocabulary, so the continuation never resized the table;
+    * the run continued from exactly that base: its pretrain_init.json (held in the record) is variant `continue`,
+      without LoRA or a frozen body, and names the base's weights hash;
+    * the weights hash to what the record holds (`check_hash`).
+    The base's path is not checked: it differs between sites, and the hash is the link."""
+    cj = init_dir / CONTINUED
+    if not cj.is_file():
+        raise RuntimeError(f"{cj} missing: {init_dir} is not a packaged continued base "
+                           f"(eo/scripts/package_continued.py)")
+    doc = json.loads(cj.read_text())
+    if doc.get("kind") != "continued" or doc.get("version") != 1:
+        raise RuntimeError(f"{cj}: not a continued-base record (kind {doc.get('kind')!r}, "
+                           f"version {doc.get('version')!r})")
+    if int(doc["vocab_size"]) != int(vocab_size):
+        raise RuntimeError(f"{cj}: a base at {doc['vocab_size']} ids, config wants {vocab_size}")
+    cfgj = init_dir / "config.json"
+    if cfgj.is_file() and int(json.loads(cfgj.read_text()).get("vocab_size", -1)) != int(vocab_size):
+        raise RuntimeError(f"{cfgj}: vocab_size {json.loads(cfgj.read_text()).get('vocab_size')}, "
+                           f"config wants {vocab_size}")
+    base = doc["base"]
+    _check_extension_doc(base["extension"], vocab_size, f"{cj}: the base's extension.json")
+    if base["extension"]["weights_sha256"] != base["weights_sha256"]:
+        raise RuntimeError(f"{cj}: the base's weights hash {base['weights_sha256'][:12]} is not its "
+                           f"extension.json's {base['extension']['weights_sha256'][:12]}")
+    pi = doc["pretrain_init"]
+    if pi.get("variant") != "continue" or pi.get("lora") is not None or pi.get("freeze_body"):
+        raise RuntimeError(f"{cj}: the run was not a full continuation (variant {pi.get('variant')!r}, "
+                           f"lora {pi.get('lora')!r}, freeze_body {pi.get('freeze_body')!r})")
+    if pi.get("conversion_weights_sha256") != base["weights_sha256"]:
+        raise RuntimeError(f"{cj}: the run continued from weights {str(pi.get('conversion_weights_sha256'))[:12]}, "
+                           f"not the verified base's {base['weights_sha256'][:12]}")
+    wf = init_dir / doc["weights_file"]
+    if check_hash and _sha256(wf) != doc["weights_sha256"]:
+        raise RuntimeError(f"{wf} does not hash to what {CONTINUED} recorded: it changed after packaging")
+    return doc
+
+
+def write_continued(checkpoint: Path, base: Path, out: Path, admission: Optional[Path] = None,
+                    note: str = "") -> Dict:
+    """Package a training checkpoint of a `continue` run as a fine-tune base: its weights and config.json copied
+    into `out` beside a `continued.json`, then verified back. Refuses unless the base passes verify_extension here
+    (weights hashed) at the checkpoint's vocabulary, the run's pretrain_init.json names that base's weights, the
+    checkpoint is its trainer state's step, and `out` does not exist. `admission`: a json recording why this
+    checkpoint is the base (kept by path and SHA-256, with its top-level scalars)."""
+    import datetime
+    import socket
+    checkpoint, base, out = Path(checkpoint).resolve(), Path(base).resolve(), Path(out)
+    run_dir = checkpoint.parent
+    if out.exists():
+        raise FileExistsError(f"{out} exists: a packaged base is never rewritten")
+    pi = json.loads((run_dir / "pretrain_init.json").read_text())
+    cfg = json.loads((checkpoint / "config.json").read_text())
+    vocab = int(cfg["vocab_size"])
+    ext = verify_extension(base, vocab, check_hash=True)
+    if ext.get("kind") == "continued":
+        raise RuntimeError(f"{base} is itself a continued base: package from the extension it continued from")
+    ts = json.loads((checkpoint / "trainer_state.json").read_text())
+    step = int(ts["global_step"])
+    if checkpoint.name != f"checkpoint-{step}":
+        raise RuntimeError(f"{checkpoint}: its trainer state is at step {step}")
+    wf = _weights(checkpoint)
+    tmp = out.with_name(out.name + ".partial")
+    if tmp.exists():
+        raise FileExistsError(f"{tmp} exists: a previous attempt stopped there; look at it and remove it")
+    tmp.mkdir(parents=True)
+    shutil.copy2(wf, tmp / wf.name)
+    shutil.copy2(checkpoint / "config.json", tmp / "config.json")
+    sha = _sha256(tmp / wf.name)
+    if sha != _sha256(wf):
+        raise RuntimeError(f"the copy of {wf} does not hash to its source")
+    doc = {"kind": "continued", "version": 1,
+           "what": "a training checkpoint of a run that continued from a verified extended base, packaged as a "
+                   "fine-tune base (eo/finetune/init.py write_continued)",
+           "run": run_dir.name, "step": step, "max_steps": ts.get("max_steps"),
+           "source_checkpoint": str(checkpoint), "vocab_size": vocab,
+           "weights_file": wf.name, "weights_sha256": sha,
+           "config_sha256": _sha256(tmp / "config.json"),
+           "trainer_state_sha256": _sha256(checkpoint / "trainer_state.json"),
+           "base": {"path": str(base), "weights_sha256": ext["weights_sha256"], "extension": ext},
+           "pretrain_init": pi, "note": note,
+           "packaged": {"at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                        "host": socket.gethostname()}}
+    if admission is not None:
+        adm = json.loads(Path(admission).read_text())
+        doc["admission"] = {"record": str(Path(admission).resolve()), "sha256": _sha256(Path(admission)),
+                            **{k: v for k, v in adm.items() if isinstance(v, (int, float, str, bool))}}
+    (tmp / CONTINUED).write_text(json.dumps(doc, indent=2) + "\n")
+    verify_continued(tmp, vocab, check_hash=True)
+    tmp.rename(out)
+    return verify_extension(out, vocab, check_hash=True)
 
 
 def strict_load(model, ckpt_dir: Path) -> Dict:
@@ -124,7 +245,7 @@ def init_from(model, cfg) -> Dict:
     X.assert_tied(model)
     report = {"init_from": str(init_dir), "extension_source": ext["source_checkpoint"],
               "weights_sha256": ext["weights_sha256"], "load": load,
-              "regime": str(ft.regime)}
+              "regime": str(ft.regime), "init_kind": ext.get("kind", "extension")}
     if ft.regime == "lora":
         if cfg.recursive.get("enable"):
             raise NotImplementedError(

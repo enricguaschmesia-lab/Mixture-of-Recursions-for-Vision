@@ -196,6 +196,46 @@ def _fake_extension(d: Path, vocab_after: int = 87664, drop_json: bool = False, 
     return d
 
 
+def _fake_continued(d: Path, vocab: int = 161665, *, drop_record: bool = False, change_weights: bool = False,
+                    both: bool = False, cfg_vocab: Optional[int] = None, base_over=None, pi_over=None) -> Path:
+    """A continued base in miniature (A2 Step 5.2, eo/finetune/init.verify_continued): two tensors, a config.json and
+    a continued.json whose base passed its identity check at the same vocabulary (A2's map layout, 161,665 ids) and
+    whose run continued from that base. `change_weights` rewrites the weights after the record (changed since
+    packaging); `both` adds an extension.json beside it; `base_over` / `pi_over` mutate the held base extension.json /
+    the run's pretrain_init.json."""
+    import torch
+    from safetensors.torch import save_file
+    from eo.train.clevr_init import sha256
+    d.mkdir(parents=True)
+    g = torch.Generator().manual_seed(2)
+    w = {"model.embed_tokens.weight": torch.randn(4, 2, generator=g), "model.norm.weight": torch.ones(2)}
+    save_file(w, str(d / "model.safetensors"))
+    (d / "config.json").write_text(json.dumps({"vocab_size": cfg_vocab or vocab}))
+    base_sha = "6" * 64
+    ext = {"extension": {"vocab_before": 81296, "vocab_after": vocab, "n_new": vocab - 81296}, "layout": "map",
+           "identity": {"passed": True, "max_abs_diff": 3.1e-05, "tol": 1e-4},
+           "control_insert_before_pad": {"fired": True}, "control_untied_resize": {"fired": True},
+           "weights_file": "model.safetensors", "weights_sha256": base_sha}
+    pi = {"variant": "continue", "lora": None, "freeze_body": False, "from_stage1": None,
+          "conversion_weights_sha256": base_sha}
+    if base_over:
+        base_over(ext)
+    if pi_over:
+        pi_over(pi)
+    doc = {"kind": "continued", "version": 1, "run": "r1_fake", "step": 4000,
+           "source_checkpoint": "/nowhere/checkpoint-4000", "vocab_size": vocab,
+           "weights_file": "model.safetensors", "weights_sha256": sha256(d / "model.safetensors"),
+           "base": {"path": "/nowhere/base", "weights_sha256": base_sha, "extension": ext}, "pretrain_init": pi}
+    if change_weights:
+        w["model.norm.weight"] = w["model.norm.weight"] * 2
+        save_file(w, str(d / "model.safetensors"))
+    if not drop_record:
+        (d / "continued.json").write_text(json.dumps(doc))
+    if both:
+        (d / "extension.json").write_text(json.dumps(ext))
+    return d
+
+
 def _fake_val_site(d: Path, temporal: Optional[Path] = None, tok_index: Optional[Path] = None,
                    mutate=None, drop_check: bool = False) -> Path:
     """`<d>/val` (the real val root, linked) beside a cleaned root `<d>/val_clean` that links every entry
@@ -748,6 +788,47 @@ def main(argv=None) -> int:
                        _results(env=GOOD_ENV, config=l0_cfg)))
     else:
         print("\n(no stage 1: the shipped-config positive skipped, no nc conversion on this machine)")
+
+    # --- A2 Step 5.2 (2026-11-23): a segmentation fine-tune from a CONTINUED base, a training checkpoint of a run that
+    # continued from a verified extended base (R1's), with its continued.json (eo/finetune/init.verify_continued). Each
+    # of these would load weights the record does not vouch for: no record (a raw checkpoint), weights changed after
+    # packaging, another vocabulary, a base whose identity check failed, whose control did not fire or which extended
+    # to another size, a run that continued from other weights or under LoRA, both records at once. Miniature fakes;
+    # R1's raw checkpoint, its packaged base and the map base add cases where they exist. ---
+    seg_cfg = {t: REPO / f"conf/pretrain_vision/eo_seg/{c}.yaml"
+               for t, c in (("PASTIS", "r0_s41_lora16"), ("CloudSen12", "s52_cloudsen12"))}
+
+    def seg(init, task="PASTIS"):
+        return dict(env=GOOD_ENV, config=seg_cfg[task], overrides={"finetune.init_from": str(init)})
+    ct_ok = _fake_continued(tmp / "ct_ok")
+    cases += [(label, "init from", kw) for label, kw in [
+        ("continued: no record (a raw checkpoint)",      seg(_fake_continued(tmp / "ct_norec", drop_record=True))),
+        ("continued: weights changed after packaging",   seg(_fake_continued(tmp / "ct_sha", change_weights=True))),
+        ("continued: another vocabulary (81,296)",       seg(_fake_continued(tmp / "ct_vocab", vocab=81296))),
+        ("continued: config.json at another vocabulary", seg(_fake_continued(tmp / "ct_cfgvocab", cfg_vocab=81296))),
+        ("continued: the base's identity check failed",  seg(_fake_continued(
+            tmp / "ct_ident", base_over=lambda e: e["identity"].__setitem__("passed", False)))),
+        ("continued: a base control did not fire",       seg(_fake_continued(
+            tmp / "ct_ctrl", base_over=lambda e: e["control_insert_before_pad"].__setitem__("fired", False)))),
+        ("continued: the base extended to 81,296",       seg(_fake_continued(
+            tmp / "ct_bvocab", base_over=lambda e: e["extension"].__setitem__("vocab_after", 81296)))),
+        ("continued: the run continued from other weights", seg(_fake_continued(
+            tmp / "ct_other", pi_over=lambda p: p.__setitem__("conversion_weights_sha256", "0" * 64)))),
+        ("continued: a LoRA continuation",               seg(_fake_continued(
+            tmp / "ct_lora", pi_over=lambda p: p.__setitem__("lora", {"r": 16, "alpha": 32.0})))),
+        ("continued: both records in one directory",     seg(_fake_continued(tmp / "ct_both", both=True))),
+    ]]
+    a2seg = Path("/data/enric/runs/pretrain/a2_seg")
+    r1_ck = a2seg / "r1aligned_n4000_20261122_193801/checkpoint-4000"
+    if (r1_ck / "model.safetensors").is_file():
+        cases.append(("continued: R1's raw checkpoint-4000", "init from", seg(r1_ck)))
+    ci_pos += [(f"continued: a miniature continued base, {t}", "init from", _results(**seg(ct_ok, t))) for t in seg_cfg]
+    for label, d, marker in (("continued: R1's packaged base", a2seg / "base/r1aligned_n4000_ckpt4000", "continued.json"),
+                             ("extension: the map base", a2seg / "base/b10cltrxnc_ext_map_nc_ckpt33000", "extension.json")):
+        if (d / marker).is_file():
+            ci_pos += [(f"{label}, {t}", "init from", _results(**seg(d, t))) for t in seg_cfg]
+        else:
+            print(f"\n({label}: positives skipped, no {d} on this machine)")
 
     # --- the temporal stage (A1 Step 5, 2026-11-08). T360-T continues T360 from its extended base
     # (pretrain_init variant `continue`), reads whole four-date locations through a location index
