@@ -421,6 +421,21 @@ def verify_init(plan: Dict, vocab_size: int, check_hash: bool = True) -> Dict:
         return verify_conversion(plan["conversion"], plan["variant"], vocab_size, check_hash=check_hash)
     from eo.data import temporal_vocab_nc as TVL
     from eo.finetune.init import verify_extension
+    # A2's R1 (2026-11-22): a MAP-extended base (extend_checkpoint.py --layout map) under a model at the map layout's
+    # total (161,665 on A2's base). Its extension.json must record the map layout exactly as eo/data/map_vocab.py builds
+    # it over that base now, so a base written for another slot layout, or over another base, is refused.
+    from eo.data import map_vocab as MV
+    try:
+        lay = MV.for_total(vocab_size)
+    except (ValueError, KeyError):
+        lay = None
+    if lay is not None:
+        doc = verify_extension(plan["conversion"], vocab_size, check_hash=check_hash)
+        if doc.get("layout") != "map" or doc.get("map_vocab") != lay.record():
+            raise RuntimeError(f"{plan['conversion'] / 'extension.json'}: layout {doc.get('layout')!r} does not record "
+                               f"the map rows of eo/data/map_vocab.py over a {lay.base_vocab}-id base as they are now; "
+                               f"rebuild the base with extend_checkpoint.py --layout map")
+        return doc
     try:
         TV = TVL.for_vocab_size(vocab_size)
     except ValueError as e:

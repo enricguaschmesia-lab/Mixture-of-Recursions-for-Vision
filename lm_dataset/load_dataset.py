@@ -45,6 +45,11 @@ MULTIMODAL_DATASETS = {
     "geobench_seg": {
         "root_dir": None,
     },
+    # A2's R1 mid-training: train scenes with their LULC as RGB map tokens, mixed with Major TOM scenes at half the
+    # tokens (eo/data/map_mix_dataset.py). Its roots are TERRAMESH_TRAIN_TOK_ROOT and val_clean; its maps r1.*_maps.
+    "terramesh_map": {
+        "root_dir": TERRAMESH_TOK_ROOT,
+    },
 }
 
 
@@ -195,6 +200,9 @@ def load_eval_dataset_from_config(cfg):
     if dataset_name == ["geobench_seg"]:
         from eo.data.seg_dataset import build as build_seg
         return build_seg(cfg, want="eval")
+    if dataset_name == ["terramesh_map"]:
+        from eo.data.map_mix_dataset import build_eval as build_map_eval
+        return build_map_eval(cfg)
     if len(dataset_name) != 1 or dataset_name[0] != "terramesh_multimodal":
         return None
     mm_cfg = cfg.get("multimodal", {})
@@ -225,8 +233,15 @@ def load_dataset_from_config(cfg):
         if ds_name == "terramesh_temporal":
             return _build_temporal(cfg, want="train")
         if ds_name == "geobench_seg":
+            if (cfg.get("replay") or {}).get("enable"):
+                # A2 Step 4.6, candidate RP: TerraMesh's own sequences replayed in every step (eo/data/seg_replay_dataset.py)
+                from eo.data.seg_replay_dataset import build_train as build_seg_replay
+                return build_seg_replay(cfg)
             from eo.data.seg_dataset import build as build_seg
             return build_seg(cfg, want="train")
+        if ds_name == "terramesh_map":
+            from eo.data.map_mix_dataset import build_train as build_map_train
+            return build_map_train(cfg)
 
         active_modalities = list(mm_cfg.get("active_modalities", ["tok_rgb@256"]))
         modality_order = mm_cfg.get("modality_order", "fixed")

@@ -34,7 +34,10 @@ raises; each one produces a run that trains happily and is worthless:
     whose settings the dataset would refuse once the pod has started, whose eval
     sets do not split over its GPUs, or whose resume would change its data
     (temporal_data.json)                                (eo/data/temporal_dataset.py)
-  * a new run on Coords        -- every model trained since 2026-11-12 is without
+  * an R1 run (A2's mid-training) whose map artifacts are not the picked tokenizer's, not
+    row-aligned with the roots it reads, whose schedule outruns its dataset, or whose resume
+    would change its data                               (eo/data/map_mix_dataset.py)
+  * a new run on Coords       -- every model trained since 2026-11-12 is without
                                   Coords (Enric; worklog §5), but the base config
                                   still lists it, so an overlay that forgets
                                   multimodal.active_modalities, or leaves it empty,
@@ -131,7 +134,8 @@ class CheckResult:
 #: The datasets an EO run may use: TerraMesh pretraining, the Phase 6 BEN fine-tune, the
 #: temporal stage (A1: whole four-date locations and Major TOM scenes, in micro-batches), and A2's
 #: segmentation fine-tunes (GEO-Bench-2 inputs -> RGB map tokens, eo/data/seg_dataset.py).
-EO_DATASETS = ("terramesh_multimodal", "ben_multimodal", "terramesh_temporal", "geobench_seg")
+EO_DATASETS = ("terramesh_multimodal", "ben_multimodal", "terramesh_temporal", "geobench_seg",
+               "terramesh_map")             # A2's R1: train scenes with their LULC as map tokens (map_mix_dataset)
 #: Fine-tunes that must start from an extended checkpoint (finetune.init_from): BEN and A2's segmentation.
 FINETUNE_DATASETS = ("ben_multimodal", "geobench_seg")
 
@@ -210,6 +214,10 @@ def check_multi_gpu(ctx: PreflightContext) -> CheckResult:
     if cfg.get("dataset") == "ben_multimodal" or (cfg.get("finetune") or {}).get("init_from"):
         return CheckResult("multi-gpu", False, f"--gpus {n} on a BEN fine-tune",
                            "Verified for TerraMesh pretraining only (eo/train/distributed.py).")
+    if cfg.get("dataset") == "terramesh_map":
+        return CheckResult("multi-gpu", False, f"--gpus {n} on an R1 run",
+                           "R1's micro-batch dataset is gated on one process only (verify_seg_r1.py Z15); "
+                           "its run fits one A100.")
     return CheckResult("multi-gpu", True, f"{n} GPUs, torchrun DDP on one node")
 
 
@@ -885,6 +893,80 @@ def check_temporal_data(ctx: PreflightContext) -> CheckResult:
     return CheckResult("temporal data", True, detail)
 
 
+def check_map_data(ctx: PreflightContext) -> CheckResult:
+    """An R1 run's data (A2 Step 5.1, eo/data/map_mix_dataset.py), before a pod starts.
+
+    The builder refuses all of this too, but only after the model is built, on the pod. Its own rules are called:
+      * the r1 block and the layout (map_mix_dataset.validate_config): nc, the train split, clean tokens, a random
+        order, the eval split, the map vocabulary, per-device batches of 1, an even total_batch_size, max_length;
+      * both map artifacts load against the roots the run reads (MapArtifact): the picked tokenizer's arm, codes,
+        weights and palette, complete, and written against each root's own tok_index.parquet (sha256), so every map
+        lands on its own row; the train maps are exactly the root's ssl4eos12 rows and the val maps cover every
+        held-out row;
+      * the schedule fits the dataset's length (r1.passes passes over the map pool), so HF never replays index 0;
+      * on --resume, the data the run directory's record holds (temporal_data.json, written by pretrain.py's
+        generic hook) equals this config's. Schedule keys stay free.
+    """
+    if ctx.config_path is None or not ctx.config_path.is_file():
+        return CheckResult("map data", True, "skipped (config missing; check_config reports it)")
+    cfg = _load_config(ctx.config_path, ctx.overrides)
+    if cfg.get("dataset") != "terramesh_map":
+        return CheckResult("map data", True, "n/a (not an R1 run)")
+    import numpy as np
+    import pandas as pd
+    from omegaconf import OmegaConf
+    from eo.data import map_mix_dataset as MD
+    from eo.data import temporal_dataset as TD
+    from eo.terramesh_tok.clean import resolve_token_root
+    from eo.terramesh_tok.train_split import resolve_train_root
+    try:
+        oc = OmegaConf.create(cfg)
+        rc = MD.validate_config(oc)
+        mm = MD._mm(oc)
+        troot = resolve_train_root(ctx.env.get("TERRAMESH_TRAIN_TOK_ROOT"), mm["token_set"],
+                                   allow_partial=bool(mm["allow_partial_train_root"]))
+        vroot = resolve_token_root(ctx.env.get("TERRAMESH_TOK_ROOT"), mm["token_set"])
+        tmaps = MD.MapArtifact(rc.train_maps, troot, rc.arm)
+        vmaps = MD.MapArtifact(rc.val_maps, vroot, rc.arm)
+        corpus = pd.read_parquet(troot / "tok_index.parquet", columns=["row", "corpus"]).sort_values("row").corpus.values
+        ssl = corpus == "ssl4eos12"
+        if not (tmaps.present[ssl].all() and not tmaps.present[~ssl].any()):
+            raise RuntimeError(f"{rc.train_maps}: its maps are not exactly the train root's ssl4eos12 rows")
+        rows = MD.eval_rows(oc, vroot)
+        if not vmaps.present[rows].all():
+            raise RuntimeError(f"{rc.val_maps}: {int((~vmaps.present[rows]).sum())} held-out rows have no map")
+        total = int(cfg["total_batch_size"])
+        steps_per_pass = -(-int(ssl.sum()) // (rc.map_per_microbatch * total // 2))
+        max_steps = int(rc.passes) * steps_per_pass
+        steps = int(cfg.get("num_train_steps"))
+        if steps > max_steps:
+            raise ValueError(f"num_train_steps {steps} > {max_steps}, the steps one HF epoch of this dataset holds "
+                             f"(r1.passes {rc.passes} passes of {steps_per_pass} steps over the map rows)")
+        settings = MD.data_settings(oc, tmaps, vmaps)
+    except (ValueError, TypeError, KeyError, RuntimeError, FileNotFoundError) as e:
+        return CheckResult("map data", False, str(e).splitlines()[0],
+                           "The dataset would refuse this on the pod, after the model is built "
+                           "(eo/data/map_mix_dataset.py; the artifacts: eo/scripts/tokenize_train_lulc_maps.py).")
+    detail = (f"{int(ssl.sum())} map rows ({tmaps.meta.get('gpu')}), {len(rows)} held-out maps; {total} micro-batches "
+              f"a step (half map, half base tokens); a map-pool pass {steps_per_pass} steps; schedule {steps} of "
+              f"{max_steps}")
+    if ctx.resuming:
+        rec = ctx.run_dir / TD.DATA_RECORD
+        if not rec.is_file():
+            return CheckResult("map data", False, f"resuming, but {rec} is missing",
+                               "pretrain.py writes it at launch: this directory is not an R1 run's.")
+        try:
+            changes = TD.data_record_changes(json.loads(rec.read_text()), settings)
+        except ValueError as e:
+            return CheckResult("map data", False, f"{rec} unreadable: {e}")
+        if changes:
+            return CheckResult("map data", False, f"{rec.name} records other data: {'; '.join(changes[:4])}",
+                               "A resume may not change the data: a changed design starts a new run. "
+                               "Schedule keys (stop_steps, num_train_steps, learning_rate) are free.")
+        detail += f"; resume: the data {rec.name} records"
+    return CheckResult("map data", True, detail)
+
+
 def check_ben_data(ctx: PreflightContext) -> CheckResult:
     """A BEN fine-tune's data exists, is labelled, and was tokenized for every row it reads.
 
@@ -1072,7 +1154,8 @@ def check_pretrain_init(ctx: PreflightContext) -> CheckResult:
         if isinstance(block, dict) and block.get("variant") == CI.CONTINUE:
             hint = ("continue: pretrain_init.conversion names an extended base written by "
                     "extend_checkpoint.py --layout temporal (v1, 87,664 ids) or --layout temporal_nc (the "
-                    "Coords-free layout, 81,296), the model's own, with its extension.json, copied with a SHA-256 "
+                    "Coords-free layout, 81,296) or --layout map (A2's map rows over the nc temporal base, 161,665: "
+                    "R1), the model's own, with its extension.json, copied with a SHA-256 "
                     "check and never rebuilt (its hash depends on the device that computed its new rows).")
         else:
             hint = ("Stage 1: launch arm_b10c{v,s,l,ls}_stage1 as it is. Stage 2: pass "
@@ -1476,6 +1559,7 @@ CHECKS: List[Callable[[PreflightContext], CheckResult]] = [
     check_train_root,
     check_temporal_index,
     check_temporal_data,
+    check_map_data,
     check_ben_data,
     check_init_from,
     check_pretrain_init,

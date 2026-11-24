@@ -53,6 +53,9 @@ _REGISTRY_BY_DATASET: Dict[str, str] = {
     # A2 (segmentation as generated RGB map tokens): GEO-Bench-2 inputs, then a map block whose ids are
     # appended after the nc temporal base's (eo/data/map_vocab.py).
     "geobench_seg": "eo_map",
+    # A2's R1 (2026-11-22): TerraMesh train scenes with each ssl4eos12 row's LULC as a map block, in the same map
+    # layout over A2's base (eo/data/map_mix_dataset.py).
+    "terramesh_map": "eo_map",
 }
 
 CLEVR_REGISTRY = "lm_dataset.multimodal_vocab_shared_caption_scene_desc"

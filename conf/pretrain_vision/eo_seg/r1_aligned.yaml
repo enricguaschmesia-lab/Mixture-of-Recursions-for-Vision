@@ -1,0 +1,91 @@
+# @package _global_
+#
+# A2 R1: mid-training of A2's map-extended base on TerraMesh train scenes, each `ssl4eos12` row with its LULC as RGB
+# map tokens of the picked aligned tokenizer (b224_64000_long: 196 tokens on the image blocks' 14 x 14 grid, 64,000
+# codes), mixed with Major TOM scenes at half the tokens (A2 plan, Step 5.1: the design, its budget and its reading
+# rule, written before any run). Data: eo/data/map_mix_dataset.py.
+#
+# ┌── THE DIFF FROM ITS BASE'S ARM (arm_b10ctrxnc_vanilla), IN FULL ─────────────────────────────────────────────────┐
+# │                                      B10c(L)-tr-x10-NC        R1 (this)                                           │
+# │   dataset                            terramesh_multimodal     terramesh_map                                       │
+# │   model_config.vocab_size            81188                    161665 (nc temporal base 81,296 + map rows 80,369)  │
+# │   max_length                         990                      1188 (5 image blocks + the map block, 6 x 198)      │
+# │   total_batch_size                   256 scenes               22 micro-batches: 11 map (110 sequences) + 11 base  │
+# │                                                               (132 sequences), 261,360 tokens (the base's 253,440)│
+# │   per_device_train_batch_size        16                       1 (one micro-batch)                                 │
+# │   per_device_eval_batch_size         4 (inherited)            1 (micro-batches: 4 rows single, 16 map sets)       │
+# │   r1                                 absent                   every key below                                     │
+# │   pretrain_init                      absent                   continue, the map-extended base                     │
+# │   learning_rate                      3e-3                     3e-4 (a tenth of peak: A1's continued stages)       │
+# │   num_train_steps / stop_steps       33000                    2000 (the cap; extension rule in the plan)          │
+# │   num_warmup_steps                   165                      100                                                 │
+# │   lr_scheduler_kwargs.num_decay_steps 3300                    200 (the last 10%)                                  │
+# │   save_steps, eval_steps             330, 165                 200, 100                                            │
+# │   fixed_eval_steps, fixed_save_steps the dense early lists    "25,50", null                                       │
+# │   dataloader_prefetch_factor         absent (torch's 2)       4                                                   │
+# │ Inherited and asserted (gate Z15, preflight check_map_data): split train, vocab nc, token set clean, eval split   │
+# │ v1, random modality order, the six image modalities, bf16, eval_on_start, seed 42, 4 workers, 29 layers of 576,   │
+# │ AdamW (0.9, 0.95), weight decay 0.1, clip 1.0, warmup_stable_decay.                                               │
+# └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+# THE BASE: /data/enric/runs/pretrain/a2_seg/base/b10cltrxnc_ext_map_nc_ckpt33000 (B10cL-tr-x10-NC's checkpoint-33000,
+# then the 108 temporal-layout rows, then the 80,369 map rows; identity 3.1e-5 on every base logit), on g49 and lts4
+# under ${MOR_EO_RCP} with SHA-256 equal. Every parameter trains from it with a fresh optimizer (clevr_init, variant
+# continue: its extension.json must record the map layout as map_vocab builds it now).
+#
+# THE MAPS: r1.train_maps (958,176 ssl4eos12 rows, row-aligned with the train root's tok_index.parquet) and r1.val_maps
+# (val's 89,088 rows), written by eo/scripts/tokenize_train_lulc_maps.py with the frozen tokenizer and verified by
+# eo/experiments/segmentation/step26_verify.py. Workstation paths here; the RCP job passes g49's.
+#
+#   launch (RCP, one A100):  jobs/a2r1_train.sh r1aligned eo_seg/r1_aligned <run-id>   (the A2 R1 kit's submit_r1.sh)
+#   local, a smoke:          bash eo/scripts/train_eo.sh --arm r1aligned --config eo_seg/r1_aligned --gpu a100 ...
+defaults:
+  - /eo_terramesh/arm_b10ctrxnc_vanilla
+  - _self_
+
+dataset: terramesh_map
+multimodal:
+  split: train
+  vocab: nc
+  active_modalities: ['S2L2A', 'S1GRD', 'S1RTC', 'DEM', 'NDVI', 'LULC']
+model_config:
+  vocab_size: 161665
+max_length: 1188
+precision: bf16
+
+total_batch_size: 22
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+
+r1:
+  arm: aligned
+  task: lulc
+  train_maps: /data/enric/data/TerraMesh/maps/train/MAP_aligned
+  val_maps: /data/enric/data/TerraMesh/maps/val/MAP_aligned
+  map_per_microbatch: 10
+  base_per_microbatch: 12
+  eval_per: 4                 # `single`: the base's eval batch
+  eval_map_per: 16            # `map`, `map_s2`
+  eval_seed: 20261122
+  passes: 4
+
+pretrain_init:
+  conversion: ${oc.env:MOR_EO_RCP,/data/enric}/runs/pretrain/a2_seg/base/b10cltrxnc_ext_map_nc_ckpt33000
+  variant: continue
+  freeze_body: false
+  from_stage1: null
+
+learning_rate: 0.0003
+num_train_steps: 2000
+stop_steps: 2000
+num_warmup_steps: 100
+lr_scheduler_kwargs:
+  num_decay_steps: 200
+save_steps: 200
+eval_steps: 100
+eval_on_start: true
+fixed_eval_steps: "25,50"
+fixed_save_steps: null
+dataloader_prefetch_factor: 4
+
+wandb_project: mor-eo-a2seg
