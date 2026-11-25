@@ -1,0 +1,19 @@
+# @package _global_
+# A2 Step 4.6 (2026-11-24; docs/plans/a2_segmentation.md, Step 4, "4.6, the forgetting-bounded recipe (item 90)",
+# item 3): candidate RP, Step 4.1's recipe with TerraMesh's own sequences replayed in every step
+# (eo/data/seg_replay_dataset.py). A step is total_batch_size micro-batches of one index each: the 4 segmentation
+# micro-batches of 8 that are exactly R0's 32-sequence batch at that step and seed, then replay.base_microbatches base
+# micro-batches of replay.base_per_microbatch Major TOM train rows (990 tokens, labels on every token; the TerraMesh
+# train root on g49, TERRAMESH_TRAIN_TOK_ROOT). Differs from its parent in exactly the replay block, total_batch_size and
+# per_device_train_batch_size (gate Z28e, eo/scripts/verify_seg_s46.py); LR 3e-3 and the seed on the command line, as R0.
+# This overlay: RP-1/2 on PASTIS-1, 2 base micro-batches of 3 (5,934 labelled base tokens against 6,304 map tokens: 48.5 %).
+defaults:
+  - r0_s41_lora16
+  - _self_
+replay:
+  enable: true
+  seg_per_microbatch: 8
+  base_microbatches: 2
+  base_per_microbatch: 3
+total_batch_size: 6
+per_device_train_batch_size: 1
