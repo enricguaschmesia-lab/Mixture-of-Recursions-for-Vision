@@ -1,0 +1,14 @@
+# @package _global_
+#
+# Meeting 2026-11-25, option A, arm S (docs/notes/downstream/2026-11-25_meeting_2_patches_positions.md §8, pre-registered):
+# Step 4.0's short arm (the frozen short tokenizer, 256 map tokens in raster order after the usual x1.75 S2, sequential
+# positions 0-455) at Step 4.1's recipe (r0_s41_lora16), learning_rate=3e-3 and the seed on the command line. Arm A
+# (m2p_native128) differs from it in the S2's scale and the map's layout only. Differs from r0_s41_lora16 in exactly
+# seg.arm and max_length.
+defaults:
+  - r0_s41_lora16
+  - _self_
+
+seg:
+  arm: short
+max_length: 456

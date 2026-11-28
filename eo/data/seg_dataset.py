@@ -40,16 +40,34 @@ CONTROLS (`variant`, for evaluation; eo/eval/seg.py):
   shuffled_dates  PASTIS-7: the 7 date blocks' days permuted with no fixed point (keyed on seed and view),
                   images in place
   one_date        PASTIS-7: the middle group (j = 3) alone, with its date block
+  wrong_early     PASTIS-7 (A2 Step 7.0c): the images of groups 0-2, the dates more than 792 positions before the map,
+                  taken from the `wrong` control's deranged view; their date blocks, and groups 3-6, the view's own
+
+DATES (`dates`, A2 Step 7.0c; PASTIS-7 only). A subset of the seven groups, strictly increasing, e.g. (4, 5, 6): the
+latest three. Only those groups are written, each with its date block, in date order, then the map, on the lattice:
+input block i at 198 i and BO_MAP at 198 len(dates), so a run on the latest k dates holds each date at the offset from
+the map it has in PASTIS-7. None (the default) is all seven; all seven given explicitly is normalised to None.
+one_date, shuffled_dates and wrong_early are defined on all seven only.
+
+DATE CURRICULUM (`date_curriculum` = n, A2 Step 7.0d; PASTIS-7 training only). The training sequences of draw epoch e
+hold the latest k(e) = min(7, 1 + e // n) groups, each written as DATES writes them (`curriculum_groups`), padded to
+max_length: one date in epochs 0..n-1, two in n..2n-1, ..., all seven from epoch 6n on. Order and views are the plain
+run's (keyed on (seed, epoch) as ever), so a curriculum run differs from the all-seven run with its seed only in the
+dates its first 6n epochs see. The draw epoch is SegEpochCallback's, which also writes the schedule each epoch to
+<output_dir>/date_curriculum.json; item 0 of each epoch prints its k from the process that builds it. Evaluation never
+sees it: spec_from_cfg passes it to the training spec only.
 
 MAP LAYOUTS (Step 4.0's follow-ups, Enric 2026-11-20 evening; plan Step 4.0 "follow-ups"). Default: the map block
 right after the inputs at sequential (lattice) positions, its codes in raster order, as Step 4.0 ran. Two options:
   map_shift d   (raster only) the whole map block, BO_MAP to EO_MAP, moved d positions on: positions jump by d after
                 the inputs, so the map leaves the 198 lattice (alignment test: d = 99, half a block)
-  map_order "nested"  (a 28 x 28 map over ONE 14 x 14 input block: PASTIS-1, CloudSen12) the map's four 2 x 2 phases
+  map_order "nested"  (a 28 x 28 map over the 14 x 14 input grid: PASTIS-1, CloudSen12, and PASTIS-7 with all seven
+                dates, A2 Step 7.0e, where the map follows the last date block) the map's four 2 x 2 phases
                 as four 196-token blocks on the lattice: sub-cell j = 2 dy + dx of input patch k = 14 r + c (map cell
                 (2r + dy, 2c + dx)) sits at position BO + 1 + 198 j + k, written block by block (j = 0..3), each in
-                the inputs' raster order. Every map token is 198 (j + 1) positions after its input patch's token,
-                positions only increase, and EO_MAP takes the last code's position + 1 (989 on PASTIS-1).
+                the inputs' raster order. Every map token is 198 (j + 1) positions after its input patch's token
+                (on PASTIS-7, the latest date's; date i's is 198 (j + 1 + 6 - i) before it), positions only increase,
+                and EO_MAP takes the last code's position + 1 (989 on PASTIS-1, 2,177 on PASTIS-7).
   Codes are stored, generated-and-returned and scored in RASTER order: map_chunk reorders into sequence order,
   `to_raster` reorders back, and `step_positions` gives generation the position of each code it feeds back.
 CHAIN (A2 Step 4.3, 2026-11-23; plan Step 4, "Steps 4.3 and 4.4's design and reading", item 4). `chain` names a
@@ -58,6 +76,14 @@ LULC tokens the base wrote for each view from its S2 block). With it every seque
     [BO_LULC l1..l196 EO_LULC] [BO_S2L2A .. EO_S2L2A] [BO_MAP_<task> .. EO_MAP]      on the lattice, 594 tokens
 so the map keeps Route A's 198-position offset from its S2 patch. Variant `wrong` takes both blocks of the deranged
 view; `wrong_lulc` keeps the view's own S2 and takes the deranged view's LULC.
+NATIVE S2 (`s2_crop` 128; meeting 2026-11-25, option A: docs/notes/downstream/2026-11-25_meeting_2_patches_positions.md
+§8). PASTIS-1's S2 at its native 128 px, no resampling: 8 x 8 tokens of 16 px from <task>/tok/S2L2A_tok128/ (rows of
+train and val only), on a GAPPED 14-wide raster that keeps every pretrained offset, with a 2 * 8 = 16-wide map (the short
+arm) nested 2 x 2 under it (map_order "nested"):
+    BO_S2L2A 0 | S2 cell (r, c) at 1 + 14 r + c | EO_S2L2A 197 | BO_MAP 198 |
+    map cell (R, C) at 199 + 198 j + 14 (R // 2) + C // 2, j = 2 (R % 2) + C % 2 | EO_MAP 989          324 tokens
+  Every map code sits 198 (j + 1) positions after the S2 code of its cell, as in the 784 layout; the default (224)
+  paths are unchanged.
 Arms: Step 4.0's three (map_vocab.ARMS) or a follow-up alias (map_vocab.ALIASES), whose codes take its parent slot's
 first ids.
 
@@ -68,6 +94,7 @@ Runs in `.venv`: numpy, pandas, torch. Never imports terratorch.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -91,12 +118,32 @@ except Exception:                                # pragma: no cover
 ROOT = Path("/data/enric/data/geobench2")
 TASKS = ("pastis", "cloudsen12")
 FRAMES = {"pastis": ("p1", "p7"), "cloudsen12": ("single",)}
-VARIANTS = ("full", "prior", "wrong", "shuffled_dates", "one_date", "wrong_lulc")
+VARIANTS = ("full", "prior", "wrong", "shuffled_dates", "one_date", "wrong_lulc", "wrong_early")
 CHAIN_MOD = "LULC"                               # the chained block's modality (A2 Step 4.3)
 INPUT = "S2L2A"
 P7 = [f"p7_{j}" for j in range(7)]
 ONE_DATE_GROUP = 3
-DATE_WIDTH = 3                                   # [BO_Date D EO_Date]: the day bin only
+EARLY_GROUPS = (0, 1, 2)                         # wrong_early: the dates 990-1,386 positions before the map (Step 7.0c)
+ALL_SEVEN_ONLY = ("one_date", "shuffled_dates", "wrong_early")
+
+
+def normalise_dates(dates) -> Optional[Tuple[int, ...]]:
+    """None, or a strictly increasing tuple of PASTIS-7 groups that is not all seven (all seven -> None)."""
+    if dates is None:
+        return None
+    d = tuple(int(x) for x in dates)
+    if not d or any(b <= a for a, b in zip(d, d[1:])) or d[0] < 0 or d[-1] >= len(P7):
+        raise ValueError(f"dates {d}: a non-empty, strictly increasing subset of 0..{len(P7) - 1}")
+    return None if d == tuple(range(len(P7))) else d
+
+
+def curriculum_groups(per: int, epoch: int) -> Tuple[int, ...]:
+    """DATE CURRICULUM: the groups a training sequence of draw epoch `epoch` holds, the latest min(7, 1 + epoch // per)."""
+    if int(per) < 1 or int(epoch) < 0:
+        raise ValueError(f"date_curriculum {per}, epoch {epoch}: a positive count of epochs and a draw epoch >= 0")
+    k = min(len(P7), 1 + int(epoch) // int(per))
+    return tuple(range(len(P7) - k, len(P7)))
+DATE_WIDTH = 3                                  # [BO_Date D EO_Date]: the day bin only
 DERANGE_SEED = 20261119
 _DRAW_STREAM = 7                                 # the view draw's RNG key tag
 
@@ -115,6 +162,15 @@ def year_id(date: int) -> int:
 
 MAP_ORDERS = ("raster", "nested")
 NESTED_SIDE, INPUT_SIDE, BLOCK = 28, 14, 198      # the nested layout: a 28 x 28 map over the 14 x 14 input grid
+S2_CROPS = (224, 128)                             # 224: the contract's crop (default); 128: PASTIS's native S2 (NATIVE S2)
+NATIVE_CROP, NATIVE_SIDE = 128, 8                 # 128 px at 16 px a token: an 8 x 8 grid
+NATIVE_EO_S2, NATIVE_EO_MAP = INPUT_SIDE * INPUT_SIDE + 1, BLOCK + 1 + 3 * BLOCK + INPUT_SIDE * INPUT_SIDE   # 197, 989
+
+
+def native_s2_positions() -> torch.Tensor:
+    """(66,) the positions of [BO_S2L2A, the 8 x 8 codes in raster order, EO_S2L2A] on the gapped 14-wide raster."""
+    r, c = np.divmod(np.arange(NATIVE_SIDE * NATIVE_SIDE), NATIVE_SIDE)
+    return torch.tensor([0] + (1 + INPUT_SIDE * r + c).tolist() + [NATIVE_EO_S2], dtype=torch.long)
 
 
 def nested_order(side: int = NESTED_SIDE, inner: int = INPUT_SIDE) -> np.ndarray:
@@ -130,13 +186,15 @@ def nested_order(side: int = NESTED_SIDE, inner: int = INPUT_SIDE) -> np.ndarray
     return np.asarray(out, dtype=np.int64)
 
 
-def required_length(task: str, frames: str, arm: str, variant: str = "full", chain: Optional[str] = None) -> int:
+def required_length(task: str, frames: str, arm: str, variant: str = "full", chain: Optional[str] = None,
+                    s2_crop: int = 224, dates: Optional[Sequence[int]] = None) -> int:
     g = MV.spec(arm)[1] + 2
-    img = TOKENS_PER_SAMPLE + 2
+    img = (TOKENS_PER_SAMPLE if int(s2_crop) == 224 else NATIVE_SIDE * NATIVE_SIDE) + 2
     if chain:                                    # one LULC block before the image (A2 Step 4.3)
         return 2 * img + g
     if task == "pastis" and frames == "p7":
-        n = 1 if variant == "one_date" else 7
+        d = normalise_dates(dates)
+        n = 1 if variant == "one_date" else (len(d) if d is not None else 7)
         return n * (DATE_WIDTH + img) + g
     return img + g
 
@@ -154,6 +212,24 @@ class SegSpec:
     map_shift: int = 0
     map_order: str = "raster"
     chain: Optional[str] = None
+    s2_crop: int = 224
+    dates: Optional[Tuple[int, ...]] = None      # DATES (A2 Step 7.0c): PASTIS-7's groups kept; None = all seven
+    date_curriculum: Optional[int] = None        # DATE CURRICULUM (A2 Step 7.0d): epochs per date count; train only
+
+    def __post_init__(self):
+        self.dates = normalise_dates(self.dates)
+        if self.date_curriculum is not None:
+            if isinstance(self.date_curriculum, bool) or int(self.date_curriculum) != self.date_curriculum:
+                raise ValueError(f"date_curriculum {self.date_curriculum!r}: a whole number of epochs")
+            self.date_curriculum = int(self.date_curriculum)
+
+    def groups(self) -> Tuple[int, ...]:
+        """PASTIS-7's groups this spec writes, in order (all seven unless `dates`)."""
+        return tuple(range(len(P7))) if self.dates is None else self.dates
+
+    def inner_side(self) -> int:
+        """The S2 grid the nested map sits under: 14 (224 px) or 8 (NATIVE S2)."""
+        return NATIVE_SIDE if int(self.s2_crop) == NATIVE_CROP else INPUT_SIDE
 
     def validate(self, allow_test: bool = False) -> None:
         if self.task not in TASKS:
@@ -166,13 +242,39 @@ class SegSpec:
             raise ValueError(f"map_order {self.map_order!r}: {MAP_ORDERS}")
         if int(self.map_shift) < 0 or (self.map_shift and self.map_order != "raster"):
             raise ValueError(f"map_shift {self.map_shift}: a non-negative shift of the raster layout only")
-        if self.map_order == "nested" and (MV.spec(self.arm)[2] != NESTED_SIDE or self.frames == "p7"):
-            raise ValueError(f"the nested layout puts a {NESTED_SIDE} x {NESTED_SIDE} map over ONE input block; arm "
-                             f"{self.arm} is {MV.spec(self.arm)[2]} x {MV.spec(self.arm)[2]}, frames {self.frames}")
+        if int(self.s2_crop) not in S2_CROPS:
+            raise ValueError(f"s2_crop {self.s2_crop}: {S2_CROPS}")
+        if int(self.s2_crop) == NATIVE_CROP and not (self.task == "pastis" and self.frames == "p1"
+                                                     and self.map_order == "nested" and not self.map_shift
+                                                     and not self.chain):
+            raise ValueError("s2_crop 128 (NATIVE S2) is PASTIS-1's, with the nested map, no shift and no chain")
+        if self.map_order == "nested" and int(self.s2_crop) == NATIVE_CROP:
+            if MV.spec(self.arm)[2] != 2 * NATIVE_SIDE:
+                raise ValueError(f"the native nested layout puts a {2 * NATIVE_SIDE} x {2 * NATIVE_SIDE} map over the "
+                                 f"8 x 8 S2 grid; arm {self.arm} is {MV.spec(self.arm)[2]} x {MV.spec(self.arm)[2]}")
+        elif self.map_order == "nested" and MV.spec(self.arm)[2] != NESTED_SIDE:
+            raise ValueError(f"the nested layout puts a {NESTED_SIDE} x {NESTED_SIDE} map over a 14 x 14 input grid; "
+                             f"arm {self.arm} is {MV.spec(self.arm)[2]} x {MV.spec(self.arm)[2]}")
+        if self.map_order == "nested" and self.frames == "p7" and (self.dates is not None
+                                                                   or self.date_curriculum is not None):
+            raise ValueError("the nested PASTIS-7 map (A2 Step 7.0e) follows all seven dates: no dates subset, no "
+                             "date curriculum")
         if self.variant not in VARIANTS:
             raise ValueError(f"variant {self.variant!r}: {VARIANTS}")
-        if self.variant in ("shuffled_dates", "one_date") and self.frames != "p7":
+        if self.variant in ALL_SEVEN_ONLY and self.frames != "p7":
             raise ValueError(f"variant {self.variant} is PASTIS-7's only")
+        if self.dates is not None and not (self.task == "pastis" and self.frames == "p7"):
+            raise ValueError(f"dates {self.dates} select among PASTIS-7's groups only")
+        if self.dates is not None and self.variant in ALL_SEVEN_ONLY:
+            raise ValueError(f"variant {self.variant} is defined on all seven dates, not on dates {self.dates}")
+        if self.date_curriculum is not None:
+            if not (self.task == "pastis" and self.frames == "p7" and self.split == "train" and self.variant == "full"):
+                raise ValueError("date_curriculum grows PASTIS-7's training sequences only (task pastis, frames p7, "
+                                 "split train, variant full)")
+            if self.dates is not None:
+                raise ValueError(f"date_curriculum chooses the dates itself; dates {self.dates} must be null")
+            if self.date_curriculum < 1:
+                raise ValueError(f"date_curriculum {self.date_curriculum}: at least one epoch per date count")
         if self.split not in ("train", "val", "test"):
             raise ValueError(f"split {self.split!r}")
         if self.split == "test" and not allow_test:
@@ -205,10 +307,15 @@ class SegDataset(Dataset):
         self.map_off, self.map_size = self.lay.slot(spec.arm)
         self.n_map = MV.spec(spec.arm)[1]
         self.side = MV.spec(spec.arm)[2]
+        self.native = int(spec.s2_crop) == NATIVE_CROP          # NATIVE S2 (module docstring)
+        self.inner = spec.inner_side()
         # sequence index -> raster index of the code written there (identity for the raster layout)
-        self.seq_order = nested_order(self.side) if spec.map_order == "nested" else np.arange(self.n_map)
+        if spec.map_order == "nested":
+            self.seq_order = nested_order(self.side, self.inner) if self.native else nested_order(self.side)
+        else:
+            self.seq_order = np.arange(self.n_map)
         assert sorted(self.seq_order.tolist()) == list(range(self.n_map)), "the map order is not a permutation"
-        self.required = required_length(spec.task, spec.frames, spec.arm, "full", spec.chain)
+        self.required = required_length(spec.task, spec.frames, spec.arm, "full", spec.chain, spec.s2_crop, spec.dates)
         self.max_length = self.required if max_length is None else int(max_length)
         if self.max_length < self.required:
             raise ValueError(f"max_length {self.max_length} < the {self.required} tokens of {spec.task} "
@@ -229,16 +336,20 @@ class SegDataset(Dataset):
         if meta.get("arm") != sp.arm or int(meta["frozen"]["tokens"]) != self.n_map \
                 or int(meta["frozen"]["n_codes"]) != self.map_size or int(meta["n_views"]) != len(views):
             raise RuntimeError(f"{mdir}/metadata.json is not arm {sp.arm}'s map over these {len(views)} views")
-        idir = tok / f"{INPUT}_tok224"
+        idir = tok / f"{INPUT}_tok{int(sp.s2_crop)}"
         imeta = json.loads((idir / "metadata.json").read_text())
-        if int(imeta["n_rows"]) != len(inputs) or int(imeta["tokens_per_sample"]) != TOKENS_PER_SAMPLE:
+        per = TOKENS_PER_SAMPLE if not self.native else NATIVE_SIDE * NATIVE_SIDE
+        if int(imeta["n_rows"]) != len(inputs) or int(imeta["tokens_per_sample"]) != per:
             raise RuntimeError(f"{idir}/metadata.json does not match inputs.parquet")
+        if self.native and int(imeta.get("crop", -1)) != NATIVE_CROP:
+            raise RuntimeError(f"{idir}/metadata.json is not a {NATIVE_CROP}-px artifact")
         self.maps = np.load(mdir / "tokens.npy", mmap_mode="r")
         self.s2 = np.load(idir / "tokens.npy", mmap_mode="r")
         # The map artifact must hold every view of the split read (checked below, once the split is selected): Route B's
         # cells (A2 Step 4.2) hold train and val only, since the test split's labels are never read.
         map_present = np.load(mdir / "present.npy")
-        if not np.load(idir / "present.npy").all():
+        s2_present = np.load(idir / "present.npy")
+        if not self.native and not s2_present.all():
             raise RuntimeError(f"{tok}: an artifact is incomplete")
         self.map_meta, self.input_meta = meta, imeta
         self.lulc = None
@@ -273,6 +384,8 @@ class SegDataset(Dataset):
         self.views = views[sel].reset_index(drop=True)
         if not map_present[self.views.view.values].all():
             raise RuntimeError(f"{mdir}: the artifact lacks views of split {sp.split}")
+        if self.native and not s2_present[self.in_rows[self.views.view.values]].all():
+            raise RuntimeError(f"{idir}: the native S2 artifact lacks rows of split {sp.split}")
         if self.lulc is not None and not self.lulc_present[self.views.view.values].all():
             raise RuntimeError(f"LULCGEN_{sp.chain}: the artifact lacks views of split {sp.split}")
         # samples, and each sample's views (train draws among them)
@@ -317,6 +430,13 @@ class SegDataset(Dataset):
     def __len__(self) -> int:
         return self.epoch_size
 
+    def groups_at(self, epoch: Optional[int] = None) -> Tuple[int, ...]:
+        """The PASTIS-7 groups written at draw epoch `epoch` (default: the current one): the spec's groups, or, with a
+        DATE CURRICULUM, the latest k(epoch)."""
+        if self.spec.date_curriculum is None:
+            return self.spec.groups()
+        return curriculum_groups(self.spec.date_curriculum, self.draw_epoch if epoch is None else int(epoch))
+
     # ------------------------------------------------------------------ chunks
     def _s2_chunk(self, row: int) -> torch.Tensor:
         info = self.V.get_modality(INPUT)
@@ -353,6 +473,11 @@ class SegDataset(Dataset):
         if self.spec.map_order == "raster":
             return torch.arange(bo + int(self.spec.map_shift), bo + int(self.spec.map_shift) + g + 2, dtype=torch.long)
         t = torch.arange(g)
+        if self.native:                  # NATIVE S2: code t = j * 64 + k, k = 8 r + c, at bo + 1 + 198 j + 14 r + c
+            n2 = self.inner * self.inner
+            j, k = t // n2, t % n2
+            codes = bo + 1 + BLOCK * j + INPUT_SIDE * (k // self.inner) + k % self.inner
+            return torch.cat([torch.tensor([bo]), codes, torch.tensor([NATIVE_EO_MAP - BLOCK + bo])]).long()
         inner = INPUT_SIDE * INPUT_SIDE
         codes = bo + 1 + BLOCK * (t // inner) + t % inner
         return torch.cat([torch.tensor([bo]), codes, codes[-1:] + 1]).long()
@@ -392,9 +517,14 @@ class SegDataset(Dataset):
                 chunks, mods = [self._lulc_chunk(int(lv))] + chunks, [CHAIN_MOD] + mods
             return chunks, mods
         dates = self.in_dates[src]
-        groups = range(len(rows))
+        groups = self.groups_at()
         if variant == "one_date":
             groups = [ONE_DATE_GROUP]
+        if variant == "wrong_early":                    # the early images of the deranged view; dates kept (7.0c)
+            other = self.in_rows[self.derangement()[view]]
+            rows = rows.copy()
+            for j in EARLY_GROUPS:
+                rows[j] = other[j]
         if variant == "shuffled_dates":
             rng = np.random.default_rng([DERANGE_SEED, int(view)])
             while True:
@@ -419,13 +549,18 @@ class SegDataset(Dataset):
         lm = int(m.shape[0])
         lattice = lattice_positions(widths + [lm], [x == "Date" for x in mods] + [False], self.max_length)
         start = sum(widths)
-        mpos = self.map_positions(int(lattice[start]))             # the layout's map positions (MAP LAYOUTS)
+        # the layout's map positions (MAP LAYOUTS); NATIVE S2: BO_MAP at 198, the gapped raster's
+        bo = BLOCK if self.native else int(lattice[start])
+        mpos = self.map_positions(bo)
         if variant == "prior":                         # the map alone, at its positions in the full layout
             chunks, mods, widths = [], [], []
             last = int(mpos[-1])
             pos = torch.cat([mpos, torch.arange(last + 1, last + 1 + self.max_length - lm)])
         else:
             pos = lattice.clone()
+            if self.native:                            # the S2 block on the gapped 14-wide raster
+                assert widths == [NATIVE_SIDE * NATIVE_SIDE + 2], widths
+                pos[:start] = native_s2_positions()
             pos[start:start + lm] = mpos
             last = int(mpos[-1])
             pos[start + lm:] = torch.arange(last + 1, last + 1 + self.max_length - start - lm)
@@ -450,6 +585,10 @@ class SegDataset(Dataset):
         return s["input_ids"][:first].clone(), s["position_ids"][:first].clone()
 
     def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        if self.spec.date_curriculum is not None and int(i) == 0:   # the epoch's first item, from whichever process builds it
+            g = self.groups_at()
+            print(f"SegDataset date curriculum: draw epoch {self.draw_epoch}, item 0 holds the latest {len(g)} date(s) "
+                  f"{list(g)} (pid {os.getpid()})", flush=True)
         return self.sequence(self.view_at(i))
 
 
@@ -473,6 +612,28 @@ class SegEpochCallback(TrainerCallback):
         if self.verbose and getattr(state, "is_world_process_zero", True):
             print(f"SegEpochCallback: global_step {int(state.global_step)} -> draw epoch {epoch}", flush=True)
         self.dataset.set_draw_epoch(epoch)
+        per = getattr(getattr(self.dataset, "spec", None), "date_curriculum", None)
+        if per is not None and getattr(state, "is_world_process_zero", True):
+            write_curriculum_record(args.output_dir, per, int(state.global_step), epoch, self.dataset.groups_at(epoch))
+
+
+CURRICULUM_RECORD = "date_curriculum.json"
+
+
+def write_curriculum_record(output_dir: str, per: int, global_step: int, epoch: int, groups: Sequence[int]) -> Path:
+    """DATE CURRICULUM: append one epoch's entry to <output_dir>/date_curriculum.json (a step-0 restart starts it anew)."""
+    f = Path(output_dir) / CURRICULUM_RECORD
+    rec = json.loads(f.read_text()) if f.exists() else {"date_curriculum": int(per), "epochs": []}
+    if rec.get("date_curriculum") != int(per):
+        raise RuntimeError(f"{f} records date_curriculum {rec.get('date_curriculum')}, this run {per}")
+    rec["epochs"] = [x for x in rec["epochs"] if x["global_step"] < int(global_step)]
+    rec["epochs"].append({"global_step": int(global_step), "draw_epoch": int(epoch), "k": len(groups),
+                          "groups": [int(g) for g in groups]})
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(rec, indent=1) + "\n")
+    print(f"SegEpochCallback: date curriculum, draw epoch {epoch} -> the latest {len(groups)} date(s) {list(groups)}",
+          flush=True)
+    return f
 
 
 # --------------------------------------------------------------------------- builders (pretrain.py)
@@ -485,7 +646,10 @@ def spec_from_cfg(cfg, want: str) -> Optional[SegSpec]:
                    in_pinned=sc.get("in_pinned", None) if want == "train" else None,
                    root=Path(str(sc.get("root", ROOT))), base_vocab=int(cfg.model_config.vocab_size) - MV.N_NEW,
                    map_shift=int(sc.get("map_shift", 0) or 0), map_order=str(sc.get("map_order", "raster") or "raster"),
-                   chain=(str(sc["chain"]) if sc.get("chain") else None))
+                   chain=(str(sc["chain"]) if sc.get("chain") else None), s2_crop=int(sc.get("s2_crop", 224) or 224),
+                   dates=(tuple(int(x) for x in sc["dates"]) if sc.get("dates") is not None else None),
+                   date_curriculum=(sc["date_curriculum"] if want == "train" and sc.get("date_curriculum") is not None
+                                    else None))
 
 
 def build(cfg, want: str = "train") -> Optional[SegDataset]:
@@ -498,6 +662,8 @@ def build(cfg, want: str = "train") -> Optional[SegDataset]:
         from eo.data.seg_head_dataset import SegHeadDataset as cls      # A2 Step 4.2, Route C: the S2 block twice
     ds = cls(spec, max_length=int(cfg.max_length), seed=int(cfg.get("seed", 42)), batch=batch)
     print(f"seg {want}: {spec.task} {spec.frames} arm {spec.arm} split {spec.split} in_pinned {spec.in_pinned} "
-          f"map_order {spec.map_order} map_shift {spec.map_shift} chain {spec.chain}: "
+          f"map_order {spec.map_order} map_shift {spec.map_shift} chain {spec.chain} s2_crop {spec.s2_crop} "
+          f"dates {spec.dates}" + (f" date_curriculum {spec.date_curriculum}" if spec.date_curriculum is not None else "")
+          + ": "
           f"{len(ds.samples)} samples, {len(ds)} examples an epoch, {ds.required} tokens (max_length {ds.max_length})")
     return ds

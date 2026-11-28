@@ -32,11 +32,28 @@ from eo.maps import frozen                  # noqa: E402
 from step52_score import score_codes        # noqa: E402
 
 
+def same_run_diffs(rec: dict, rr: dict, same_weights=None) -> dict:
+    """The fields in which two generate records differ, of those that define the run. With `same_weights` (two SHA-256
+    listing files, e.g. a checkpoint pushed from one RCP site to another: A2 Step 7.0i), the checkpoint paths may differ
+    in the site root alone (the part before `/mor-eo-rcp/`), and only if the two listings are identical and non-empty."""
+    diffs = {k: (rec[k], rr[k]) for k in ("checkpoint", "seed", "temperature", "precision", "task", "arm", "variant")
+             if rec[k] != rr[k]}
+    if "checkpoint" in diffs and same_weights:
+        rel = lambda p: str(p).split("/mor-eo-rcp/", 1)[-1]                                   # noqa: E731
+        ls = [sorted(l for l in Path(f).read_text().splitlines() if l.strip()) for f in same_weights]
+        if rel(rec["checkpoint"]) == rel(rr["checkpoint"]) and len(ls) == 2 and ls[0] and ls[0] == ls[1]:
+            diffs.pop("checkpoint")
+    return diffs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True)
     ap.add_argument("--ref", required=True, help="the same checkpoint's K = 8 run (full_k8)")
     ap.add_argument("--expect-gpu", default=None)
+    ap.add_argument("--same-weights", nargs=2, default=None, metavar=("A.sha256", "B.sha256"),
+                    help="two identical SHA-256 listings of the checkpoint's files at the two sites; then the records' "
+                         "checkpoint paths may differ in the site root alone (the first-8 check still decides)")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     if dev == "cuda" and a.expect_gpu and a.expect_gpu not in torch.cuda.get_device_name(0):
@@ -46,8 +63,7 @@ def main():
     K = int(rec["k"])
     if rec["split"] != "val" or rec["greedy"] or K < 16 or K % 8:
         raise SystemExit(f"{d}: not a sampled val run at a multiple of 8 >= 16 ({rec['split']}, K {K})")
-    same_run = {k: (rec[k], rr[k]) for k in ("checkpoint", "seed", "temperature", "precision", "task", "arm", "variant")
-                if rec[k] != rr[k]}
+    same_run = same_run_diffs(rec, rr, a.same_weights)
     if same_run or rec["views"] != rr["views"] or int(rr["k"]) != 8:
         raise SystemExit(f"{d} and {ref} are not the same checkpoint's runs: {same_run}")
     codes, c8 = np.load(d / "codes.npy"), np.load(ref / "codes.npy")

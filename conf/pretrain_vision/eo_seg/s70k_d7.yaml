@@ -1,0 +1,18 @@
+# @package _global_
+#
+# A2 Step 7.0c (docs/plans/a2_segmentation.md, Step 7, "7.0c", pre-registered 2026-11-26 before any of its numbers):
+# PASTIS-7's latest 7 date(s), i.e. all seven (dates null), on B1's base by 7.0's recipe. Each date keeps its date block, in
+# date order, then the map: 201 x 7 + 198 = 1605 tokens, on the lattice (input block i at 198 i, BO_MAP at 198 x 7), so
+# date j sits 198 (7 - j) positions before the map, as in PASTIS-7 (eo/data/seg_dataset.py, DATES).
+# finetune.continue_from: null here; the date curriculum's stage sets it to the previous stage's kept save
+# (eo/finetune/init.py, CONTINUING). Differs from s70_p7 in exactly seg.dates, max_length and finetune.continue_from
+# (gate Z31a, eo/scripts/verify_seg_p7k.py).
+defaults:
+  - s70_p7
+  - _self_
+
+seg:
+  dates: null
+max_length: 1605
+finetune:
+  continue_from: null

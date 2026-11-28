@@ -18,6 +18,13 @@ training: A2's R1). It has no `extension.json`; its record is `continued.json`, 
 `write_continued` (CLI eo/scripts/package_continued.py), which holds the base's own extension.json,
 the run's pretrain_init.json, the run, step and vocabulary size, and the weights' SHA-256.
 `verify_extension` accepts either record, never both.
+
+CONTINUING A LoRA FINE-TUNE (`finetune.continue_from`, A2 Step 7.0c, the date curriculum): a kept save of an earlier
+LoRA fine-tune OF THE SAME BASE. The base loads and LoRA wraps as always; then the save's adapters and new rows load
+over the fresh ones (`continue_lora`). Refused unless the save's run recorded regime lora at the same rank and alpha
+from the same base weights (its finetune_init.json), its keys are exactly the wrapped model's, and every frozen tensor
+in it equals the base's bit for bit (nothing frozen moved; another base is refused). Optimizer and scheduler start
+fresh: it is a new fine-tune that starts where the earlier one ended, not a resume.
 """
 from __future__ import annotations
 
@@ -223,6 +230,50 @@ def expected_vocab(cfg) -> int:
     return BV.TOTAL_VOCAB_SIZE
 
 
+def continue_lora(model, cfg, base_doc: Dict) -> Dict:
+    """Load a kept save of an earlier LoRA fine-tune of the same base over the freshly wrapped model (module
+    docstring, CONTINUING). Call after `apply_lora`. Raises with the reason if any check fails."""
+    ft = cfg.finetune
+    ck = Path(str(ft.continue_from))
+    if ft.regime != "lora":
+        raise ValueError(f"finetune.continue_from continues a LoRA fine-tune; regime is {ft.regime!r}")
+    if not ck.is_dir():
+        raise FileNotFoundError(f"finetune.continue_from {ck} is not a directory")
+    fij = ck.parent / "finetune_init.json"
+    if not fij.is_file():
+        raise RuntimeError(f"{fij} missing: {ck} is not a save of a fine-tune run")
+    prev = json.loads(fij.read_text())
+    if prev.get("regime") != "lora":
+        raise RuntimeError(f"{fij}: regime {prev.get('regime')!r}, not lora")
+    if prev.get("weights_sha256") != base_doc["weights_sha256"]:
+        raise RuntimeError(f"{fij}: that run started from base {str(prev.get('weights_sha256'))[:12]}, this one from "
+                           f"{base_doc['weights_sha256'][:12]}: another base")
+    pl = prev.get("lora") or {}
+    if int(pl.get("rank", -1)) != int(ft.lora.r) or float(pl.get("alpha", -1)) != float(ft.lora.alpha):
+        raise RuntimeError(f"{fij}: LoRA rank {pl.get('rank')} alpha {pl.get('alpha')}, this run "
+                           f"{ft.lora.r} / {ft.lora.alpha}")
+    wf = _weights(ck)
+    state = _load_state(wf)
+    own = model.state_dict()
+    missing, unexpected = sorted(set(own) - set(state)), sorted(set(state) - set(own))
+    if missing or unexpected:
+        raise RuntimeError(f"{ck}: keys differ from the wrapped model's: missing {missing[:4]} ({len(missing)}), "
+                           f"unexpected {unexpected[:4]} ({len(unexpected)})")
+    frozen = [n for n, p in model.named_parameters() if not p.requires_grad]
+    trainable = [n for n, p in model.named_parameters() if p.requires_grad]
+    moved = [n for n in frozen if state[n].shape != own[n].shape or not torch.equal(state[n].to(own[n].dtype), own[n])]
+    if moved:
+        raise RuntimeError(f"{ck}: {len(moved)} frozen tensors differ from the base's ({moved[:3]}): not a LoRA save "
+                           f"of this base, or its frozen weights moved")
+    change = max(float((state[n].to(own[n].dtype) - own[n]).abs().max()) for n in trainable)
+    model.load_state_dict(state, strict=True)
+    ts = ck / "trainer_state.json"
+    return {"continue_from": str(ck), "run": ck.parent.name,
+            "step": int(json.loads(ts.read_text())["global_step"]) if ts.is_file() else None,
+            "weights_file": wf.name, "weights_sha256": _sha256(wf), "frozen_tensors_equal_base": len(frozen),
+            "trainable_tensors_loaded": len(trainable), "max_abs_change_from_fresh": change, "previous_init": prev}
+
+
 def init_from(model, cfg) -> Dict:
     """pretrain.py's hook: strict-load the extended checkpoint, then apply the regime."""
     ft = cfg.finetune
@@ -253,6 +304,10 @@ def init_from(model, cfg) -> Dict:
                 "across recursion steps and verified as the same tensor (PHASE6_PLAN §4.6). "
                 "Only the vanilla arm (B10) is wired so far.")
         report["lora"] = LR.apply_lora(model, int(ft.lora.r), float(ft.lora.alpha), n_old)
+        if ft.get("continue_from"):
+            report["continued"] = continue_lora(model, cfg, ext)
+    elif ft.get("continue_from"):
+        raise ValueError(f"finetune.continue_from continues a LoRA fine-tune; regime is {ft.regime!r}")
     elif ft.regime == "head":
         report["head"] = LR.apply_head(model, n_old)
     elif ft.regime == "full":

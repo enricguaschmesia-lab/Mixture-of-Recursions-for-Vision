@@ -1,0 +1,18 @@
+# @package _global_
+#
+# A2 Step 7.0 (2026-11-25; docs/plans/a2_segmentation.md, Step 7, "7.0, PASTIS-7 on A2's current base", pre-registered
+# before any PASTIS-7 number): Step 4.1's recipe on PASTIS-7. The recipe is r0_s41_lora16 with learning_rate=3e-3 and the
+# seed on the command line, as on PASTIS-1; only the frames and the sequence length change.
+#
+# PASTIS-7 (A2 Step 2): each patch's seven dates at int(j T / 7) of PASTIS-R's series, in date order,
+#   [BO_Date d EO_Date][BO_S2L2A 196 EO_S2L2A] x 7, then [BO_MAP_PASTIS 196 EO_MAP]: 7 x 201 + 198 = 1,605 tokens
+#   (eo/data/seg_dataset.required_length). Positions on the lattice: date blocks rewind, S2 block j at 198 j, BO_MAP at
+#   1,386. The same 1,200 pinned training patches as PASTIS-1, so the same 37-step epochs and schedule.
+# Differs from r0_s41_lora16 in exactly seg.frames and max_length (gate Z29a, eo/scripts/verify_seg_p7.py).
+defaults:
+  - r0_s41_lora16
+  - _self_
+
+seg:
+  frames: p7
+max_length: 1605

@@ -1,0 +1,17 @@
+# @package _global_
+#
+# Meeting 2026-11-25, option A, arm A (docs/notes/downstream/2026-11-25_meeting_2_patches_positions.md §8, pre-registered):
+# PASTIS-1's S2 at its native 128 px (8 x 8 tokens of 160 m, <task>/tok/S2L2A_tok128/) on the gapped 14-wide raster,
+# with the frozen short tokenizer's 16 x 16 map nested 2 x 2 under it (eo/data/seg_dataset.py, NATIVE S2): every map
+# code 198 (j + 1) positions after the S2 code of its cell, EO_MAP at 989; 324 tokens. Step 4.1's recipe
+# (r0_s41_lora16: LoRA r16 + the map rows, the plateau stop, the lowest-CE save, bf16), learning_rate=3e-3 and the seed
+# on the command line. Differs from r0_s41_lora16 in exactly seg.arm, seg.s2_crop, seg.map_order and max_length.
+defaults:
+  - r0_s41_lora16
+  - _self_
+
+seg:
+  arm: short
+  s2_crop: 128
+  map_order: nested
+max_length: 324

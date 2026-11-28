@@ -1,0 +1,16 @@
+# @package _global_
+#
+# A2 Step 7.0e test 1 (docs/plans/a2_segmentation.md, Step 7, "7.0e", pre-registered 2026-11-26 before any of its
+# numbers): E784, B1's recipe (s70_p7 with learning_rate=3e-3 and seed=42 on the command line, the plateau stop) with
+# Step 4.3's 784-token map: arm c4375_224 (f8 at 224 px, 28 x 28 = 784 tokens, 4,375 codes) in the nested layout. The
+# map's four 2 x 2 phases follow the seven date blocks as four 196-token lattice blocks, so map code (j, k) sits
+# 198 (j + 1) positions after the latest date's patch k (eo/data/seg_dataset.py, MAP LAYOUTS): 7 x 201 + 786 = 2,193
+# tokens. Differs from s70_p7 in exactly seg.arm, seg.map_order and max_length (gate Z33a, eo/scripts/verify_seg_p7e.py).
+defaults:
+  - s70_p7
+  - _self_
+
+seg:
+  arm: c4375_224
+  map_order: nested
+max_length: 2193

@@ -1,0 +1,22 @@
+# @package _global_
+#
+# A2 Step 7.0d (docs/plans/a2_segmentation.md, Step 7, "7.0d", pre-registered 2026-11-26 before any of its numbers):
+# G, the date curriculum in ONE run at B1's budget. B1's config (s70_p7 with learning_rate=3e-3 and seed=42 on the
+# command line) on B1's realized schedule, fixed: 851 steps (23 epochs of 37), warmup 37, the peak to step 666, then a
+# linear decay over the last 185 (B1's plateau stop fired at epoch 18 and decayed over 5 epochs), so no plateau stop.
+# The training sequences of epoch e hold the latest min(7, 1 + e // 2) dates (eo/data/seg_dataset.py, DATE CURRICULUM):
+# one date in epochs 0-1, two in 2-3, ..., six in 10-11, all seven from epoch 12 (step 444) on. Evaluation is all seven
+# dates. Differs from s70_p7 in exactly seg.date_curriculum, num_train_steps, stop_steps,
+# lr_scheduler_kwargs.num_decay_steps and plateau_stop.enable (gate Z32a, eo/scripts/verify_seg_p7d.py).
+defaults:
+  - s70_p7
+  - _self_
+
+seg:
+  date_curriculum: 2
+num_train_steps: 851
+stop_steps: 851
+lr_scheduler_kwargs:
+  num_decay_steps: 185
+plateau_stop:
+  enable: false
